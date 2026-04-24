@@ -32,6 +32,19 @@ $ErrorActionPreference = 'Continue'
 $script:Failures = @()
 $script:Warnings = @()
 
+# Resolve paths early so every check below can reference them safely.
+# Historical bug: $gradleProps was first referenced in the Proxy section
+# but defined mid-way through that same section, producing blank [INFO]
+# lines on the first pass and would crash under StrictMode. Defining it
+# here (before the first Write-Section) makes every later check safe.
+$script:RepoRoot = if ($PSScriptRoot) {
+    (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+} else {
+    (Get-Location).Path
+}
+$gradleProps    = Join-Path $env:USERPROFILE '.gradle\gradle.properties'
+$gradleUserHome = if ($env:GRADLE_USER_HOME) { $env:GRADLE_USER_HOME } else { Join-Path $env:USERPROFILE '.gradle' }
+
 function Write-Pass([string]$msg) { Write-Host "  [PASS] $msg" -ForegroundColor Green }
 function Write-Fail([string]$msg, [string]$hint = '') {
     Write-Host "  [FAIL] $msg" -ForegroundColor Red
@@ -153,6 +166,104 @@ if (-not $env:JAVA_HOME) {
     Write-Pass "JAVA_HOME = $env:JAVA_HOME"
 }
 
+# Full-JDK check: Gradle needs javac + keytool, not just java. A JRE-only
+# install passes the `java` check above but fails at compile time with
+# opaque "tool not found" errors. On Windows the JRE and JDK have nearly
+# identical names in Adoptium / Eclipse Foundation — users frequently
+# install one when they needed the other.
+if ($javaCmd) {
+    $javacPath = $null
+    if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin\javac.exe'))) {
+        $javacPath = Join-Path $env:JAVA_HOME 'bin\javac.exe'
+    } elseif (Get-Command javac -ErrorAction SilentlyContinue) {
+        $javacPath = (Get-Command javac).Source
+    }
+    $keytoolPath = $null
+    if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin\keytool.exe'))) {
+        $keytoolPath = Join-Path $env:JAVA_HOME 'bin\keytool.exe'
+    } elseif (Get-Command keytool -ErrorAction SilentlyContinue) {
+        $keytoolPath = (Get-Command keytool).Source
+    }
+    if (-not $javacPath) {
+        Write-Fail "javac not found - this looks like a JRE, not a JDK" `
+            "Gradle compiles .java sources, which requires javac.exe. Install a *JDK* distribution (Temurin/OpenJDK/Corretto/Zulu). On Windows the JRE and JDK installers have nearly identical names; pick the one that ships javac.exe."
+    } else {
+        Write-Info "javac found at $javacPath"
+    }
+    if (-not $keytoolPath) {
+        Write-Warn "keytool not found - corporate-CA import will not work" `
+            "Install a full JDK or point JAVA_HOME at one that includes bin\keytool.exe."
+    }
+}
+
+# Detect a stale org.gradle.java.home override. The property hard-pins
+# the Gradle daemon's JDK and overrides toolchains. Common enterprise
+# failure: the user configured it for a Gradle 8 build years ago,
+# pointing at JDK 11; the Gradle 9.x daemon refuses to start with
+# "Value 'C:\...\jdk-11' given for org.gradle.java.home Gradle property
+# is invalid (Java version too old)."
+if (Test-Path $gradleProps) {
+    $gpForPin = Get-Content $gradleProps -Raw
+    if ($gpForPin -match '(?m)^\s*org\.gradle\.java\.home\s*=\s*(.+)$') {
+        $pinnedJavaHome = $Matches[1].Trim()
+        Write-Info "org.gradle.java.home = $pinnedJavaHome  (pinned in $gradleProps)"
+        if (-not (Test-Path (Join-Path $pinnedJavaHome 'bin\java.exe'))) {
+            Write-Fail "org.gradle.java.home points at a path with no bin\java.exe: $pinnedJavaHome" `
+                "Either delete the line from $gradleProps so Gradle uses JAVA_HOME, or update it to a valid JDK 17-25 install root."
+        } else {
+            $pinnedVer = & (Join-Path $pinnedJavaHome 'bin\java.exe') -version 2>&1 | Select-Object -First 1
+            if ($pinnedVer -match '"(\d+)') {
+                $pm = [int]$Matches[1]
+                if ($pm -ge 17 -and $pm -le 25) {
+                    Write-Pass "org.gradle.java.home JDK $pm is in range ($pinnedVer)"
+                } else {
+                    Write-Fail "org.gradle.java.home pins Gradle to JDK $pm; repo needs 17-25" `
+                        "Gradle 9.4.1 will refuse to start. Delete the org.gradle.java.home line OR update it to a 17-25 install."
+                }
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# PowerShell execution policy - a silent first-time blocker on Windows.
+# Fresh enterprise-managed installs default to Restricted or AllSigned;
+# running this script (or ./gradlew.bat after it) fails with
+#   ".\scripts\build-health-check.ps1 cannot be loaded because running
+#   scripts is disabled on this system." The fix is to scope the relax
+#   to the CurrentUser. Warn unconditionally but tell the user the fix.
+# ---------------------------------------------------------------------------
+Write-Section "PowerShell execution policy"
+try {
+    $currentPolicy = Get-ExecutionPolicy -Scope CurrentUser
+    $effectivePolicy = Get-ExecutionPolicy
+    Write-Info "Effective policy: $effectivePolicy  (CurrentUser scope: $currentPolicy)"
+    switch ($effectivePolicy) {
+        'Restricted' {
+            Write-Fail "Effective policy = Restricted. PowerShell scripts cannot run at all." `
+                "Run once in an elevated prompt: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+        }
+        'AllSigned' {
+            Write-Warn "Effective policy = AllSigned. Unsigned scripts (including this one and gradlew.bat's helpers) will be blocked." `
+                "Run once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+        }
+        'Bypass' {
+            Write-Pass "Effective policy = Bypass (scripts run without restriction)."
+        }
+        'RemoteSigned' {
+            Write-Pass "Effective policy = RemoteSigned (local scripts run; downloaded scripts need a signature)."
+        }
+        'Unrestricted' {
+            Write-Pass "Effective policy = Unrestricted."
+        }
+        default {
+            Write-Info "Effective policy = $effectivePolicy (review if scripts are being blocked)."
+        }
+    }
+} catch {
+    Write-Info "Could not read ExecutionPolicy: $($_.Exception.Message)"
+}
+
 # ---------------------------------------------------------------------------
 # Proxy detection
 # ---------------------------------------------------------------------------
@@ -168,16 +279,17 @@ Write-Section "Proxy configuration"
 # This script only reads/writes (1). (2) is never modified.
 Write-Info "User-level gradle.properties (proxy + creds live here):"
 Write-Info "  $gradleProps"
-$bankingProjectProps = Join-Path (Get-Location).Path 'banking-app\gradle.properties'
-if (Test-Path $bankingProjectProps) {
+# Check every sub-project wrapper for accidentally-committed proxy or
+# credential lines. Historically only banking-app was scanned.
+foreach ($proj in @('banking-app', 'bench-harness', 'bench-cli', 'bench-webui')) {
+    $projProps = Join-Path $script:RepoRoot "$proj\gradle.properties"
+    if (-not (Test-Path $projProps)) { continue }
     Write-Info "Project-level gradle.properties (NOT used for proxy; only build tuning):"
-    Write-Info "  $bankingProjectProps"
-    # Sanity check: if someone accidentally put proxy settings in the
-    # project file, flag it loudly -- those would leak to git.
-    $bankingContent = Get-Content $bankingProjectProps -Raw
-    if ($bankingContent -match 'systemProp\.(http|https)\.proxy|orgInternalMaven(User|Password)|artifactoryResolver(Username|Password)') {
+    Write-Info "  $projProps"
+    $content = Get-Content $projProps -Raw
+    if ($content -match 'systemProp\.(http|https)\.proxy|orgInternalMaven(User|Password)|artifactoryResolver(Username|Password)') {
         Write-Warn "Project-level gradle.properties contains proxy/credential lines!" `
-            "These would be committed to git. Move them to $gradleProps and remove from $bankingProjectProps."
+            "These would be committed to git. Move them to $gradleProps and remove from $projProps."
     }
 }
 
@@ -194,7 +306,51 @@ foreach ($k in $proxyEnv.Keys) {
     }
 }
 
-$gradleProps = Join-Path $env:USERPROFILE '.gradle\gradle.properties'
+# Flag JVM-level env vars that silently inject args into every JVM
+# launched (including the Gradle wrapper). Classic gotcha: a forgotten
+# -Dhttp.proxyHost here overrides what's in gradle.properties.
+foreach ($vname in @('GRADLE_OPTS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JAVA_OPTS')) {
+    $val = [Environment]::GetEnvironmentVariable($vname)
+    if ($val) {
+        Write-Info "$vname = $val"
+        if ($val -match '(?i)proxy|truststore|javax\.net\.ssl') {
+            Write-Warn "$vname contains TLS/proxy JVM args that may conflict with gradle.properties." `
+                "JVM-level env vars apply to every java.exe process; if they disagree with $gradleProps settings, the env vars win."
+        }
+    }
+}
+
+# Windows WinHTTP / WinINET proxy detection. VSCode and Edge use
+# WinINET (per-user IE proxy). Gradle's JVM ignores both — reading
+# only -Dhttp.proxyHost or gradle.properties. Very common mismatch:
+# "VSCode works, Gradle doesn't" because gradle.properties has no
+# proxy but Windows is actually using a WinHTTP proxy configured via
+# GPO. Surface both pictures so the operator can compare.
+try {
+    $winhttp = & netsh winhttp show proxy 2>&1 | Out-String
+    if ($winhttp -match 'Proxy Server\(s\)\s*:\s*([^\r\n]+)') {
+        $wh = $Matches[1].Trim()
+        if ($wh -ne '(none)' -and $wh -ne 'Direct access (no proxy server).' -and $wh) {
+            Write-Info "WinHTTP proxy (system scope, JVM does NOT read this): $wh"
+        } else {
+            Write-Info "WinHTTP proxy: Direct access (no system proxy)."
+        }
+    }
+} catch { }
+
+try {
+    $ieProxy = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue
+    if ($ieProxy -and $ieProxy.ProxyEnable -eq 1 -and $ieProxy.ProxyServer) {
+        Write-Info "WinINET proxy (per-user IE/Edge, JVM does NOT read this): $($ieProxy.ProxyServer)"
+        if ($ieProxy.AutoConfigURL) {
+            Write-Warn "WinINET uses an auto-config URL (PAC): $($ieProxy.AutoConfigURL)" `
+                "The JVM has NO built-in PAC parser. Decide a single static proxy from the PAC, paste it into $gradleProps."
+        }
+    }
+} catch { }
+
+# $gradleProps was defined at the top of the script so every earlier
+# section could safely reference it. Just declare the derived state here.
 $gradleProxyKeys = @('systemProp.https.proxyHost', 'systemProp.http.proxyHost')
 $gradleProxyConfigured = $false
 $gradleProxyHost = $null
@@ -1562,6 +1718,7 @@ $endpoints = @(
     @{ Name='Gradle distributions';              Url='https://services.gradle.org/distributions/' },
     @{ Name="Maven Central (Gradle's mavenCentral())"; Url='https://repo.maven.apache.org/maven2/' },
     @{ Name='Gradle Plugin Portal';              Url='https://plugins.gradle.org/m2/' },
+    @{ Name='Foojay Disco (toolchain auto-download)'; Url='https://api.foojay.io/disco/v3.0/packages?version=17&vendor=temurin&architecture=x64&operating_system=windows&archive_type=zip&package_type=jdk&javafx_bundled=false&latest=available' },
     @{ Name='GitHub';                            Url='https://github.com/' }
 )
 
@@ -1611,6 +1768,18 @@ foreach ($ep in $endpoints) {
         }
         Write-Fail "$($ep.Name) unreachable: $($ep.Url) -- $msg" $hint
         if ($ep.Name -like 'Maven Central*') { $mavenCentralReachable = $false }
+        if ($ep.Name -like 'Foojay*') {
+            Write-Info "  -> The Foojay Disco API is what Gradle calls to AUTO-DOWNLOAD a JDK 17"
+            Write-Info "     when your default JDK is a different major version. It's wired into"
+            Write-Info "     every settings.gradle.kts via foojay-resolver-convention."
+            Write-Info "  -> If Foojay is blocked but your default JDK is already 17-25, turn OFF"
+            Write-Info "     auto-download in $gradleProps :"
+            Write-Info "       org.gradle.java.installations.auto-download=false"
+            Write-Info "       org.gradle.java.installations.auto-detect=true"
+            Write-Info "     Gradle then reuses the locally-installed JDK via path discovery."
+            Write-Info "  -> Alternatively, pin the discovery path explicitly:"
+            Write-Info "       org.gradle.java.installations.paths=C\\:\\Program Files\\Java\\jdk-17"
+        }
     } catch {
         Write-Fail "$($ep.Name) unreachable: $($ep.Url) -- $($_.Exception.Message)"
         if ($ep.Name -like 'Maven Central*') { $mavenCentralReachable = $false }
@@ -2057,28 +2226,184 @@ if ($freeGb -lt 5) {
 Write-Info "Gradle user home: $gradleHome"
 
 # ---------------------------------------------------------------------------
-# Gradle wrapper distribution
+# JVM-level HTTP auth + IPv4 preference gotchas
+# ---------------------------------------------------------------------------
+# Java 8u111+ disables HTTP Basic auth over HTTPS CONNECT tunnels by
+# default. Corporate proxies that require Basic/NTLM on CONNECT return
+# 407 even with correct creds. Surface the required flags when we see
+# a proxyPassword in gradle.properties.
+Write-Section "JVM HTTP auth settings"
+if (Test-Path $gradleProps) {
+    $gpText = Get-Content $gradleProps -Raw
+    if ($gpText -match '(?m)^\s*systemProp\.https?\.proxyPassword\s*=') {
+        $hasTunneling = ($gpText -match '(?m)^\s*systemProp\.jdk\.http\.auth\.tunneling\.disabledSchemes\s*=')
+        $hasProxying  = ($gpText -match '(?m)^\s*systemProp\.jdk\.http\.auth\.proxying\.disabledSchemes\s*=')
+        if (-not $hasTunneling -or -not $hasProxying) {
+            Write-Warn "Proxy credentials present but Basic-over-CONNECT is disabled by default in JDK 17+." `
+                "Corporate proxies that authenticate via Basic / NTLM on the HTTPS CONNECT tunnel will return 407 'Proxy Authentication Required' even with correct creds."
+            Write-Info "  To re-enable, add to $gradleProps :"
+            Write-Info "    systemProp.jdk.http.auth.tunneling.disabledSchemes="
+            Write-Info "    systemProp.jdk.http.auth.proxying.disabledSchemes="
+            Write-Info "  (empty value = no schemes disabled = Basic/NTLM re-allowed)"
+        } else {
+            Write-Pass "jdk.http.auth.tunneling/proxying disabledSchemes already cleared in $gradleProps"
+        }
+    }
+    # IPv4 preference: corporate egress is often IPv4-only while the JVM
+    # tries AAAA first, causing 30s connect timeouts. Surface the flag
+    # if we don't see it set already.
+    if ($gpText -match '(?m)^\s*systemProp\.java\.net\.preferIPv4Stack\s*=\s*true') {
+        Write-Pass "systemProp.java.net.preferIPv4Stack=true set in $gradleProps"
+    } else {
+        Write-Info "systemProp.java.net.preferIPv4Stack not set."
+        Write-Info "  If the build hangs on 'Connect timed out' at dependency resolution, add:"
+        Write-Info "    systemProp.java.net.preferIPv4Stack=true"
+        Write-Info "  to $gradleProps. Forces the JVM to skip AAAA DNS lookups entirely."
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Gradle wrapper distribution (all four sub-project wrappers)
 # ---------------------------------------------------------------------------
 Write-Section "Gradle wrapper download"
 
-$wrapperProps = Join-Path $PSScriptRoot '..\banking-app\gradle\wrapper\gradle-wrapper.properties'
-if (-not (Test-Path $wrapperProps)) {
-    Write-Warn "gradle-wrapper.properties not found at $wrapperProps; skipping distribution download check"
-} else {
-    $distLine = Select-String -Path $wrapperProps -Pattern '^distributionUrl=' | Select-Object -First 1
-    if ($distLine -match 'distributionUrl=(.+)') {
-        $distUrl = $Matches[1] -replace '\\:', ':'
+$wrapperErrors   = 0
+$wrapperWarnings = 0
+foreach ($proj in @('banking-app', 'bench-harness', 'bench-cli', 'bench-webui')) {
+    $wrapperProps = Join-Path $script:RepoRoot "$proj\gradle\wrapper\gradle-wrapper.properties"
+    $wrapperJar   = Join-Path $script:RepoRoot "$proj\gradle\wrapper\gradle-wrapper.jar"
+    if (-not (Test-Path $wrapperProps)) {
+        Write-Warn "${proj}: gradle-wrapper.properties not found at $wrapperProps"
+        $wrapperErrors++
+        continue
+    }
+    $propsRaw = Get-Content $wrapperProps -Raw
+    $distUrl  = if ($propsRaw -match '(?m)^distributionUrl=(.+)') { $Matches[1] -replace '\\:', ':' } else { $null }
+    $netTo    = if ($propsRaw -match '(?m)^\s*networkTimeout\s*=\s*(\d+)') { [int]$Matches[1] } else { $null }
+    if ($netTo -and $netTo -lt 30000) {
+        Write-Warn "${proj}: networkTimeout=$netTo ms is short for corporate networks" `
+            "Bump to 60000-120000 in $wrapperProps to avoid spurious failures under proxy latency."
+        $wrapperWarnings++
+    }
+
+    # Reachability check, through the gradle.properties proxy when set.
+    if ($distUrl) {
         try {
-            $r = Invoke-WebRequest -Uri $distUrl -Method Head -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+            $iwrArgs = @{
+                Uri = $distUrl; Method = 'Head'; TimeoutSec = 30
+                UseBasicParsing = $true; ErrorAction = 'Stop'
+            }
+            if ($gradleWebProxy) {
+                $iwrArgs['Proxy'] = $gradleWebProxy.Address.ToString()
+                $iwrArgs['ProxyCredential'] = $gradleWebProxy.Credentials
+            }
+            $r = Invoke-WebRequest @iwrArgs
             if ($r.StatusCode -eq 200) {
                 $sizeMb = [math]::Round([int64]$r.Headers['Content-Length'] / 1MB, 1)
-                Write-Pass "Gradle wrapper distribution reachable: $distUrl ($sizeMb MB)"
+                Write-Pass "${proj}: distribution reachable: $distUrl ($sizeMb MB)"
             } else {
-                Write-Warn "Wrapper distribution HEAD returned HTTP $($r.StatusCode)"
+                Write-Warn "${proj}: distribution HEAD returned HTTP $($r.StatusCode)"
+                $wrapperWarnings++
             }
         } catch {
-            Write-Fail "Wrapper distribution NOT downloadable: $distUrl" `
-                "Without this download .\gradlew.bat will fail before Gradle even starts. Check proxy + TLS."
+            Write-Fail "${proj}: distribution NOT downloadable: $distUrl" `
+                "Without this download .\gradlew.bat in $proj\ will fail before Gradle even starts."
+            $wrapperErrors++
+        }
+    }
+
+    # Local wrapper jar integrity. Corporate MITM proxies have been
+    # observed corrupting binary downloads during inspection, producing
+    # the classic "Could not find or load main class
+    # org.gradle.wrapper.GradleWrapperMain" error.
+    if (Test-Path $wrapperJar) {
+        $jarBytes = (Get-Item $wrapperJar).Length
+        if ($jarBytes -lt 20000) {
+            Write-Fail "${proj}: gradle-wrapper.jar is only $jarBytes bytes - looks truncated or corrupted" `
+                "Expected ~40-80 KB. Run 'git checkout -- $proj\gradle\wrapper\gradle-wrapper.jar' to restore. Proxy content inspection sometimes strips bytes."
+            $wrapperErrors++
+        } elseif ($jarBytes -gt 200000) {
+            Write-Warn "${proj}: gradle-wrapper.jar is $jarBytes bytes (larger than expected ~43 KB)" `
+                "Could indicate the proxy replaced the jar with an HTML inspection page. Open in a hex editor; if it starts with '<!DOCTYPE' or '<html', that's the cause."
+            $wrapperWarnings++
+        } else {
+            # Zip-integrity sanity check via .NET's ZipFile.
+            try {
+                Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($wrapperJar)
+                $zip.Dispose()
+            } catch {
+                Write-Fail "${proj}: gradle-wrapper.jar is NOT a valid zip" `
+                    "Run 'git checkout -- $proj\gradle\wrapper\gradle-wrapper.jar' to restore it."
+                $wrapperErrors++
+            }
+        }
+    } else {
+        Write-Fail "${proj}: gradle-wrapper.jar missing at $wrapperJar" `
+            "Run 'git checkout -- $proj\gradle\wrapper\gradle-wrapper.jar' to restore it."
+        $wrapperErrors++
+    }
+}
+if ($wrapperErrors -eq 0 -and $wrapperWarnings -eq 0) {
+    Write-Pass "All four sub-project wrappers look healthy."
+}
+
+# ---------------------------------------------------------------------------
+# End-to-end: gradlew --version
+#
+# The ultimate smoke test. If every diagnostic above passed but this
+# still fails, the problem is in the wrapper bootstrap path
+# (distribution download, SHA-256 verification, or JVM startup) -- and
+# the output of this run is the same error the user would see running
+# .\gradlew.bat build directly.
+# ---------------------------------------------------------------------------
+Write-Section "End-to-end: gradlew --version"
+if ($wrapperErrors -gt 0) {
+    Write-Info "Skipping end-to-end probe - fix the wrapper errors above first."
+} else {
+    $wrapperBat = Join-Path $script:RepoRoot 'banking-app\gradlew.bat'
+    if (-not (Test-Path $wrapperBat)) {
+        Write-Warn "banking-app\gradlew.bat missing or not executable; skipping."
+    } else {
+        Write-Info "Running `"$wrapperBat --version`" (may download ~150 MB Gradle distribution on first run)..."
+        $tmplog = [System.IO.Path]::GetTempFileName()
+        try {
+            $p = Start-Process -FilePath $wrapperBat `
+                -ArgumentList '-p', (Join-Path $script:RepoRoot 'banking-app'), '--version' `
+                -WorkingDirectory (Join-Path $script:RepoRoot 'banking-app') `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput $tmplog `
+                -RedirectStandardError "$tmplog.err"
+            $logText = (Get-Content $tmplog -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content "$tmplog.err" -Raw -ErrorAction SilentlyContinue)
+            if ($p.ExitCode -eq 0 -and $logText -match '(?m)^Gradle\s+\d') {
+                $gradleVer = ([regex]::Match($logText, '(?m)^Gradle\s+\S+').Value)
+                $jvmVer    = ([regex]::Match($logText, '(?m)^JVM:\s+.*').Value)
+                Write-Pass "Wrapper bootstrapped cleanly - $gradleVer"
+                if ($jvmVer) { Write-Info "  $jvmVer" }
+            } else {
+                Write-Fail "Wrapper bootstrap FAILED - this is the same error you see when .\gradlew.bat build runs." `
+                    "Inspect $tmplog for the exact cause. Most common: distribution SHA-256 mismatch (MITM proxy), wrapper jar corrupt, or JDK incompatibility."
+                Write-Info "  Last 15 lines of the wrapper output:"
+                $logText -split "`n" | Select-Object -Last 15 | ForEach-Object { Write-Info "    $_" }
+                if ($logText -match 'Could not find or load main class org\.gradle\.wrapper\.GradleWrapperMain') {
+                    Write-Info "  -> gradle-wrapper.jar is present but unreadable by the JVM. Either the file is"
+                    Write-Info "     truncated (size check above would catch), or JVM classpath resolution is broken."
+                    Write-Info "     Try: del $wrapperJar; git checkout -- banking-app\gradle\wrapper\gradle-wrapper.jar"
+                } elseif ($logText -match 'Verification of Gradle distribution failed') {
+                    Write-Info "  -> The downloaded Gradle zip does not match the SHA-256 in gradle-wrapper.properties."
+                    Write-Info "     Corporate MITM proxy is rewriting the zip during inspection. Two fixes:"
+                    Write-Info "       (a) Import corp CA so TLS is not intercepted, OR"
+                    Write-Info "       (b) Download the zip manually through a browser, verify SHA-256,"
+                    Write-Info "           and place in %GRADLE_USER_HOME%\wrapper\dists\gradle-9.4.1-bin\<hash>\"
+                } elseif ($logText -match 'PKIX|SSLHandshake|unable to find valid certification path') {
+                    Write-Info "  -> JDK truststore missing the corporate root CA. See TLS chain section above."
+                } elseif ($logText -match '407 Proxy Authentication Required') {
+                    Write-Info "  -> Proxy CONNECT auth rejected. See JVM HTTP auth section above."
+                }
+            }
+        } finally {
+            Remove-Item $tmplog -Force -ErrorAction SilentlyContinue
+            Remove-Item "$tmplog.err" -Force -ErrorAction SilentlyContinue
         }
     }
 }
