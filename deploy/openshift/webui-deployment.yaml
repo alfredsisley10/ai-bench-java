@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-bench-webui
+  labels:
+    app: ai-bench
+    component: webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-bench
+      component: webui
+  template:
+    metadata:
+      labels:
+        app: ai-bench
+        component: webui
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "ai-bench"
+        vault.hashicorp.com/agent-inject-secret-config: "secret/data/ai-bench"
+    spec:
+      serviceAccountName: ai-bench
+      containers:
+        - name: webui
+          image: image-registry.openshift-image-registry.svc:5000/ai-bench/bench-webui:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: AI_BENCH_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: ai-bench-config
+                  key: environment
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: ai-bench-config
+                  key: db-host
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ai-bench-db
+                  key: username
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ai-bench-db
+                  key: password
+            - name: VAULT_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: ai-bench-config
+                  key: vault-addr
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=75.0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-bench-webui
+  labels:
+    app: ai-bench
+    component: webui
+spec:
+  selector:
+    app: ai-bench
+    component: webui
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ai-bench-webui
+  labels:
+    app: ai-bench
+    component: webui
+spec:
+  to:
+    kind: Service
+    name: ai-bench-webui
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

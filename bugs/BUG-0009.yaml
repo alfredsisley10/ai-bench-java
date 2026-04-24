@@ -1,0 +1,32 @@
+id: BUG-0009
+title: "Journal history query triggers N+1 over posting lines"
+module: ledger-core
+difficulty: MEDIUM
+category: N_PLUS_ONE
+
+breakCommit: bug/BUG-0009/break
+fixCommit:   bug/BUG-0009/fix
+
+filesTouched:
+  - ledger-core/src/main/java/com/omnibank/ledger/internal/JournalEntryRepository.java
+  - ledger-core/src/main/java/com/omnibank/ledger/internal/JournalEntryEntity.java
+oracleDiffLines: 3
+
+hiddenTest:
+  class: com.omnibank.ledger.internal.LedgerQueriesImplIT
+  method: journal_history_issues_constant_number_of_queries
+  file: ledger-core/src/test/java/com/omnibank/ledger/internal/LedgerQueriesImplIT.java
+
+problemStatement: |
+  LedgerQueriesImpl.journalHistory lazily loads lines for each returned
+  journal, producing N+1 SQL queries for a busy account. Switch the repository
+  query to a JOIN FETCH on lines (or mark the relationship with a
+  @BatchSize)so the number of queries is O(1) in the number of journals.
+  AppMap traces will show the SQL count explicitly.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.ledger.internal.LedgerQueriesImplIT
+  traceFocus:
+    - LedgerQueriesImpl.journalHistory
+    - JournalEntryRepository.findJournalsForAccount

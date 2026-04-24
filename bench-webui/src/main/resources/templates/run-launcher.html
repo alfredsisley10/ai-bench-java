@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Run', ~{::main})}">
+<body>
+<main>
+    <h2>Launch benchmark run</h2>
+
+    <form method="post" action="/run/launch" id="launchForm">
+        <fieldset>
+            <legend>Target</legend>
+            <label>Target type:
+                <select name="targetType" id="targetType" required onchange="toggleTarget()">
+                    <option th:each="t : ${targetTypes}" th:value="${t.value}" th:text="${t.label}"></option>
+                </select>
+            </label>
+            <p class="help-text">
+                <strong>Omnibank:</strong> Run against the built-in Omnibank sample banking app with a known bug injection.<br>
+                <strong>Enterprise:</strong> Run against a real-world repository from your GitHub connections.
+            </p>
+
+            <div id="omnibankFields">
+                <label>Bug ID:
+                    <select name="bugId" id="bugId">
+                        <option value="">-- select a bug --</option>
+                        <option th:each="b : ${availableBugs}" th:value="${b}" th:text="${b}"></option>
+                    </select>
+                </label>
+            </div>
+
+            <div id="enterpriseFields" style="display:none">
+                <label>Repository:
+                    <select name="repoName" id="repoName">
+                        <option value="">-- select a repository --</option>
+                        <option th:each="r : ${availableRepos}" th:value="${r}" th:text="${r}"></option>
+                    </select>
+                </label>
+                <label>JIRA ticket (optional):
+                    <input name="jiraTicket" placeholder="PAY-1234" pattern="[A-Z][A-Z0-9]*-[0-9]+" title="Format: PROJECT-123">
+                </label>
+                <p class="help-text">If provided, the problem statement is sourced from this JIRA ticket instead of the repo's issue tracker.</p>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>LLM provider and model</legend>
+            <label>LLM provider:
+                <select name="provider" id="provider" required onchange="filterModels()">
+                    <option value="">-- select provider --</option>
+                    <option th:each="p : ${providers}" th:value="${p}" th:text="${p}"></option>
+                </select>
+            </label>
+            <p class="help-text">The LLM provider determines which API gateway handles the solver requests.</p>
+
+            <label>Model:
+                <select name="modelId" id="modelId" required>
+                    <option value="">-- select provider first --</option>
+                    <option th:each="m : ${models}" th:value="${m.id}" th:text="${m.name}" th:attr="data-provider=${m.provider}"></option>
+                </select>
+            </label>
+            <p class="help-text">Specific model to use. Configure models in <a href="/llm">LLM settings</a>.</p>
+        </fieldset>
+
+        <fieldset>
+            <legend>Runtime options</legend>
+            <label>AppMap mode:
+                <select name="appmapMode" required>
+                    <option value="OFF">OFF — No runtime traces collected</option>
+                    <option value="ON_RECOMMENDED" selected>ON_RECOMMENDED — Traces for test cases most relevant to the bug</option>
+                    <option value="ON_ALL">ON_ALL — Full trace collection for all test executions</option>
+                </select>
+            </label>
+            <p class="help-text">
+                AppMap traces provide runtime context (call graphs, data flows, HTTP interactions) to the LLM solver.
+                <strong>ON_RECOMMENDED</strong> is the default and balances trace quality with performance.
+                <strong>ON_ALL</strong> gives maximum context but increases build time and token usage.
+            </p>
+
+            <label>Seeds:
+                <input name="seeds" type="number" value="3" min="1" max="10" required>
+            </label>
+            <p class="help-text">
+                Number of independent solver attempts per bug. Multiple seeds measure consistency (pass@k).
+                Each seed uses a different random seed for the LLM, producing varied solutions for the same prompt.
+                Typical: 3 for quick runs, 5-10 for statistical significance.
+            </p>
+        </fieldset>
+
+        <button type="submit" id="launchBtn">Launch benchmark</button>
+    </form>
+
+    <script>
+        function toggleTarget() {
+            var type = document.getElementById('targetType').value;
+            document.getElementById('omnibankFields').style.display = type === 'omnibank' ? 'block' : 'none';
+            document.getElementById('enterpriseFields').style.display = type === 'enterprise' ? 'block' : 'none';
+        }
+
+        function filterModels() {
+            var provider = document.getElementById('provider').value;
+            var modelSelect = document.getElementById('modelId');
+            var options = modelSelect.querySelectorAll('option[data-provider]');
+            modelSelect.value = '';
+            options.forEach(function(opt) {
+                opt.style.display = (!provider || opt.getAttribute('data-provider') === provider) ? '' : 'none';
+            });
+        }
+
+        document.getElementById('launchForm').addEventListener('submit', function(e) {
+            var type = document.getElementById('targetType').value;
+            if (type === 'omnibank' && !document.getElementById('bugId').value) {
+                e.preventDefault(); alert('Please select a Bug ID for Omnibank runs.'); return;
+            }
+            if (type === 'enterprise' && !document.getElementById('repoName').value) {
+                e.preventDefault(); alert('Please select a repository for enterprise runs.'); return;
+            }
+            if (!document.getElementById('provider').value) {
+                e.preventDefault(); alert('Please select an LLM provider.'); return;
+            }
+            if (!document.getElementById('modelId').value) {
+                e.preventDefault(); alert('Please select a model.'); return;
+            }
+        });
+    </script>
+</main>
+</body>
+</html>

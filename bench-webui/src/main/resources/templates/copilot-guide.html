@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Copilot Guide', ~{::main})}">
+<body>
+<main>
+    <h2>Testing with GitHub Copilot in VSCode</h2>
+    <p class="subtitle">Step-by-step guide for running AI benchmark tests through the Copilot VSCode bridge.</p>
+
+    <section>
+        <h3>1. Prerequisites</h3>
+        <ul>
+            <li>VSCode with GitHub Copilot extension installed and activated</li>
+            <li>Active GitHub Copilot subscription (individual or enterprise)</li>
+            <li>The ai-bench Copilot bridge extension installed in VSCode</li>
+        </ul>
+    </section>
+
+    <section>
+        <h3>2. Install the bridge extension</h3>
+        <ol>
+            <li>Open VSCode</li>
+            <li>Open the command palette (<code>Cmd+Shift+P</code> / <code>Ctrl+Shift+P</code>)</li>
+            <li>Run <code>Extensions: Install from VSIX...</code></li>
+            <li>Select <code>tooling/vscode-copilot-bridge/</code> from this project</li>
+            <li>Or run: <code>cd tooling/vscode-copilot-bridge &amp;&amp; npm install &amp;&amp; npm run compile</code></li>
+        </ol>
+    </section>
+
+    <section>
+        <h3>3. Activate the bridge</h3>
+        <ol>
+            <li>Open the command palette</li>
+            <li>Run <code>AI Bench: Start Copilot Bridge</code></li>
+            <li>The bridge listens on a Unix socket at: <code th:text="${copilotSockPath}"></code></li>
+            <li>Status: <span th:class="'badge ' + (${bridgeHealthy} ? 'available' : 'unavailable')"
+                               th:text="${bridgeHealthy ? 'Bridge running' : 'Bridge not detected'}"></span></li>
+        </ol>
+    </section>
+
+    <section>
+        <h3>4. Run a benchmark with Copilot</h3>
+        <ol>
+            <li>Go to <a href="/run">Run benchmark</a></li>
+            <li>Select <strong>copilot</strong> as the solver</li>
+            <li>Choose your target bug and AppMap mode</li>
+            <li>Launch the run — the harness will route prompts through the VSCode bridge</li>
+        </ol>
+    </section>
+
+    <section>
+        <h3>5. Reviewing Copilot logs for token usage</h3>
+        <p>GitHub Copilot logs can be found in VSCode's Output panel:</p>
+        <ol>
+            <li>Open <code>View &gt; Output</code> in VSCode</li>
+            <li>Select <strong>GitHub Copilot</strong> from the dropdown</li>
+            <li>Look for entries containing <code>request.tokens</code> and <code>response.tokens</code></li>
+            <li>The bridge extension also logs token counts to its own channel: <strong>AI Bench Bridge</strong></li>
+        </ol>
+        <p>Alternatively, the harness captures token counts from each Copilot response automatically. Check the run results page for per-request token breakdowns.</p>
+    </section>
+
+    <section>
+        <h3>6. Comparing Copilot with other models</h3>
+        <p>Run the same bug with different solvers to compare:</p>
+        <ul>
+            <li><strong>Copilot</strong> via the VSCode bridge</li>
+            <li><strong>Corporate OpenAI</strong> via the Apigee gateway (configure in <a href="/llm">LLM settings</a>)</li>
+        </ul>
+        <p>The <a href="/results">results page</a> shows side-by-side metrics: pass rate, token usage, cost, patch complexity, and AppMap uplift.</p>
+    </section>
+</main>
+</body>
+</html>

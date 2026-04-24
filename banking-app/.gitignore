@@ -1,0 +1,20 @@
+.gradle/
+build/
+tmp/
+!gradle/wrapper/gradle-wrapper.jar
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+out/
+bin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AppMap
+tmp/appmap/
+*.appmap.json
+appmap.log

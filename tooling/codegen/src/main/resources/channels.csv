@@ -1,0 +1,9 @@
+code,displayName,type,deviceClass,latencyTargetMs,authStrength,supportsSpanish,supportsOffline,canOpenAccount,canCloseAccount
+WEB,Web Banking,DIGITAL,BROWSER,500,PASSWORD_2FA,true,false,true,true
+MOBILE,Mobile App,DIGITAL,SMARTPHONE,300,BIOMETRIC,true,true,true,true
+BRANCH,Branch Teller,PHYSICAL,TERMINAL,1000,ID_IN_PERSON,true,false,true,true
+ATM,ATM Network,PHYSICAL,ATM,200,CARD_PIN,true,false,false,false
+CALL_CENTER,Phone Banking,VOICE,PHONE,800,VOICE_VERIFICATION,true,false,true,true
+IVR,Interactive Voice Response,VOICE,PHONE,600,ACCOUNT_PIN,true,false,false,false
+API,Third-Party API,DIGITAL,API_CLIENT,150,OAUTH2,false,false,false,false
+KIOSK,In-Branch Kiosk,PHYSICAL,TOUCHSCREEN,400,CARD_PIN,true,false,true,false

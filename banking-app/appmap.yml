@@ -1,0 +1,7 @@
+name: omnibank
+packages:
+  - path: com.omnibank
+    exclude:
+      - com.omnibank.shared.testing
+      - com.omnibank.*.api.dto
+appmap_dir: tmp/appmap

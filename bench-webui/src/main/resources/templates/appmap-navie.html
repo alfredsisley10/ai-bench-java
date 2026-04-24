@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('AppMap Navie', ~{::main})}">
+<body>
+<main>
+    <h2>AppMap Navie — context provider setup</h2>
+    <p class="subtitle">
+        AppMap Navie is <strong>not an LLM</strong> — it's a
+        <strong>context provider</strong> that sits between the harness
+        and whichever OpenAI-compatible endpoint it's pointed at. At
+        benchmark time Navie does its own AppMap-driven retrieval, picks
+        the most relevant code + trace excerpts, then forwards a
+        tightly-focused prompt to the LLM. Configure the endpoint
+        coordinates below; the LLM itself is whatever responds at that
+        URL (typically the local Copilot bridge's OpenAI shim).
+    </p>
+
+    <div th:if="${navieTestResult != null}"
+         th:class="'status-banner ' + (${navieTestResult.success} ? 'ok' : 'error')">
+        <span th:text="${navieTestResult.message}"></span>
+    </div>
+
+    <!-- Prerequisites ------------------------------------------------------ -->
+    <section>
+        <h3>Prerequisites</h3>
+        <table>
+            <thead><tr><th>Requirement</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+            <tr>
+                <td>Copilot bridge running</td>
+                <td>
+                    <span th:if="${navieBridgeHealthy}" class="badge available">available</span>
+                    <span th:unless="${navieBridgeHealthy}" class="badge unavailable">unavailable</span>
+                </td>
+                <td>
+                    <span th:if="${navieBridgeHealthy}"
+                          th:text="'Socket live at ' + ${navieBridgeSockPath}"></span>
+                    <span th:unless="${navieBridgeHealthy}">
+                        No socket at <code th:text="${navieBridgeSockPath}"></code>.
+                        Follow the <a href="/llm#copilot">Copilot bridge setup</a> on the LLMs page.
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td>AppMap CLI installed</td>
+                <td>
+                    <span th:if="${navieCliPresent}" class="badge available">available</span>
+                    <span th:unless="${navieCliPresent}" class="badge unavailable">unavailable</span>
+                </td>
+                <td>
+                    <span th:if="${navieCliPresent}"
+                          th:text="'Found at ' + ${navieCliPath}"></span>
+                    <span th:unless="${navieCliPresent}">
+                        Install per
+                        <a href="https://appmap.io/docs/install" target="_blank" rel="noopener">appmap.io/docs/install</a>.
+                        Search order:
+                        <code>~/.appmap/bin/appmap</code>
+                        (plus <code>.exe</code>/<code>.cmd</code> on Windows),
+                        <code>%APPDATA%\AppMap\bin\</code> and
+                        <code>%LOCALAPPDATA%\AppMap\bin\</code> on Windows,
+                        then every directory on <code>PATH</code>.
+                    </span>
+                </td>
+            </tr>
+            <tr>
+                <td>Bridge OpenAI shim enabled</td>
+                <td><span class="badge" style="background:#e5e7eb">info</span></td>
+                <td>
+                    Default <code>127.0.0.1:11434</code>. Toggle / change port
+                    from the VSCode extension's webview
+                    (<em>aiBench.copilotBridge.openAiPort</em> /
+                    <em>bindAddress</em>).
+                </td>
+            </tr>
+            </tbody>
+        </table>
+        <p class="help-text" style="margin-top:0.4em">
+            <strong>Platform:</strong>
+            <span th:if="${navieIsMac}">macOS</span>
+            <span th:if="${navieIsWindows}">Windows</span>
+            <span th:unless="${navieIsMac or navieIsWindows}">Linux</span>
+            — the CLI lookup and subprocess invocation are cross-platform;
+            argv escaping for Windows <code>.cmd</code> shims is handled
+            by the Java ProcessBuilder.
+        </p>
+    </section>
+
+    <!-- Endpoint configuration -------------------------------------------- -->
+    <section>
+        <h3>
+            <span th:text="${navieConfigExists ? '✓' : '○'}" style="margin-right:0.3em"></span>
+            OpenAI endpoint coordinates
+        </h3>
+        <p class="help-text">
+            Defaults match the Copilot bridge's out-of-box settings
+            (loopback, port 11434, no auth). Override only if you've
+            changed the bridge's bind address / port or turned on
+            bearer-token auth in the VSCode extension's webview. Saved
+            configuration lands in
+            <code th:text="${navieConfigPath}"></code>.
+        </p>
+        <form method="post" action="/appmap-navie/save">
+            <label>OpenAI base URL:
+                <input name="baseUrl" type="url" required style="width:480px"
+                       th:value="${navieBaseUrl}"
+                       th:placeholder="${navieDefaultsBaseUrl}">
+            </label>
+            <p class="help-text" style="margin-top:0; margin-left:0.2em">
+                Default <code th:text="${navieDefaultsBaseUrl}"></code>
+                — change only if the bridge's
+                <em>aiBench.copilotBridge.openAiPort</em> /
+                <em>bindAddress</em> have been customized.
+            </p>
+
+            <label>Bearer token (optional):
+                <input name="apiKey" type="password" style="width:480px"
+                       th:placeholder="${navieApiKeyPresent ? '(unchanged — leave blank to keep)' : 'leave blank for loopback unauthenticated'}"
+                       autocomplete="new-password">
+            </label>
+            <p class="help-text" style="margin-top:0; margin-left:0.2em">
+                The bridge serves loopback requests
+                <strong>without auth by default</strong> — leave blank
+                for that path. To turn on auth, open the VSCode
+                extension's webview, click <em>Generate token</em>,
+                copy the <code>sk-aibench-…</code> value here, and
+                ensure the extension's <em>Auth required</em> toggle
+                is on.
+            </p>
+
+            <label>Default model:
+                <input name="defaultModel" type="text" style="width:300px"
+                       th:value="${navieDefaultModel}" placeholder="auto">
+            </label>
+            <p class="help-text" style="margin-top:0; margin-left:0.2em">
+                <code>auto</code> lets the bridge resolve to whichever
+                model Copilot picks first. Or pin a specific model id
+                from the <a href="/llm#copilot">Copilot enumeration</a>
+                (e.g. <code>gpt-4o</code>, <code>claude-3-5-sonnet</code>).
+            </p>
+
+            <div class="button-row" style="margin-top:0.5em">
+                <button type="submit" class="btn-sm">Save Navie config</button>
+            </div>
+        </form>
+    </section>
+
+    <!-- CLI smoke test ---------------------------------------------------- -->
+    <section>
+        <h3>
+            <span th:text="${navieTestResult != null and navieTestResult['success'] == true ? '✓' : '○'}" style="margin-right:0.3em"></span>
+            Verify — real AppMap CLI round-trip
+        </h3>
+        <p class="help-text">
+            Spawns the AppMap CLI twice (same binary the harness
+            invokes at benchmark time):
+        </p>
+        <ol style="margin:0.3em 0 0.5em 0">
+            <li>
+                <code>appmap --version</code> —
+                proves the binary is present and executable on this
+                host <em>(fast, &lt;2&nbsp;s)</em>.
+            </li>
+            <li>
+                <code>appmap navie "@help …"</code>
+                with <code>OPENAI_BASE_URL</code> +
+                <code>OPENAI_API_KEY</code> injected from the saved
+                config — exercises the full CLI → bridge OpenAI shim →
+                Copilot chain. The <code>@help</code> agent skips AppMap
+                retrieval so the round-trip finishes quickly.
+                <em>(up to ~75&nbsp;s)</em>
+            </li>
+        </ol>
+        <p class="help-text">
+            This is the same code path the harness takes at benchmark
+            time, so a green result here means the real
+            <em>AppMap Navie via Copilot</em> benchmark provider will work.
+        </p>
+        <form method="post" action="/appmap-navie/test">
+            <button type="submit" class="btn-sm">Test via AppMap CLI</button>
+        </form>
+    </section>
+
+    <!-- Usage hint + reset ------------------------------------------------ -->
+    <section>
+        <h3>Use it from a benchmark</h3>
+        <p class="help-text">
+            Once the rows above are green, the
+            <a href="/demo">Quick Benchmark</a> dropdown surfaces
+            <code>AppMap Navie via Copilot</code> automatically. Picking
+            it tells the harness to invoke <code>appmap navie</code>
+            against the endpoint configured here instead of calling the
+            LLM directly — see the <em>Live log</em> on a Navie run for
+            the actual routing path (look for <code>[CONTEXT]
+            Navie: …</code> lines).
+        </p>
+        <form method="post" action="/appmap-navie/reset" style="margin-top:0.5em">
+            <button type="submit" class="btn-danger btn-sm">Reset Navie config</button>
+            <span class="help-text">— clears saved coordinates and removes the persisted YAML.</span>
+        </form>
+    </section>
+</main>
+</body>
+</html>

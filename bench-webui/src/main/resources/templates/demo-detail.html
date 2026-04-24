@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Demo — ' + ${issue?.id ?: 'Not found'}, ~{::main})}">
+<body>
+<main>
+    <div th:if="${issue == null}">
+        <p class="empty-state">Issue not found.</p>
+        <p><a href="/demo">Back to demo issues</a></p>
+    </div>
+
+    <div th:if="${issue != null}">
+        <h2 th:text="${issue.id + ' — ' + issue.title}"></h2>
+
+        <div class="cards">
+            <div class="card"><span class="label">Module</span><span class="value" th:text="${issue.module}"></span></div>
+            <div class="card"><span class="label">Difficulty</span><span class="value"><span th:class="'badge ' + ${issue.difficulty}" th:text="${issue.difficulty}"></span></span></div>
+            <div class="card"><span class="label">Category</span><span class="value" th:text="${issue.category}"></span></div>
+            <div class="card"><span class="label">Oracle diff</span><span class="value" th:text="${issue.oracleDiffLines + ' lines'}"></span></div>
+        </div>
+
+        <section>
+            <h3>Git commits</h3>
+            <table>
+                <tr><th>Break branch</th><td><code th:if="${issue.breakBranch != ''}" th:text="${issue.breakBranch}"></code><span th:if="${issue.breakBranch == ''}" class="help-text">not yet created</span></td></tr>
+                <tr><th>Break commit</th><td><code th:if="${issue.breakCommit != ''}" th:text="${issue.breakCommit}"></code><span th:if="${issue.breakCommit == ''}" class="help-text">—</span></td></tr>
+                <tr><th>Fix branch</th><td><code th:if="${issue.fixBranch != ''}" th:text="${issue.fixBranch}"></code><span th:if="${issue.fixBranch == ''}" class="help-text">not yet created</span></td></tr>
+                <tr><th>Fix commit</th><td><code th:if="${issue.fixCommit != ''}" th:text="${issue.fixCommit}"></code><span th:if="${issue.fixCommit == ''}" class="help-text">—</span></td></tr>
+            </table>
+        </section>
+
+        <section>
+            <h3>Problem statement</h3>
+            <div class="problem-statement" th:text="${issue.problemStatement}"></div>
+        </section>
+
+        <section>
+            <h3>Files touched</h3>
+            <ul>
+                <li th:each="f : ${issue.filesTouched}" th:text="${f}"></li>
+            </ul>
+        </section>
+
+        <section th:if="${!issue.hints.isEmpty()}">
+            <h3>Hints</h3>
+            <ul>
+                <li th:each="h : ${issue.hints}" th:text="${h}"></li>
+            </ul>
+        </section>
+
+        <section th:if="${!issue.verificationSteps.isEmpty()}">
+            <h3>Interactive verification</h3>
+            <p class="subtitle">Walk through each step to see the bug in action, then verify the fix. Click "Run" to execute each command.</p>
+
+            <div th:each="step : ${issue.verificationSteps}" class="verification-step">
+                <div class="step-header">
+                    <span class="step-number" th:text="'Step ' + ${step.step}"></span>
+                    <strong th:text="${step.title}"></strong>
+                    <span th:if="${step.bugVisible}" class="badge HARD" style="margin-left:0.5em">bug visible</span>
+                    <span th:unless="${step.bugVisible}" class="badge EASY" style="margin-left:0.5em">bug resolved</span>
+                </div>
+                <p th:text="${step.description}"></p>
+
+                <div th:if="${step.command != null}" class="step-command">
+                    <code th:text="${step.command}"></code>
+                    <button type="button" class="btn-sm" style="margin-left:0.5em"
+                            th:attr="onclick='runStepCommand(this, \'' + ${#strings.escapeJavaScript(step.command)} + '\')'">Run</button>
+                </div>
+
+                <div th:if="${step.apiCall != null}" class="step-command">
+                    <code th:text="${step.apiCall}"></code>
+                </div>
+
+                <div class="step-output" style="display:none"></div>
+
+                <p class="step-expected">
+                    <strong>Expected:</strong> <span th:text="${step.expectedOutcome}"></span>
+                </p>
+            </div>
+        </section>
+
+        <section th:if="${issue.verificationSteps.isEmpty()}">
+            <h3>Interactive verification</h3>
+            <pre th:text="'./scripts/demo-verify.sh ' + ${issue.id}"></pre>
+            <p class="help-text">Checks out the break branch, runs tests (expect failure), then checks out fix and verifies tests pass.</p>
+        </section>
+
+        <section>
+            <h3>Downloads</h3>
+            <div class="button-row">
+                <a th:href="'/api/demo/issues/' + ${issue.id} + '/download/description'" class="btn-link">Issue description</a>
+                <a th:if="${issue.breakBranch != ''}" th:href="'/api/demo/issues/' + ${issue.id} + '/download/break'" class="btn-link" style="margin-left:0.5em">Break commit code (zip)</a>
+                <a th:if="${issue.fixBranch != ''}" th:href="'/api/demo/issues/' + ${issue.id} + '/download/tests'" class="btn-link" style="margin-left:0.5em">Fix tests only (zip)</a>
+            </div>
+            <p class="help-text" style="margin-top:0.5em">
+                Download the break code to solve offline, or download just the fix tests to verify your solution locally before submitting.
+            </p>
+        </section>
+
+        <section>
+            <h3>Submit solution</h3>
+            <p class="help-text">Submit a unified diff patch against the break commit. The grader applies the patch, runs the hidden tests from the fix commit, and scores the result.</p>
+            <textarea id="patchInput" rows="8" style="width:100%; font-family:monospace; font-size:0.85em" placeholder="Paste your unified diff patch here..."></textarea>
+            <div class="button-row">
+                <button type="button" onclick="submitPatch()">Submit for grading</button>
+            </div>
+            <div id="submitResult" style="margin-top:0.5em"></div>
+        </section>
+
+        <section>
+            <h3>Actions</h3>
+            <div class="button-row">
+                <form th:if="${issue.breakBranch != ''}" method="post" th:action="'/demo/prepare/' + ${issue.id}" style="display:inline">
+                    <button type="submit">Prepare worktree</button>
+                </form>
+                <form th:if="${issue.breakBranch != ''}" method="post" th:action="'/demo/run/' + ${issue.id}" style="display:inline; margin-left:0.5em">
+                    <input type="hidden" name="provider" value="corp-openai">
+                    <input type="hidden" name="modelId" value="corp-openai-default">
+                    <input type="hidden" name="appmapMode" value="ON_RECOMMENDED">
+                    <input type="hidden" name="seeds" value="3">
+                    <button type="submit" class="btn-secondary">Run benchmark (defaults)</button>
+                </form>
+                <span th:if="${issue.breakBranch == ''}" class="help-text">Bug branches not yet created — cannot prepare or run.</span>
+            </div>
+        </section>
+
+        <p><a href="/demo">Back to all demo issues</a></p>
+    </div>
+
+    <script>
+        function runStepCommand(btn, cmd) {
+            var outputDiv = btn.closest('.verification-step').querySelector('.step-output');
+            outputDiv.style.display = 'block';
+            outputDiv.innerHTML = '<em>Running...</em>';
+            btn.disabled = true;
+
+            fetch('/demo/exec', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'command=' + encodeURIComponent(cmd)
+            })
+            .then(r => r.json())
+            .then(data => {
+                var exitClass = data.exitCode === 0 ? 'exit-success' : 'exit-failure';
+                outputDiv.innerHTML = '<pre class="terminal-output">' + escapeHtml(data.output) + '</pre>' +
+                    '<span class="' + exitClass + '">Exit code: ' + data.exitCode + '</span>';
+                btn.disabled = false;
+                btn.textContent = 'Re-run';
+            })
+            .catch(e => {
+                outputDiv.innerHTML = '<pre class="terminal-output">Error: ' + escapeHtml(e.message) + '</pre>';
+                btn.disabled = false;
+            });
+        }
+
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.appendChild(document.createTextNode(text));
+            return div.innerHTML;
+        }
+
+        function submitPatch() {
+            var patch = document.getElementById('patchInput').value;
+            if (!patch.trim()) { alert('Please paste a patch first.'); return; }
+            var issueId = /*[[${issue?.id}]]*/ '';
+            fetch('/api/demo/issues/' + issueId + '/submit', {
+                method: 'POST',
+                headers: {'Content-Type': 'text/plain'},
+                body: patch
+            })
+            .then(r => r.json())
+            .then(data => {
+                var el = document.getElementById('submitResult');
+                if (data.error) {
+                    el.innerHTML = '<span class="exit-failure">' + escapeHtml(data.error) + '</span>';
+                } else {
+                    el.innerHTML = '<span class="exit-success">' + escapeHtml(data.message) + '</span>';
+                }
+            })
+            .catch(e => {
+                document.getElementById('submitResult').innerHTML = '<span class="exit-failure">Error: ' + escapeHtml(e.message) + '</span>';
+            });
+        }
+    </script>
+</main>
+</body>
+</html>

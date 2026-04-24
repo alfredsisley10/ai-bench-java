@@ -1,0 +1,18 @@
+environment: openshift-prod
+
+database:
+  url: "jdbc:postgresql://${DB_HOST:localhost}:5432/aibench"
+  driver: org.postgresql.Driver
+  username: "env:DB_USERNAME"
+  password: "env:DB_PASSWORD"
+
+vault:
+  enabled: true
+  address: "env:VAULT_ADDR"
+  role: ai-bench
+  authMethod: kubernetes
+  secretPath: secret/data/ai-bench/prod
+
+webui:
+  port: 8080
+  enableReadOnlyAccess: true

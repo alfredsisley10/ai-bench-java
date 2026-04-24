@@ -1,0 +1,10 @@
+name: bench-harness
+language: java
+packages:
+  - path: com.aibench.core
+  - path: com.aibench.config
+  - path: com.aibench.llm
+  - path: com.aibench.github
+  - path: com.aibench.jira
+  - path: com.aibench.builder
+  - path: com.aibench.appmap

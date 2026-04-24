@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-bench-config
+  labels:
+    app: ai-bench
+data:
+  environment: "openshift-nonprod"
+  db-host: "postgresql.ai-bench.svc.cluster.local"
+  vault-addr: "https://vault.internal.example.com"

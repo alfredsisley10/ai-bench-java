@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" th:fragment="page(title, content)">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="'ai-bench — ' + ${title}">ai-bench</title>
+    <script src="https://unpkg.com/htmx.org@2.0.2"></script>
+    <script defer src="/static/sortable-table.js"></script>
+    <link rel="stylesheet" th:href="@{/static/style.css(v=${#dates.createNow().getTime()})}" href="/static/style.css">
+</head>
+<body>
+<header>
+    <div class="header-row">
+        <h1>ai-bench-java</h1>
+        <span class="user-badge" th:if="${isAdmin}">manager</span>
+        <span class="user-badge viewer" th:unless="${isAdmin}">viewer</span>
+    </div>
+    <nav>
+        <a href="/">Dashboard</a>
+        <a href="/demo">Demo</a>
+        <a href="/results">Results</a>
+        <a th:if="${isAdmin}" href="/github">GitHub</a>
+        <a th:if="${isAdmin}" href="/jira">JIRA</a>
+        <a th:if="${isAdmin}" href="/llm">LLMs</a>
+        <a th:if="${isAdmin}" href="/appmap-navie">AppMap Navie</a>
+        <a th:if="${isAdmin}" href="/run">Run benchmark</a>
+        <a th:if="${isAdmin}" href="/proxy">Proxy</a>
+        <a href="/copilot-guide">Copilot guide</a>
+        <a href="/docs/operations-guide">Ops guide</a>
+    </nav>
+</header>
+<main th:insert="${content}">
+</main>
+</body>
+</html>

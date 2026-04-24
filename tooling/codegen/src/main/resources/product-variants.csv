@@ -1,0 +1,52 @@
+name,humanName,category,targetSegment,baseRate,minBalance,monthlyFee,feeWaiverBalance,earlyWithdrawalPenaltyDays,requiresId,eligibilityAgeMin,eligibilityAgeMax,jurisdiction
+YouthSavings,Youth Savings,SAVINGS,MINOR,0.0200,25.00,0.00,0.00,0,true,0,17,US
+StudentChecking,Student Checking,CHECKING,STUDENT,0.0010,0.00,0.00,0.00,0,true,16,25,US
+SeniorChecking,Senior 60+ Checking,CHECKING,SENIOR,0.0015,100.00,0.00,500.00,0,true,60,125,US
+HsaMoneyMarket,HSA Money Market,MONEY_MARKET,ADULT,0.0245,500.00,3.50,5000.00,0,true,18,125,US
+CdLadder12Month,12 Month CD,CERTIFICATE,ADULT,0.0425,1000.00,0.00,0.00,90,true,18,125,US
+CdLadder24Month,24 Month CD,CERTIFICATE,ADULT,0.0450,2500.00,0.00,0.00,180,true,18,125,US
+ChristmasClub,Christmas Club Savings,SAVINGS,ADULT,0.0075,10.00,0.00,0.00,365,true,18,125,US
+VeteranChecking,Veteran Rewards Checking,CHECKING,VETERAN,0.0050,0.00,0.00,0.00,0,true,18,125,US
+NonProfitChecking,Non-Profit Business Checking,CHECKING,BUSINESS,0.0025,0.00,8.00,2500.00,0,true,18,125,US
+PremierMoneyMarket,Premier Money Market,MONEY_MARKET,HIGH_NET_WORTH,0.0325,25000.00,0.00,25000.00,0,true,18,125,US
+BasicChecking,Basic Checking,CHECKING,ADULT,0.0005,0.00,12.00,1500.00,0,true,18,125,US
+EssentialChecking,Essential Checking,CHECKING,ADULT,0.0010,25.00,10.00,1000.00,0,true,18,125,US
+RewardsChecking,Rewards Checking,CHECKING,ADULT,0.0075,0.00,15.00,10000.00,0,true,18,125,US
+PrestigeChecking,Prestige Private Client Checking,CHECKING,HIGH_NET_WORTH,0.0125,0.00,0.00,100000.00,0,true,18,125,US
+TeenChecking,Teen Checking,CHECKING,MINOR,0.0010,0.00,0.00,0.00,0,true,13,17,US
+FirstAccountSavings,First Account Savings,SAVINGS,MINOR,0.0150,5.00,0.00,0.00,0,true,0,12,US
+StandardSavings,Standard Savings,SAVINGS,ADULT,0.0050,100.00,3.00,300.00,0,true,18,125,US
+HighYieldSavings,High-Yield Online Savings,SAVINGS,ADULT,0.0485,0.00,0.00,0.00,0,true,18,125,US
+EmergencyFundSavings,Emergency Fund Savings,SAVINGS,ADULT,0.0325,500.00,0.00,500.00,0,true,18,125,US
+VacationClub,Vacation Club Savings,SAVINGS,ADULT,0.0125,10.00,0.00,0.00,180,true,18,125,US
+AutoDownPaymentSavings,Auto Down Payment Savings,SAVINGS,ADULT,0.0175,100.00,0.00,0.00,0,true,18,125,US
+HomeDownPaymentSavings,Home Down Payment Savings,SAVINGS,ADULT,0.0225,500.00,0.00,0.00,0,true,18,125,US
+CdLadder6Month,6 Month CD,CERTIFICATE,ADULT,0.0400,500.00,0.00,0.00,45,true,18,125,US
+CdLadder36Month,36 Month CD,CERTIFICATE,ADULT,0.0475,2500.00,0.00,0.00,270,true,18,125,US
+CdLadder60Month,60 Month CD,CERTIFICATE,ADULT,0.0510,5000.00,0.00,0.00,365,true,18,125,US
+JumboCd12Month,Jumbo 12 Month CD,CERTIFICATE,HIGH_NET_WORTH,0.0485,100000.00,0.00,0.00,90,true,18,125,US
+NoPenaltyCd11Month,No-Penalty 11 Month CD,CERTIFICATE,ADULT,0.0350,500.00,0.00,0.00,0,true,18,125,US
+BumpUpCd24Month,Bump-Up 24 Month CD,CERTIFICATE,ADULT,0.0425,2500.00,0.00,0.00,180,true,18,125,US
+StepUpCd36Month,Step-Up 36 Month CD,CERTIFICATE,ADULT,0.0400,5000.00,0.00,0.00,270,true,18,125,US
+IndexedCd24Month,Market-Indexed 24 Month CD,CERTIFICATE,HIGH_NET_WORTH,0.0350,10000.00,0.00,0.00,180,true,18,125,US
+TraditionalIra,Traditional IRA,RETIREMENT,ADULT,0.0425,0.00,0.00,0.00,0,true,18,125,US
+RothIra,Roth IRA,RETIREMENT,ADULT,0.0425,0.00,0.00,0.00,0,true,18,125,US
+SepIra,SEP IRA,RETIREMENT,SMALL_BUSINESS,0.0425,0.00,0.00,0.00,0,true,18,125,US
+SimpleIra,SIMPLE IRA,RETIREMENT,SMALL_BUSINESS,0.0425,0.00,0.00,0.00,0,true,18,125,US
+InheritedIra,Inherited IRA,RETIREMENT,ADULT,0.0425,0.00,0.00,0.00,0,true,18,125,US
+Sep401k,Solo 401(k),RETIREMENT,SMALL_BUSINESS,0.0450,0.00,0.00,0.00,0,true,18,125,US
+CoverdellEsa,Coverdell Education Savings,EDUCATION,MINOR,0.0300,0.00,0.00,0.00,0,true,0,17,US
+Utma529,UTMA 529 Plan,EDUCATION,MINOR,0.0350,25.00,0.00,0.00,0,true,0,17,US
+SmallBizChecking,Small Business Checking,CHECKING,SMALL_BUSINESS,0.0025,100.00,15.00,3000.00,0,true,18,125,US
+SmallBizSavings,Small Business Savings,SAVINGS,SMALL_BUSINESS,0.0150,250.00,5.00,1000.00,0,true,18,125,US
+CommercialChecking,Commercial Checking,CHECKING,COMMERCIAL,0.0015,1000.00,25.00,25000.00,0,true,18,125,US
+CommercialMoneyMarket,Commercial Money Market Sweep,MONEY_MARKET,COMMERCIAL,0.0400,25000.00,15.00,100000.00,0,true,18,125,US
+CommercialCd90Day,Commercial 90-Day CD,CERTIFICATE,COMMERCIAL,0.0400,25000.00,0.00,0.00,30,true,18,125,US
+EscrowMoneyMarket,Escrow Money Market,MONEY_MARKET,COMMERCIAL,0.0350,5000.00,10.00,25000.00,0,true,18,125,US
+TrustManagedSavings,Trust Managed Savings,SAVINGS,HIGH_NET_WORTH,0.0275,50000.00,25.00,250000.00,0,true,18,125,US
+UninvestedCashSweep,Uninvested Cash Sweep,MONEY_MARKET,HIGH_NET_WORTH,0.0475,0.00,0.00,0.00,0,true,18,125,US
+FirstHomeSavings,First Home Savings Program,SAVINGS,ADULT,0.0425,100.00,0.00,0.00,0,true,18,40,US
+NewcomerChecking,Newcomer to US Checking,CHECKING,NEWCOMER,0.0050,0.00,0.00,0.00,0,true,18,125,US
+SpanishLanguageChecking,Spanish-Language Basic Checking,CHECKING,ADULT,0.0025,0.00,10.00,1500.00,0,true,18,125,US
+DigitalOnlyChecking,Digital-Only Checking,CHECKING,ADULT,0.0075,0.00,0.00,0.00,0,true,18,125,US
+OverdraftProtectedChecking,Overdraft-Protected Checking,CHECKING,ADULT,0.0010,50.00,12.00,2000.00,0,true,18,125,US

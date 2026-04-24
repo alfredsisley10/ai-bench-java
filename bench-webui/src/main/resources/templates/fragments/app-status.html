@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<body>
+<div th:fragment="appStatus" id="app-status-panel"
+     th:attr="hx-get=${appStatus == 'STARTING' ? '/demo/app/status-fragment' : ''},
+              hx-trigger=${appStatus == 'STARTING' ? 'every 3s' : 'none'},
+              hx-swap=${appStatus == 'STARTING' ? 'outerHTML' : ''}">
+    <div class="cards" style="margin-bottom:0.5em">
+        <div class="card">
+            <span class="label">App status</span>
+            <span class="value"><span th:class="'badge ' + ${appStatus}" th:text="${appStatus}"></span></span>
+        </div>
+    </div>
+    <div class="button-row">
+        <span th:if="${appStatus == 'RUNNING'}">
+            <a href="/demo/app/open" target="_blank" class="btn-link"
+               title="Opens the banking app pre-authenticated via a one-time in-memory token">
+                Open banking app
+            </a>
+            <a th:href="${appUrl + '/actuator/health'}" target="_blank" class="btn-link" style="margin-left:0.5em">Health check</a>
+            <form method="post" action="/demo/app/stop" style="display:inline; margin-left:0.5em">
+                <button type="submit" class="btn-danger">Stop</button>
+            </form>
+        </span>
+        <span th:if="${appStatus == 'STARTING'}">
+            <span class="help-text">Starting up... auto-refreshing every 3 seconds.</span>
+            <form method="post" action="/demo/app/stop" style="display:inline; margin-left:0.5em">
+                <button type="submit" class="btn-danger">Stop</button>
+            </form>
+        </span>
+        <span th:if="${appStatus == 'STOPPED' or appStatus == 'ERROR'}">
+            <form method="post" action="/demo/app/start" style="display:inline">
+                <button type="submit">Start banking app</button>
+            </form>
+        </span>
+        <a href="/demo/app/log" target="_blank" style="margin-left:0.5em" class="help-text">View log</a>
+    </div>
+
+    <div class="help-panel" style="margin-top:0.75em; padding:8px 12px; background:#f8f9fa; border-left:3px solid #6c757d; font-size:0.9em">
+        <p style="margin:0 0 6px 0">
+            <strong>Need access?</strong>
+            The WebUI delegates auth to an upstream identity proxy
+            (oauth2-proxy / SSO gateway) via <code>X-Forwarded-Email</code>.
+            Locally, <code>aibench.auth-enabled=false</code> grants every
+            request the Manager role automatically. To grant Manager rights
+            in a deployed instance, add your email to
+            <code>aibench.admin-users</code> in
+            <code>~/.ai-bench/bench-config.yaml</code> and restart the WebUI.
+        </p>
+        <p style="margin:0">
+            <strong>Operating the banking app:</strong>
+            Click <em>Start banking app</em> to launch
+            <code>./gradlew :app-bootstrap:bootRun</code> in
+            <code>banking-app/</code>; output streams to
+            <code>banking-app/tmp/bootRun.log</code>. The status badge
+            auto-refreshes while STARTING. If the badge shows ERROR,
+            <em>View log</em> for the stack trace — most failures are
+            Spring bean wiring (missing <code>@Autowired</code> on a
+            multi-constructor service) or a stale process holding port
+            8080. See the
+            <a href="/docs/operations-guide">operations guide</a> for
+            login flow, full button reference, and troubleshooting recipes.
+        </p>
+    </div>
+</div>
+</body>
+</html>

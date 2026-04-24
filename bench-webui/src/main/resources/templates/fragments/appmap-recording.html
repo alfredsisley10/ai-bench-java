@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<body>
+
+<!-- Empty state — no recording yet -->
+<div th:fragment="empty" id="appmap-recording-panel"></div>
+
+<!-- Live status panel; htmx polls every 2s while RUNNING. -->
+<div th:fragment="panel" id="appmap-recording-panel"
+     th:attr="hx-get=${rec.status.name() == 'RUNNING' ? '/demo/appmap/recording/' + rec.id + '/panel' : ''},
+              hx-trigger=${rec.status.name() == 'RUNNING' ? 'every 2s' : 'none'},
+              hx-swap=${rec.status.name() == 'RUNNING' ? 'outerHTML' : ''}">
+    <section class="recording-panel">
+        <h3 style="margin-top:0">
+            <span th:class="'badge ' + ${rec.status}" th:text="${rec.status}"></span>
+            Recording <code th:text="${rec.id}"></code>
+        </h3>
+
+        <div class="cards" style="margin:0.5em 0">
+            <div class="card">
+                <span class="label">Started</span>
+                <span class="value" th:text="${#temporals.format(rec.startedAt, 'HH:mm:ss')}"></span>
+            </div>
+            <div class="card">
+                <span class="label">Elapsed</span>
+                <span class="value" th:text="${rec.elapsedSeconds} + ' s'"></span>
+            </div>
+            <div class="card">
+                <span class="label">PID</span>
+                <span class="value" th:text="${rec.pid}"></span>
+            </div>
+            <div class="card">
+                <span class="label">Traces (now / before)</span>
+                <span class="value">
+                    <span th:text="${currentTraceCount}"></span>
+                    /
+                    <span th:text="${rec.tracesBefore}"></span>
+                </span>
+            </div>
+            <div class="card" th:if="${rec.exitCode != null}">
+                <span class="label">Exit code</span>
+                <span class="value" th:text="${rec.exitCode}"></span>
+            </div>
+        </div>
+
+        <p style="margin:0 0 0.5em 0">
+            <strong>Command:</strong>
+            <code th:text="${#strings.listJoin(rec.command, ' ')}"></code>
+        </p>
+        <p th:if="${rec.module != null and !rec.module.isEmpty()}" style="margin:0 0 0.5em 0">
+            <strong>Module:</strong> <code th:text="${rec.module}"></code>
+        </p>
+        <p th:if="${rec.testFilter != null and !rec.testFilter.isEmpty()}" style="margin:0 0 0.5em 0">
+            <strong>Test filter:</strong> <code th:text="${rec.testFilter}"></code>
+        </p>
+
+        <details open>
+            <summary><strong>Live log tail</strong> (last 40 lines, refreshes every 2s)</summary>
+            <pre class="log-tail" th:text="${logTail}"></pre>
+        </details>
+
+        <div style="margin-top:0.75em">
+            <span th:if="${rec.status.name() == 'RUNNING'}" class="help-text">
+                Recording is in flight — the log above auto-refreshes. Traces
+                only appear in the list below when the gradle run completes
+                (or each module's test task ends).
+            </span>
+            <span th:if="${rec.status.name() == 'SUCCEEDED'}" class="status-banner ok"
+                  style="display:inline-block; padding:4px 8px">
+                ✓ Completed in <span th:text="${rec.elapsedSeconds}"></span>s.
+                <strong th:if="${rec.newTraceCount != null}">
+                    +<span th:text="${rec.newTraceCount}"></span> new traces
+                </strong>
+                — reloading page to refresh the trace list…
+            </span>
+            <!-- When the recording transitions to SUCCEEDED the inner
+                 fragment swap brings in this script; auto-reload the
+                 whole /demo/appmap page so the available-traces table
+                 shows the newly written files. Guarded so it only fires
+                 the first time, not on every subsequent poll. -->
+            <script th:if="${rec.status.name() == 'SUCCEEDED'}">
+                if (!window.__appmapReloadFired) {
+                    window.__appmapReloadFired = true;
+                    setTimeout(function () { window.location.reload(); }, 1500);
+                }
+            </script>
+            <span th:if="${rec.status.name() == 'FAILED'}" class="status-banner error"
+                  style="display:inline-block; padding:4px 8px">
+                ✗ Recording failed (exit <span th:text="${rec.exitCode}"></span>).
+                Inspect the log above for the gradle stack trace.
+            </span>
+
+            <form th:if="${rec.status.name() == 'RUNNING'}"
+                  th:action="'/demo/appmap/recording/' + ${rec.id} + '/stop'"
+                  method="post" style="display:inline; margin-left:0.75em">
+                <button type="submit" class="btn-danger btn-sm">Stop recording</button>
+            </form>
+        </div>
+    </section>
+
+    <style>
+        section.recording-panel {
+            border:1px solid #d6d8db; border-left:4px solid #007bff;
+            padding:12px 16px; margin: 0.5em 0; background:#f8f9fa;
+            border-radius: 3px;
+        }
+        pre.log-tail {
+            background:#212529; color:#e9ecef; padding:10px;
+            font-size: 0.8em; max-height: 320px; overflow:auto;
+            white-space: pre-wrap;
+        }
+        .badge.RUNNING   { background:#007bff; color:#fff; }
+        .badge.SUCCEEDED { background:#28a745; color:#fff; }
+        .badge.FAILED    { background:#dc3545; color:#fff; }
+    </style>
+</div>
+</body>
+</html>

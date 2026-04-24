@@ -1,0 +1,80 @@
+{
+  "name": "copilot-bridge",
+  "displayName": "ai-bench Copilot Bridge",
+  "description": "Exposes the user's GitHub Copilot chat entitlement over a local Unix socket and an optional OpenAI-compatible HTTP endpoint, with a usage-stats dashboard.",
+  "version": "0.2.8",
+  "publisher": "ai-bench",
+  "license": "MIT",
+  "icon": "icon.png",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "aiBench.copilotBridge.start", "title": "ai-bench: Start Copilot Bridge" },
+      { "command": "aiBench.copilotBridge.stop", "title": "ai-bench: Stop Copilot Bridge" },
+      { "command": "aiBench.copilotBridge.openStats", "title": "ai-bench: Open Bridge Stats" },
+      { "command": "aiBench.copilotBridge.clearStats", "title": "ai-bench: Clear Bridge Stats" },
+      { "command": "aiBench.copilotBridge.startOpenAiEndpoint", "title": "ai-bench: Start Local OpenAI Endpoint" },
+      { "command": "aiBench.copilotBridge.stopOpenAiEndpoint", "title": "ai-bench: Stop Local OpenAI Endpoint" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiBenchCopilotBridge",
+          "title": "Copilot Bridge",
+          "icon": "media/bridge-activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiBenchCopilotBridge": [
+        {
+          "id": "aiBenchCopilotBridge.controls",
+          "name": "ai-bench Copilot Bridge"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "ai-bench Copilot Bridge",
+      "properties": {
+        "aiBench.copilotBridge.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "AF_UNIX socket the bridge listens on. Leave empty for the platform default — /tmp/ai-bench-copilot.sock on macOS/Linux, %TEMP%\\ai-bench-copilot.sock on Windows 10 1803+. Must match AI_BENCH_COPILOT_SOCK on the bench-webui side if overridden."
+        },
+        "aiBench.copilotBridge.openAiPort": {
+          "type": "number",
+          "default": 11434,
+          "description": "TCP port the OpenAI-compatible HTTP endpoint binds to when started. Default matches Ollama so existing OpenAI/Ollama clients pick it up."
+        },
+        "aiBench.copilotBridge.openAiBindAddress": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Address the OpenAI-compatible endpoint binds to. Loopback only by default — set to 0.0.0.0 only behind your own ingress."
+        },
+        "aiBench.copilotBridge.openAiAutoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start the OpenAI-compatible endpoint automatically when VSCode launches."
+        },
+        "aiBench.copilotBridge.openAiAuthRequired": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require Bearer-token auth on the OpenAI endpoint. Default false — when bound to loopback (default), an unauthenticated endpoint is safe. Always true in effect when bound off-loopback."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "npm run compile && npx @vscode/vsce package --out copilot-bridge.vsix --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.32.0",
+    "typescript": "^5.4.0"
+  }
+}

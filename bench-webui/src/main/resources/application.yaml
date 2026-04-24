@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: bench-webui
+  thymeleaf:
+    cache: false
+  mvc:
+    static-path-pattern: /static/**
+
+server:
+  port: ${WEBUI_PORT:7777}
+
+aibench:
+  admin-users: ${AI_BENCH_ADMIN_USERS:}
+  enable-read-only: ${AI_BENCH_ENABLE_READ_ONLY:true}
+  auth-enabled: ${AI_BENCH_AUTH_ENABLED:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.aibench: INFO

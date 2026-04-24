@@ -1,0 +1,31 @@
+id: BUG-0008
+title: "Payment idempotency key collision returns wrong payment id"
+module: payments-hub
+difficulty: HARD
+category: CONCURRENCY
+
+breakCommit: bug/BUG-0008/break
+fixCommit:   bug/BUG-0008/fix
+
+filesTouched:
+  - payments-hub/src/main/java/com/omnibank/payments/internal/PaymentServiceImpl.java
+oracleDiffLines: 4
+
+hiddenTest:
+  class: com.omnibank.payments.internal.PaymentServiceImplIT
+  method: concurrent_submit_with_same_idempotency_key_returns_same_payment_id
+  file: payments-hub/src/test/java/com/omnibank/payments/internal/PaymentServiceImplIT.java
+
+problemStatement: |
+  Two concurrent submit() calls with the same idempotency key race past the
+  initial findByIdempotencyKey check and both create Payment entities,
+  violating the unique index on the second insert. The second caller should
+  simply return the payment id created by the first. Add a narrow catch for
+  DataIntegrityViolationException that re-reads the payment and returns its
+  id.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.payments.internal.PaymentServiceImplIT
+  traceFocus:
+    - PaymentServiceImpl.submit

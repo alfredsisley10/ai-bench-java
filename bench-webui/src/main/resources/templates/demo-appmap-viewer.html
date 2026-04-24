@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('AppMap viewer', ~{::main})}">
+<body>
+<main>
+    <p><a href="/demo/appmap">&larr; back to traces</a></p>
+    <h2 th:text="${trace.displayName}"></h2>
+    <p class="help-text">
+        <code th:text="${trace.relativePath}"></code>
+        · <span th:text="${#numbers.formatInteger(trace.eventCount, 1, 'COMMA')} + ' events'"></span>
+        · <span th:text="${#numbers.formatInteger(trace.sqlCount, 1, 'COMMA')} + ' SQL'"></span>
+        · <span th:text="${#numbers.formatInteger(trace.httpCount, 1, 'COMMA')} + ' HTTP'"></span>
+        · <span th:text="${#numbers.formatInteger(trace.sizeBytes / 1024, 1, 'COMMA')} + ' KB'"></span>
+    </p>
+
+    <p class="help-text" style="background:#f8f9fa; padding:8px 12px; border-radius:3px"
+       th:if="${!officialViewerAvailable}">
+        <strong>Official AppMap viewer not vendored yet.</strong>
+        The same Vue.js viewer that VS Code, the Confluence app, and
+        app.land use is shipped in
+        <code>@appland/components</code>, but it depends on Vue, Vuex,
+        marked, mermaid, sql-formatter, highlight.js, dom-to-svg,
+        dompurify, and ~10 other packages — too much for a CDN
+        drop-in. Run <code>./scripts/vendor-appmap-viewer.sh</code> from
+        the repo root to bundle everything into a single browser-ready
+        IIFE under <code>static/appmap/components.iife.js</code>; the
+        viewer auto-detects it and replaces the fallback below with
+        the full interactive experience (filter, sequence diagram,
+        drill-down, pan/zoom). Until then, download the raw JSON and
+        open it in the AppMap VS Code extension — that's the same
+        viewer.
+    </p>
+    <p>
+        <a th:href="'/demo/appmap/raw?id=' + ${trace.id}" download
+           class="btn-link">Download raw .appmap.json</a>
+    </p>
+
+    <!-- Official viewer mount point — only rendered when the vendored
+         bundle is present. The bundle exposes window.AppMapComponents
+         (esbuild --global-name) which we drive from a tiny init script. -->
+    <section th:if="${officialViewerAvailable}" id="appmap-viewer-section">
+        <h3 style="display:flex; align-items:center; gap:0.75em">
+            Interactive AppMap viewer
+            <button type="button" id="appmap-fullscreen-btn" class="btn-sm"
+                    style="margin-left:auto" onclick="window.__appmapToggleFullscreen()">
+                ⛶ Fullscreen
+            </button>
+        </h3>
+        <div id="appmap-viewer-mount" style="height:700px; width:100%;
+             border:1px solid #d6d8db; border-radius:3px; overflow:hidden;
+             background:#1a1a1a"></div>
+        <script src="/static/appmap/components.iife.js"></script>
+        <details style="margin-top:0.5em">
+            <summary class="help-text" style="cursor:pointer">
+                Viewer diagnostics (click to expand)
+            </summary>
+            <pre id="appmap-viewer-debug" style="background:#fff3cd; padding:8px;
+                 font-size:0.8em; max-height:240px; overflow:auto; margin-top:0.5em"></pre>
+        </details>
+        <script th:inline="javascript">
+            (async function () {
+                const id = /*[[${trace.id}]]*/ '';
+                const mount = document.getElementById('appmap-viewer-mount');
+                const dbg = document.getElementById('appmap-viewer-debug');
+                const log = (msg) => { dbg.textContent += msg + '\n'; console.log('[appmap]', msg); };
+
+                const resp = await fetch('/demo/appmap/raw?id=' + encodeURIComponent(id));
+                if (!resp.ok) {
+                    log('FAIL: trace fetch HTTP ' + resp.status);
+                    return;
+                }
+                const data = await resp.json();
+                log('trace JSON loaded: ' + (resp.headers.get('content-length') || data.events?.length + ' events'));
+
+                const ns = window.AppMapComponents;
+                if (!ns || !ns.Vue || !ns.VVsCodeExtension) {
+                    log('FAIL: bundle missing exports');
+                    return;
+                }
+                const Vue = ns.Vue;
+                const Viewer = ns.VVsCodeExtension;
+                log('exports: ' + Object.keys(ns).slice(0, 20).join(', '));
+
+                // Mount the viewer.
+                let app;
+                try {
+                    app = new Vue({
+                        el: mount,
+                        render: function (h) { return h(Viewer); }
+                    });
+                    window.__appmapApp = app;
+                    log('Vue root mounted; children=' + app.$children.length);
+                } catch (e) {
+                    log('FAIL mount: ' + e.message);
+                    return;
+                }
+
+                // Find the Vuex store. It might live on the root, on a
+                // child, or only via internal references inside the
+                // component options.
+                let store = app.$store;
+                if (!store && app.$children[0]) store = app.$children[0].$store;
+                if (!store) {
+                    // Walk descendants looking for $store.
+                    const walk = (node) => {
+                        if (node && node.$store) return node.$store;
+                        for (const c of (node?.$children || [])) {
+                            const found = walk(c);
+                            if (found) return found;
+                        }
+                        return null;
+                    };
+                    store = walk(app);
+                }
+                if (!store) {
+                    log('FAIL: no $store found on Vue tree.');
+                    return;
+                }
+                window.__appmapStore = store;
+                log('found $store; state keys: ' + Object.keys(store.state).join(', '));
+                log('mutations: ' + Object.keys(store._mutations || {}).join(', '));
+                log('appMap before commit: ' + (store.state.appMap ? 'present' : 'null') +
+                    ' events=' + (store.state.appMap?.events?.length ?? 'n/a'));
+
+                // VVsCodeExtension carries an isLoading data flag that
+                // only flips to false from inside its own loadData(json)
+                // method. That method commits setAppMapData AND
+                // initializes saved filters AND clears the loading
+                // spinner. Calling store.commit('setAppMapData', ...)
+                // alone leaves the spinner up forever.
+                const viewer = app.$children[0];
+                if (!viewer) {
+                    log('FAIL: no child component found on root');
+                    return;
+                }
+                if (typeof viewer.loadData !== 'function') {
+                    log('FAIL: child has no loadData method. ' +
+                        'Methods: ' + Object.keys(viewer.$options.methods || {}).join(', '));
+                    return;
+                }
+                try {
+                    const result = viewer.loadData(data);
+                    if (result && typeof result.then === 'function') {
+                        result.then(
+                            () => {
+                                log('loadData(promise) resolved; isLoading=' + viewer.isLoading);
+                                pingResize();
+                            },
+                            (e) => log('FAIL loadData rejected: ' + e.message)
+                        );
+                    } else {
+                        pingResize();
+                    }
+                    log('loadData() called; isLoading=' + viewer.isLoading +
+                        ' events=' + (store.state.appMap?.events?.length ?? '?'));
+                } catch (e) {
+                    log('FAIL loadData: ' + e.message + '\n' + e.stack);
+                }
+
+                // The dependency-map and sequence-diagram views measure
+                // their container with offsetWidth/clientWidth on mount /
+                // activated. With <keep-alive> + v-if isActive on each tab,
+                // switching to Dependency Map / Sequence Diagram triggers
+                // the inner v-diagram-component / v-diagram-sequence
+                // mounted hook fresh — but in our embed the parent layout
+                // can settle late, leaving the SVG 0×0. Two mitigations:
+                //   (1) Subscribe to the store's setView mutation; on
+                //       view change, fire a window resize and bump the
+                //       diagram's renderKey-watching $store.state.appMap
+                //       to force a full re-render via its watch handler.
+                //   (2) Use a MutationObserver on the mount: any DOM
+                //       subtree change in the viewer fires resize after
+                //       a tick.
+                // Walk the Vue tree, calling renderDiagram() (or the
+                // closest equivalent) on every diagram-style component
+                // we find. The dependency-map and sequence-diagram
+                // components both expose a renderDiagram method; calling
+                // it after the tab is fully visible re-runs the SVG
+                // sizing against the correct container dimensions.
+                function rerenderDiagrams(reason) {
+                    let count = 0, repos = 0;
+                    const walk = (node) => {
+                        if (!node) return;
+                        const name = node.$options?.name || '';
+                        if (typeof node.renderDiagram === 'function') {
+                            try {
+                                node.renderDiagram();
+                                count++;
+                                // renderDiagram() replaces componentDiagram
+                                // inside a $nextTick; defer reposition so we
+                                // act on the new instance, not the old.
+                                Vue.nextTick(() => repositionDiagram(node));
+                                setTimeout(() => repositionDiagram(node), 200);
+                            } catch (e) {
+                                log('renderDiagram on ' + name + ' failed: ' + e.message);
+                            }
+                        }
+                        for (const child of (node.$children || [])) walk(child);
+                    };
+
+                    // The d3 zoom math centers content vertically: for a
+                    // 42px-tall sparse diagram in a 764px-tall .appmap, it
+                    // emits translate(0, 361) — pushing the diagram below
+                    // the visible viewport. Override with a top-aligned
+                    // transform that puts the content at a small margin so
+                    // it's always in view, regardless of how few nodes the
+                    // trace has.
+                    function repositionDiagram(node) {
+                        const inst = node.componentDiagram;
+                        if (!inst || !inst.container || !inst.container.contentElement) return;
+                        const c = inst.container;
+                        const content = c.contentElement;
+                        const parent = c.element;
+                        if (!parent) return;
+                        const ph = parent.clientHeight, pw = parent.clientWidth;
+                        const ch = content.offsetHeight, cw = content.offsetWidth;
+                        if (ph === 0 || ch === 0) return;
+
+                        // For sparse diagrams (content much smaller than
+                        // parent), the d3 fitViewport math centers vertically
+                        // and pushes the SVG off the bottom of the visible
+                        // viewport. Re-route through the d3 zoom API so the
+                        // updated transform survives subsequent zoom events
+                        // (writing style.transform directly gets clobbered
+                        // by the next d3 zoom tick).
+                        if (ch < ph * 0.6 || cw < pw * 0.6) {
+                            try {
+                                // scaleTo(1) resets zoom; translateTo
+                                // anchors content at the given point. Use
+                                // (cw/2, ch/2) so the content's center
+                                // lands at the parent's top-left + padding.
+                                if (typeof c.scaleTo === 'function') c.scaleTo(1);
+                                if (typeof c.translateTo === 'function') {
+                                    // translateTo args: x, y, point=null
+                                    c.translateTo(cw / 2 + 20, ch / 2 + 20);
+                                }
+                                repos++;
+                            } catch (e) {
+                                log('zoom-api reposition failed: ' + e.message);
+                            }
+                        }
+
+                        // The container emits 'postrender' after fitViewport
+                        // — listen to it so we re-apply our reposition after
+                        // d3 runs its centering math.
+                        if (inst.on && !inst.__benchHookInstalled) {
+                            inst.__benchHookInstalled = true;
+                            inst.on('postrender', () => {
+                                setTimeout(() => repositionDiagram(node), 0);
+                            });
+                        }
+                    }
+
+                    walk(app);
+                    log('rerenderDiagrams (' + reason + '): ' + count + ' renderDiagram, ' + repos + ' repositioned');
+                }
+
+                store.subscribe((mutation) => {
+                    if (mutation.type === 'setView') {
+                        log('setView → ' + mutation.payload);
+                        pingResize();
+                        // Wait for Vue to swap tab content and the new
+                        // tab to be visible, then re-measure + re-render
+                        // every diagram in the tree.
+                        Vue.nextTick(() => {
+                            setTimeout(() => rerenderDiagrams('setView'), 50);
+                            setTimeout(() => rerenderDiagrams('setView+200'), 200);
+                        });
+                    }
+                });
+
+                const mo = new MutationObserver(() => pingResize());
+                mo.observe(mount, { childList: true, subtree: true });
+
+                function pingResize() {
+                    [50, 200, 500].forEach(delay => {
+                        setTimeout(() => {
+                            try { window.dispatchEvent(new Event('resize')); } catch (_) {}
+                        }, delay);
+                    });
+                }
+            })();
+
+            // Fullscreen toggle: pin the viewer section to the viewport
+            // so SVG-rendered views (dependency map, sequence diagram)
+            // get the full window width to lay out into. Re-fire resize
+            // on toggle so components re-measure.
+            window.__appmapToggleFullscreen = function () {
+                const section = document.getElementById('appmap-viewer-section');
+                const mount = document.getElementById('appmap-viewer-mount');
+                const btn = document.getElementById('appmap-fullscreen-btn');
+                if (!section.classList.contains('appmap-fullscreen')) {
+                    section.classList.add('appmap-fullscreen');
+                    btn.textContent = '✕ Exit fullscreen';
+                    document.body.style.overflow = 'hidden';
+                    mount.style.height = 'calc(100vh - 80px)';
+                } else {
+                    section.classList.remove('appmap-fullscreen');
+                    btn.textContent = '⛶ Fullscreen';
+                    document.body.style.overflow = '';
+                    mount.style.height = '700px';
+                }
+                // Let the layout settle, then re-measure.
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
+            };
+
+            // Esc key exits fullscreen.
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' &&
+                    document.getElementById('appmap-viewer-section')?.classList.contains('appmap-fullscreen')) {
+                    window.__appmapToggleFullscreen();
+                }
+            });
+        </script>
+        <style>
+            section#appmap-viewer-section.appmap-fullscreen {
+                position: fixed;
+                inset: 0;
+                z-index: 9999;
+                background: #1a1a1a;
+                margin: 0;
+                padding: 12px 16px;
+                overflow: auto;
+            }
+            section#appmap-viewer-section.appmap-fullscreen h3 {
+                color: #fff;
+            }
+
+            /* AppMap viewer dark-mode overrides for the parameters /
+               entry / context / return value panels in the details
+               sidebar. The viewer ships with no explicit background
+               on these elements — it inherits from the host (VS Code
+               provides a dark theme); inside our embed the user-agent
+               default for `code` and table cells leaks a white box. */
+            #app .event-params code,
+            #app .event-params .table-01 code,
+            #app .event-params .table-01 li,
+            #app .event-params .table-01 strong,
+            #app .event-params .table-01 i,
+            #app .table-01 code,
+            #app .table-01 li {
+                background: transparent !important;
+                color: #eaeaea !important;
+            }
+            #app .event-params .table-01 code,
+            #app .table-01 code {
+                background: rgba(255,255,255,0.06) !important;
+                padding: 1px 4px;
+                border-radius: 3px;
+            }
+            #app .event-params .table-01 strong,
+            #app .table-01 strong {
+                color: #f0e0a8 !important;
+            }
+            #app .event-params .table-01 i,
+            #app .table-01 i {
+                color: #8fb3d8 !important;
+            }
+
+            /* Bare <code> elements anywhere under #app inherit a near-white
+               (#f4f6fa) background + cyan/teal foreground from a global app
+               rule that assumes a light host theme. Force every code pill
+               and readonly form input to a dark surface so parameter
+               values, return values, and source snippets are readable in
+               our embed. */
+            #app code {
+                background-color: #2a2f3e !important;
+                color: #79c8be !important;
+                padding: 2px 6px;
+                border-radius: 3px;
+                border: 1px solid #3d4456;
+            }
+            #app input[readonly], #app input[type="text"] {
+                background-color: #2a2f3e !important;
+                color: #79c8be !important;
+                border-color: #3d4456 !important;
+            }
+            /* The .details-panel-event__pair value containers and any pre
+               blocks default to a light surface in the bundled CSS. */
+            #app .details-panel-event pre,
+            #app .details-panel-event__value,
+            #app .v-details-panel-list-pairs li > *:last-child,
+            #app [class*="-pair"] > *:last-child {
+                background-color: transparent !important;
+            }
+
+            /* Dependency-map sizing fix.
+               The bundled CSS sets `.diagram-component{width:100%;height:100%}`
+               but does NOT size `.appmap` (the inner zoom-target div).
+               `.appmap` defaults to content height — ~117px when populated
+               with the d3 zoom controls + a small SVG. The fitViewport
+               math then centers the SVG in this collapsed 117px box and
+               places it off-screen. Force `.appmap` and `.appmap__content`
+               to fill the diagram-component box so centering math operates
+               on the full available area. */
+            #app .diagram-component,
+            #app .diagram-component > .appmap {
+                width: 100% !important;
+                height: 100% !important;
+                min-height: 600px;
+                position: relative;
+            }
+            /* Make `.tab-content` fill the parent so `.diagram-component`'s
+               `height:100%` resolves to the viewer's full 700px box. */
+            #app .tab-content {
+                height: 100% !important;
+                min-height: 600px;
+            }
+
+            /* Dependency-map dark-theme node colors. The bundled CSS
+               for `.appmap--theme-dark` only sets `overflow:hidden`,
+               leaving SVG node `rect.fill` / `text.fill` at the d3
+               default of black. On our dark embed that paints
+               black-on-black — the diagram is technically rendered
+               but invisible. Force readable fills + strokes. */
+            #app .appmap--theme-dark .node rect,
+            #app .appmap--theme-dark .node ellipse,
+            #app .appmap--theme-dark .node polygon {
+                fill: #2d3447 !important;
+                stroke: #5d6478 !important;
+                stroke-width: 1.2px !important;
+            }
+            #app .appmap--theme-dark .node text,
+            #app .appmap--theme-dark .node tspan,
+            #app .appmap--theme-dark .nodeLabel {
+                fill: #e0e6ed !important;
+                color: #e0e6ed !important;
+            }
+            #app .appmap--theme-dark .cluster rect {
+                fill: rgba(255, 255, 255, 0.04) !important;
+                stroke: #4d5468 !important;
+                stroke-width: 1px !important;
+            }
+            #app .appmap--theme-dark .cluster text,
+            #app .appmap--theme-dark .clusterLabel,
+            #app .appmap--theme-dark .clusterLabel text {
+                fill: #aab2c0 !important;
+                color: #aab2c0 !important;
+            }
+            #app .appmap--theme-dark .edgePath path,
+            #app .appmap--theme-dark .edgePath line {
+                stroke: #7d8498 !important;
+                stroke-width: 1.5px !important;
+            }
+            #app .appmap--theme-dark .edgePath marker path,
+            #app .appmap--theme-dark marker path {
+                fill: #7d8498 !important;
+                stroke: #7d8498 !important;
+            }
+            /* Edge labels (call counts) too. */
+            #app .appmap--theme-dark .edgeLabel {
+                background-color: transparent !important;
+                color: #d0d6e0 !important;
+            }
+            #app .appmap--theme-dark .edgeLabel text {
+                fill: #d0d6e0 !important;
+            }
+        </style>
+    </section>
+
+    <section th:if="${!officialViewerAvailable}">
+        <h3>Call tree (server-rendered fallback)</h3>
+        <p class="help-text">
+            Inline preview rendered from the same JSON. Each row is one
+            event; depth shows nesting (max 80 levels). SQL and HTTP
+            events are highlighted.
+        </p>
+        <p th:if="${flat.isEmpty()}" class="help-text">No events recorded.</p>
+        <div class="appmap-flat" th:if="${!flat.isEmpty()}">
+            <div th:each="row : ${flat}"
+                 th:class="'row depth-' + ${row.depth} + ' kind-' + ${row.kind}"
+                 th:style="'padding-left:' + (${row.depth} * 14) + 'px'">
+                <span th:class="'kind kind-' + ${row.kind}" th:text="${row.kind}"></span>
+                <span class="label" th:text="${row.label}"></span>
+                <span th:if="${row.elapsedMs != null}" class="help-text"
+                      th:text="' [' + ${#numbers.formatDecimal(row.elapsedMs, 1, 2)} + ' ms]'"></span>
+                <pre th:if="${row.sqlText != null}" class="sql"
+                     th:text="${row.sqlText}"></pre>
+            </div>
+        </div>
+    </section>
+
+    <style>
+        .appmap-flat .row {
+            border-left: 1px dotted #ccc;
+            margin: 1px 0; padding-top:1px; padding-bottom:1px;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 0.85em;
+        }
+        .appmap-flat .row.kind-SQL  { background:#fff8e1; }
+        .appmap-flat .row.kind-HTTP { background:#e6f6fb; }
+        .kind { display:inline-block; min-width: 3.5em; font-size: 0.75em;
+                font-weight: 600; padding: 0 4px; border-radius: 3px;
+                margin-right: 6px; text-align:center; vertical-align: 1px; }
+        .kind-CALL { background:#e9ecef; color:#495057; }
+        .kind-SQL  { background:#fff3cd; color:#856404; }
+        .kind-HTTP { background:#d1ecf1; color:#0c5460; }
+        pre.sql { margin: 4px 0 4px 1.5em; padding:6px 8px;
+                  background:#f8f9fa; font-size:0.95em;
+                  white-space: pre-wrap; }
+    </style>
+</main>
+</body>
+</html>

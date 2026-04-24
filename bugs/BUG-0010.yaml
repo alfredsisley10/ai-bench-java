@@ -1,0 +1,27 @@
+id: BUG-0010
+title: "Wire cutoff does not account for Fed-observed holidays"
+module: payments-hub
+difficulty: EASY
+category: LOGIC
+
+breakCommit: bug/BUG-0010/break
+fixCommit:   bug/BUG-0010/fix
+
+filesTouched:
+  - payments-hub/src/main/java/com/omnibank/payments/wire/WireCutoffPolicy.java
+oracleDiffLines: 2
+
+hiddenTest:
+  class: com.omnibank.payments.wire.WireCutoffPolicyTest
+  method: wire_cutoff_closed_on_fed_holiday
+  file: payments-hub/src/test/java/com/omnibank/payments/wire/WireCutoffPolicyTest.java
+
+problemStatement: |
+  WireCutoffPolicy.isFedwireOpen checks weekday but not holiday status. On
+  a Fed-observed holiday (e.g. Juneteenth) the current implementation would
+  accept a wire for same-day settlement even though Fedwire is closed. Use
+  BusinessCalendar.isBusinessDay to guard the check.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.payments.wire.WireCutoffPolicyTest

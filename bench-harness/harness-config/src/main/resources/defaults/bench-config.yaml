@@ -1,0 +1,42 @@
+environment: local
+dataDir: "~/.ai-bench"
+
+database:
+  url: "jdbc:h2:file:~/.ai-bench/db/bench;MODE=PostgreSQL"
+  driver: org.h2.Driver
+  username: bench
+  password: bench
+
+llm:
+  defaultSolver: corp-openai
+  availableModels: []
+  corpOpenAiConfigPath: "~/.ai-bench/corp-openai.yaml"
+  copilotSocketPath: /tmp/ai-bench-copilot.sock
+
+github:
+  tokenSource: "env:GITHUB_TOKEN"
+  apiUrl: https://api.github.com
+
+jira:
+  baseUrl: ""
+  email: ""
+  apiTokenSource: "keystore:jira-api-token"
+  defaultProject: ""
+
+proxy:
+  httpsProxy: ""
+  noProxy: ""
+  truststorePath: ""
+  truststorePasswordSource: ""
+
+vault:
+  enabled: false
+  address: ""
+  role: ai-bench
+  authMethod: kubernetes
+  secretPath: secret/data/ai-bench
+
+webui:
+  port: 7777
+  adminUsers: []
+  enableReadOnlyAccess: true

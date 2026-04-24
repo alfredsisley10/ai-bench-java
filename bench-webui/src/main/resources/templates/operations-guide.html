@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Operations guide', ~{::main})}">
+<body>
+<main>
+    <h2>ai-bench operations guide</h2>
+    <p class="subtitle">
+        How to log in, drive the demo banking app, and recover from common
+        startup issues. Source of truth lives at
+        <code>docs/operations-guide.md</code>.
+    </p>
+
+    <nav class="toc">
+        <strong>On this page:</strong>
+        <a href="#login">Logging in</a> ·
+        <a href="#bankingapp">Driving the demo banking app</a> ·
+        <a href="#appmap">Recording AppMaps</a> ·
+        <a href="#troubleshooting">Troubleshooting</a>
+    </nav>
+
+    <section id="login">
+        <h3>Logging in</h3>
+        <p>The WebUI does <strong>not</strong> ship its own login form.
+            Authentication is delegated to an upstream identity proxy
+            (oauth2-proxy, Apache mod_auth, the corporate SSO gateway, etc.)
+            that sets one of these request headers on every forwarded
+            request:</p>
+        <table>
+            <thead><tr><th>Header</th><th>Meaning</th></tr></thead>
+            <tbody>
+                <tr><td><code>X-Forwarded-Email</code></td>
+                    <td>Authenticated user's email address</td></tr>
+                <tr><td><code>X-Auth-Email</code></td>
+                    <td>(Alternate header name, same meaning)</td></tr>
+            </tbody>
+        </table>
+
+        <p>Roles are derived from email + server-side configuration:</p>
+        <table>
+            <thead><tr><th>Role</th><th>Granted when</th><th>Capabilities</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Manager</strong></td>
+                    <td>Email is in the <code>aibench.admin-users</code> allowlist</td>
+                    <td>Full read + write (start/stop, run benchmarks, record AppMaps)</td></tr>
+                <tr><td>Viewer</td>
+                    <td>Authenticated but not in the allowlist; <code>enable-read-only=true</code></td>
+                    <td>Read-only browsing of <code>/demo</code>, <code>/results</code>, etc.</td></tr>
+                <tr><td>Anonymous</td>
+                    <td>Not authenticated and read-only is disabled</td>
+                    <td>403 on every page</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Local development (no auth)</h4>
+        <p>When the WebUI is started with <code>aibench.auth-enabled=false</code>
+            (the default in <code>application.yaml</code> for local runs), every
+            request is treated as <strong>Manager</strong> automatically — there
+            is nothing to log in to. This is the mode the WebUI runs in when
+            launched from your laptop via <code>./gradlew bootRun</code>.</p>
+
+        <h4>Adding a Manager email</h4>
+        <p>Edit <code>~/.ai-bench/bench-config.yaml</code> (or the
+            environment-specific overlay):</p>
+        <pre>webui:
+  port: 7777
+  adminUsers:
+    - alice@example.com
+    - bob@example.com
+  enableReadOnlyAccess: true</pre>
+        <p>Restart the WebUI. The new emails take effect immediately.</p>
+
+        <h4>Logging out</h4>
+        <p>Logout is whatever your upstream identity proxy provides — the
+            WebUI itself has no <code>/logout</code> endpoint. For oauth2-proxy
+            this is typically <code>/oauth2/sign_out</code>.</p>
+    </section>
+
+    <section id="bankingapp">
+        <h3>Driving the demo banking app</h3>
+        <p>The "App controls" panel on <a href="/demo">/demo</a> is the
+            operator surface for the demo banking app (Omnibank). It boots an
+            embedded Spring Boot process on port <strong>8080</strong> in a
+            detached JVM owned by the WebUI.</p>
+        <table>
+            <thead><tr><th>Button</th><th>What it does</th></tr></thead>
+            <tbody>
+                <tr><td>Start banking app</td>
+                    <td>Runs <code>./gradlew :app-bootstrap:bootRun</code> in
+                        <code>banking-app/</code>. Output streams to
+                        <code>banking-app/tmp/bootRun.log</code>.</td></tr>
+                <tr><td>Stop</td>
+                    <td>SIGTERMs the bootRun process; if that fails,
+                        <code>lsof</code> + <code>kill -9</code> anything
+                        listening on :8080.</td></tr>
+                <tr><td>Open banking app</td>
+                    <td>Opens <code>http://localhost:8080</code> — the customer
+                        portal API root.</td></tr>
+                <tr><td>Health check</td>
+                    <td>Hits <code>/actuator/health</code> and shows the JSON.</td></tr>
+                <tr><td>View log</td>
+                    <td>Tails <code>banking-app/tmp/bootRun.log</code>.</td></tr>
+            </tbody>
+        </table>
+
+        <p>Status badges:</p>
+        <ul>
+            <li><strong>STOPPED</strong> — no process, no listener on :8080.</li>
+            <li><strong>STARTING</strong> — process alive, health check still
+                failing. Auto-refreshes every 3s.</li>
+            <li><strong>RUNNING</strong> — process alive,
+                <code>/actuator/health</code> returns 200.</li>
+            <li><strong>ERROR</strong> — process exited non-zero. Check the
+                log.</li>
+        </ul>
+    </section>
+
+    <section id="appmap">
+        <h3>Recording AppMaps</h3>
+        <p>The <a href="/demo/appmap">/demo/appmap</a> page lets a Manager
+            kick off an AppMap recording against the demo banking-app and
+            browse the resulting traces.</p>
+        <ul>
+            <li><strong>Record from tests</strong> runs
+                <code>./gradlew test</code> with
+                <code>ORG_GRADLE_PROJECT_appmap_enabled=true</code>. Traces
+                land under <code>banking-app/**/tmp/appmap/*.appmap.json</code>
+                and appear in the list when the gradle run completes (reload
+                the page).</li>
+            <li>The viewer renders a server-side call tree with SQL and HTTP
+                events highlighted. Click a node to expand it.</li>
+        </ul>
+    </section>
+
+    <section id="troubleshooting">
+        <h3>Troubleshooting</h3>
+
+        <h4>Banking app shows ERROR right after Start</h4>
+        <p>Check <code>banking-app/tmp/bootRun.log</code> (also accessible
+            via the View log link). Common causes:</p>
+        <ul>
+            <li><code>No default constructor found</code> for a Spring bean
+                — the bean has multiple constructors and none are marked
+                <code>@Autowired</code>. Add the annotation to the constructor
+                Spring should use.</li>
+            <li><code>Cannot subclass final class …</code> — a
+                <code>@Service</code>/<code>@Repository</code> class is
+                <code>final</code>, blocking Spring's CGLIB proxy. Drop the
+                <code>final</code> modifier.</li>
+            <li><strong>Port 8080 already in use</strong> — something else is
+                bound. Run <code>lsof -i :8080</code> to find the offender;
+                the Stop button will attempt to kill it for you.</li>
+        </ul>
+
+        <h4>WebUI shows "Read-only access" 403</h4>
+        <p>You authenticated but your email is not in
+            <code>aibench.admin-users</code>. Add it to the config (see
+            <a href="#login">Adding a Manager email</a>) and restart.</p>
+
+        <h4>Gradle daemon hangs after a kill</h4>
+        <p>The detached bootRun JVM may leave a Gradle daemon orphaned.
+            Clean it up with <code>./gradlew --stop</code> from the
+            <code>banking-app/</code> directory.</p>
+    </section>
+
+    <style>
+        nav.toc { background:#f8f9fa; padding:8px 12px; border-radius:4px;
+                  margin: 0.5em 0 1em; font-size: 0.95em; }
+        nav.toc a { margin: 0 0.25em; }
+        section { margin-top: 1.5em; }
+        h4 { margin-top: 1em; }
+    </style>
+</main>
+</body>
+</html>

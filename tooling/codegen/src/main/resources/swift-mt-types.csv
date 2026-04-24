@@ -1,0 +1,47 @@
+mt,category,name,description,isPayment,isStatement,requiresSettlement,hasBeneficiary,typicalAmount
+MT101,1,Request for Transfer,Customer initiated batch transfer request,true,false,true,true,10000
+MT102,1,Multiple Customer Credit Transfer,Bulk customer transfers,true,false,true,true,50000
+MT103,1,Single Customer Credit Transfer,Single customer credit transfer,true,false,true,true,25000
+MT104,1,Direct Debit Request,Direct debit collection request,true,false,true,true,500
+MT107,1,General Direct Debit,General direct debit message,true,false,true,true,500
+MT110,1,Advice of Cheque,Advice of cheque issued,true,false,false,true,1000
+MT111,1,Request for Stop Payment,Stop payment request,false,false,false,false,0
+MT112,1,Status of Stop Payment,Response to stop payment,false,false,false,false,0
+MT200,2,Financial Institution Transfer For Own Account,Bank-to-bank own-account transfer,true,false,true,false,1000000
+MT202,2,General Financial Institution Transfer,Bank-to-bank general transfer,true,false,true,false,500000
+MT202COV,2,Cover Payment,Cover payment for MT103,true,false,true,true,250000
+MT203,2,Multiple FI Transfer For Own Account,Multiple own-account bank transfers,true,false,true,false,2000000
+MT205,2,Financial Institution Transfer Execution,Bank transfer execution,true,false,true,false,500000
+MT210,2,Notice to Receive,Pre-advice of incoming funds,false,false,false,false,0
+MT290,2,Advice of Charges Interest and Other,Fee and charge advice,false,false,false,false,25
+MT300,3,Forex Confirmation,FX trade confirmation,false,false,true,false,100000
+MT304,3,Advice/Instruction of a Third Party Deal,FX third party deal,false,false,true,false,100000
+MT320,3,Fixed Loan/Deposit Confirmation,Loan/deposit trade confirmation,false,false,true,false,500000
+MT330,3,Call/Notice Loan/Deposit Confirmation,Call money trade confirmation,false,false,true,false,1000000
+MT340,3,Forward Rate Agreement Confirmation,FRA confirmation,false,false,true,false,5000000
+MT360,3,Single Currency Interest Rate Swap,IRS confirmation,false,false,true,false,10000000
+MT400,4,Advice of Payment,Collection payment advice,false,false,true,true,5000
+MT410,4,Acknowledgement,Collection acknowledgement,false,false,false,true,0
+MT412,4,Advice of Acceptance,Draft acceptance advice,false,false,false,true,0
+MT420,4,Tracer,Collection tracer,false,false,false,true,0
+MT422,4,Advice of Fate and Request for Instructions,Fate advice,false,false,false,true,0
+MT450,4,Cash Letter Credit Advice,Cash letter credit,false,false,true,true,10000
+MT700,7,Issue of a Documentary Credit,Documentary LC issuance,false,false,true,true,500000
+MT701,7,Issue of a Documentary Credit (Extension),LC extension,false,false,false,true,0
+MT705,7,Pre-Advice of a Documentary Credit,LC pre-advice,false,false,false,true,0
+MT707,7,Amendment to a Documentary Credit,LC amendment,false,false,false,true,0
+MT710,7,Advice of a Third Bank's Documentary Credit,Third-bank LC advice,false,false,false,true,0
+MT720,7,Transfer of a Documentary Credit,LC transfer,false,false,true,true,100000
+MT730,7,Acknowledgement,LC acknowledgement,false,false,false,true,0
+MT740,7,Authorisation to Reimburse,Reimbursement authorisation,false,false,true,true,500000
+MT750,7,Advice of Discrepancy,LC document discrepancy,false,false,false,true,0
+MT754,7,Advice of Payment/Acceptance/Negotiation,Payment advice under LC,false,false,true,true,100000
+MT760,7,Issue of a Demand Guarantee / Standby Letter of Credit,Bank guarantee issuance,false,false,true,true,1000000
+MT798,7,Proprietary Message,Trade services proprietary,false,false,false,true,0
+MT900,9,Confirmation of Debit,Debit confirmation,false,true,false,false,10000
+MT910,9,Confirmation of Credit,Credit confirmation,false,true,false,false,10000
+MT920,9,Request Message,Request for account statement,false,true,false,false,0
+MT940,9,Customer Statement Message,Customer account statement,false,true,false,false,0
+MT941,9,Balance Report,Balance report,false,true,false,false,0
+MT942,9,Interim Statement,Interim balance report,false,true,false,false,0
+MT950,9,Statement Message,Bank-to-bank statement,false,true,false,false,0

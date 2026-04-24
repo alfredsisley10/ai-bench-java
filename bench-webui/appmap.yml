@@ -1,0 +1,6 @@
+name: bench-webui
+language: java
+packages:
+  - path: com.aibench.webui
+    exclude:
+      - WebuiApplicationKt

@@ -1,0 +1,239 @@
+// Local OpenAI-compatible HTTP server backed by Copilot. Exposes
+// /v1/models and /v1/chat/completions on a configurable port (default
+// 11434 — same as Ollama's default, so OpenAI-compatible clients that
+// detect Ollama by port pick this up automatically).
+//
+// Auth: bound to 127.0.0.1 only by default, no token. Bind address is
+// configurable so you can put it behind your own ingress.
+
+import * as vscode from 'vscode';
+import * as http from 'http';
+import * as crypto from 'crypto';
+import { UsageTracker } from './usage';
+
+let server: http.Server | undefined;
+
+// In-memory auth state. Intentionally NOT persisted to disk, nor to
+// VSCode globalState — a deliberate choice so a shared dev machine
+// can't leak the token via ~/.vscode/settings.json or similar. Cleared
+// on VSCode restart. The operator regenerates via the WebView.
+//
+// Default: no auth required. The HTTP server still refuses unauth
+// requests when the bind address isn't loopback, so this is safe in
+// the common (default) loopback configuration.
+let authState: { token: string | null; required: boolean } = {
+    token: null,
+    required: false,
+};
+
+/** Current bind address the server was started with (null if stopped). */
+let currentBindAddress: string | null = null;
+
+export interface AuthStateView {
+    /** True when a token exists (the value is exposed via a separate
+     *  call so "view token" can be a distinct click). */
+    tokenPresent: boolean;
+    /** Whether the server enforces auth. If false AND the server is
+     *  bound to a loopback address, requests are allowed unauthenticated. */
+    required: boolean;
+    /** True when the current bind address is loopback — informs the UI
+     *  whether "allow anonymous" is even a safe option. */
+    bindIsLoopback: boolean;
+    /** Masked preview of the token (first 8 chars) for the UI. */
+    tokenPreview: string;
+}
+
+export function getAuthState(): AuthStateView {
+    return {
+        tokenPresent: authState.token !== null,
+        required: authState.required,
+        bindIsLoopback: currentBindAddress ? isLoopback(currentBindAddress) : true,
+        tokenPreview: authState.token
+            ? authState.token.slice(0, 8) + '…' + authState.token.slice(-4)
+            : '',
+    };
+}
+
+/** Returns the raw token so the UI's "copy / reveal" button can use it.
+ *  Scope-limited to the local extension host only. */
+export function getAuthToken(): string | null { return authState.token; }
+
+export function setAuthToken(token: string | null): void {
+    authState.token = token && token.trim() ? token.trim() : null;
+}
+
+export function setAuthRequired(required: boolean): void {
+    authState.required = !!required;
+}
+
+/** Mint a fresh random token. Format matches OpenAI's convention
+ *  (`sk-…`) so clients that validate the prefix accept it. */
+export function generateAuthToken(): string {
+    const bytes = crypto.randomBytes(32).toString('base64url');
+    authState.token = 'sk-aibench-' + bytes;
+    return authState.token;
+}
+
+function isLoopback(address: string): boolean {
+    const a = (address || '').toLowerCase();
+    return a === '127.0.0.1' || a === '::1' || a === 'localhost';
+}
+
+interface ServerArgs {
+    port: number;
+    bindAddress: string;
+    pickModel: (req: { model?: string }) => Promise<vscode.LanguageModelChat | undefined>;
+    enumerateModels: () => Promise<Array<{ id: string }>>;
+    tracker: UsageTracker;
+}
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        req.on('error', reject);
+    });
+}
+
+function send(res: http.ServerResponse, status: number, body: object): void {
+    const data = JSON.stringify(body);
+    res.writeHead(status, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+    });
+    res.end(data);
+}
+
+export async function startOpenAiServer(args: ServerArgs): Promise<void> {
+    if (server) {
+        vscode.window.showInformationMessage('OpenAI-compatible endpoint already running.');
+        return;
+    }
+
+    server = http.createServer(async (req, res) => {
+        try {
+            // CORS for browser-based clients.
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Headers', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+            if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+
+            // Bearer-token auth. Requests are allowed without a token
+            // only when (a) auth is explicitly disabled AND (b) the
+            // endpoint is bound to a loopback address — so a misconfig
+            // can never expose an unauthenticated endpoint on a LAN.
+            const bindLoopback = isLoopback(args.bindAddress);
+            const allowAnonymous = !authState.required && bindLoopback;
+            if (!allowAnonymous) {
+                if (!authState.token) {
+                    return send(res, 503, {
+                        error: {
+                            message: 'Auth required but no token is configured — set one via the VSCode extension',
+                            type: 'no_auth_configured',
+                        },
+                    });
+                }
+                const headerAuth = String(req.headers['authorization'] ?? '');
+                if (headerAuth !== `Bearer ${authState.token}`) {
+                    res.setHeader('WWW-Authenticate', 'Bearer realm="ai-bench-copilot"');
+                    return send(res, 401, {
+                        error: {
+                            message: 'Missing or invalid Authorization: Bearer <token>',
+                            type: 'unauthorized',
+                        },
+                    });
+                }
+            }
+
+            const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+            const client = String(req.headers['x-client-id'] || req.socket.remoteAddress || 'openai-http');
+
+            if (req.method === 'GET' && (url.pathname === '/v1/models' || url.pathname === '/models')) {
+                const models = await args.enumerateModels();
+                return send(res, 200, {
+                    object: 'list',
+                    data: models.map(m => ({
+                        id: m.id, object: 'model', created: 0, owned_by: 'github-copilot'
+                    })),
+                });
+            }
+
+            if (req.method === 'POST' && (url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions')) {
+                const raw = await readBody(req);
+                const body = raw ? JSON.parse(raw) : {};
+                const model = await args.pickModel({ model: body.model });
+                if (!model) {
+                    return send(res, 503, {
+                        error: { message: 'no Copilot model available — start the bridge and grant consent', type: 'no_model' }
+                    });
+                }
+
+                const inputMessages = (body.messages ?? []).map((m: any) =>
+                    m.role === 'assistant'
+                        ? vscode.LanguageModelChatMessage.Assistant(m.content)
+                        : vscode.LanguageModelChatMessage.User(m.content));
+                const promptText = (body.messages ?? []).map((m: any) => String(m.content ?? '')).join('\n');
+
+                const token = new vscode.CancellationTokenSource().token;
+                const resp = await model.sendRequest(inputMessages, {}, token);
+                let content = '';
+                for await (const frag of resp.text) content += frag;
+
+                args.tracker.record({
+                    modelId: model.id, client,
+                    promptText, completionText: content,
+                    via: 'openai-http',
+                });
+
+                return send(res, 200, {
+                    id: 'chatcmpl-' + Date.now().toString(36),
+                    object: 'chat.completion',
+                    created: Math.floor(Date.now() / 1000),
+                    model: model.id,
+                    choices: [{
+                        index: 0,
+                        message: { role: 'assistant', content },
+                        finish_reason: 'stop',
+                    }],
+                    // usage fields are approximations, see /llm panel for details
+                    usage: {
+                        prompt_tokens: Math.ceil(promptText.length / 4),
+                        completion_tokens: Math.ceil(content.length / 4),
+                        total_tokens: Math.ceil((promptText.length + content.length) / 4),
+                        approximation: 'char-based ~4 chars/token',
+                    },
+                });
+            }
+
+            return send(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}`, type: 'not_found' } });
+        } catch (e: any) {
+            send(res, 500, { error: { message: String(e?.message ?? e), type: 'internal_error' } });
+        }
+    });
+
+    currentBindAddress = args.bindAddress;
+    await new Promise<void>((resolve, reject) => {
+        server!.once('error', reject);
+        server!.listen(args.port, args.bindAddress, () => {
+            const authDesc = authState.required
+                ? (authState.token ? 'with Bearer auth' : 'with Bearer auth (token NOT SET yet — endpoint will 503)')
+                : (isLoopback(args.bindAddress)
+                    ? 'unauthenticated (loopback-only)'
+                    : 'unauthenticated BUT NOT ON LOOPBACK — refusing requests');
+            vscode.window.showInformationMessage(
+                `OpenAI-compatible endpoint listening on http://${args.bindAddress}:${args.port}/v1/ — ${authDesc}`);
+            resolve();
+        });
+    });
+}
+
+export function stopOpenAiServer(): void {
+    if (!server) return;
+    server.close();
+    server = undefined;
+    currentBindAddress = null;
+    vscode.window.showInformationMessage('OpenAI-compatible endpoint stopped.');
+}
+
+export function isOpenAiServerRunning(): boolean { return server !== undefined; }

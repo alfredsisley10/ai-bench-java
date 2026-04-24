@@ -1,0 +1,52 @@
+name,humanName,subsystem,retiredYear,replacementName,ticketRef
+LegacyAchProcessor,Legacy ACH Processor,payments,2019,AchPaymentProcessor,MIG-1042
+LegacyWireGateway,Legacy Wire Gateway,payments,2018,WirePaymentProcessor,MIG-1051
+LegacyCheckClearingService,Legacy Check Clearing Service,payments,2020,CheckClearingProcessor,MIG-1078
+LegacyP2PRouter,Legacy P2P Router,payments,2021,P2PPaymentProcessor,MIG-1090
+LegacyBatchPostingEngine,Legacy Batch Posting Engine,ledger,2018,PostingService,MIG-1102
+LegacyTrialBalanceCalculator,Legacy Trial Balance Calculator,ledger,2019,TrialBalanceEngine,MIG-1110
+LegacyJournalImporter,Legacy Journal Importer,ledger,2020,JournalEntryProposalService,MIG-1118
+LegacyFxRevaluator,Legacy FX Revaluator,ledger,2022,CurrencyRevaluationEngine,MIG-1124
+LegacyCustomerProfileService,Legacy Customer Profile Service,accounts,2018,ConsumerAccountService,MIG-2001
+LegacyAccountOpenWizard,Legacy Account Open Wizard,accounts,2019,AccountOpeningOrchestrator,MIG-2010
+LegacyFeeAssessor,Legacy Fee Assessor,accounts,2021,AccountFeeEngine,MIG-2025
+LegacyDormancyScanner,Legacy Dormancy Scanner,accounts,2020,AccountStateMachine,MIG-2031
+LegacyKycChecker,Legacy KYC Checker,compliance,2018,KycWorkflowEngine,MIG-3001
+LegacyOfacScreener,Legacy OFAC Screener,compliance,2019,SanctionsScreeningService,MIG-3008
+LegacySarFiler,Legacy SAR Filer,compliance,2020,AmlTransactionMonitor,MIG-3015
+LegacyCtrAggregator,Legacy CTR Aggregator,compliance,2021,CurrencyTransactionReporter,MIG-3022
+LegacyFraudRulesEngine,Legacy Fraud Rules Engine,fraud,2018,CardFraudRuleEvaluator,MIG-4001
+LegacyVelocityMonitor,Legacy Velocity Monitor,fraud,2019,VelocityCheckEngine,MIG-4008
+LegacyChargebackProcessor,Legacy Chargeback Processor,fraud,2020,CardDisputeManager,MIG-4015
+LegacyDeviceFingerprintService,Legacy Device Fingerprint Service,fraud,2022,DeviceTrustEvaluator,MIG-4022
+LegacyCallReportBuilder,Legacy Call Report Builder,reg-reporting,2019,FfiecCallReportGenerator,MIG-5001
+LegacyHmdaExporter,Legacy HMDA Exporter,reg-reporting,2020,HmdaReportGenerator,MIG-5008
+LegacyCcarSimulator,Legacy CCAR Simulator,reg-reporting,2021,Ccar5YearProjection,MIG-5015
+LegacyLcrCalculator,Legacy LCR Calculator,reg-reporting,2022,LcrReportGenerator,MIG-5022
+LegacyStatementRenderer,Legacy Statement Renderer,statements,2018,StatementGenerator,MIG-6001
+LegacyEStatementSender,Legacy E-Statement Sender,statements,2020,StatementDeliveryService,MIG-6008
+LegacyArchiveService,Legacy Archive Service,statements,2019,StatementArchiveService,MIG-6015
+LegacyPreferencesPortal,Legacy Preferences Portal,statements,2021,StatementPreferencesManager,MIG-6022
+LegacyCardAuthGateway,Legacy Card Auth Gateway,cards,2018,CardAuthorizationEngine,MIG-7001
+LegacyTokenVault,Legacy Token Vault,cards,2019,CardTokenizationService,MIG-7008
+LegacySettlementBatcher,Legacy Settlement Batcher,cards,2020,CardSettlementProcessor,MIG-7015
+LegacyRewardsCalculator,Legacy Rewards Calculator,cards,2021,CardRewardsCalculator,MIG-7022
+LegacyVarEngine,Legacy VaR Engine,risk,2019,ValueAtRiskCalculator,MIG-8001
+LegacyStressTestRunner,Legacy Stress Test Runner,risk,2020,StressTestHarness,MIG-8008
+LegacyExposureMonitor,Legacy Exposure Monitor,risk,2021,ExposureLimitEnforcer,MIG-8015
+LegacyCounterpartyScorer,Legacy Counterparty Scorer,risk,2022,CounterpartyRiskScorer,MIG-8022
+LegacyNotificationDispatcher,Legacy Notification Dispatcher,notifications,2018,NotificationDispatcher,MIG-9001
+LegacyEmailSender,Legacy Email Sender,notifications,2019,EmailDeliveryService,MIG-9008
+LegacyPushService,Legacy Push Service,notifications,2020,PushNotificationService,MIG-9015
+LegacySmsGateway,Legacy SMS Gateway,notifications,2021,SmsDeliveryService,MIG-9022
+LegacyAuditWriter,Legacy Audit Writer,audit,2018,AuditEventWriter,MIG-9501
+LegacyAuditQueryService,Legacy Audit Query Service,audit,2020,AuditEventReader,MIG-9508
+LegacyBatchScheduler,Legacy Batch Scheduler,batch,2018,BatchJobOrchestrator,MIG-9601
+LegacyEodCloseRunner,Legacy EOD Close Runner,batch,2019,EndOfDayCloseManager,MIG-9608
+LegacyReconciliationDriver,Legacy Reconciliation Driver,batch,2020,LedgerReconciliationService,MIG-9615
+LegacyFileTransferAgent,Legacy File Transfer Agent,integration,2018,SecureFileTransferService,MIG-9701
+LegacyMqBridge,Legacy MQ Bridge,integration,2019,MessagingBridge,MIG-9708
+LegacyMainframeAdapter,Legacy Mainframe Adapter,integration,2020,MainframeIntegration,MIG-9715
+LegacyCobolBridge,Legacy COBOL Bridge,integration,2021,LegacyMainframeBridge,MIG-9722
+LegacySoapServiceFacade,Legacy SOAP Service Facade,integration,2022,RestServiceFacade,MIG-9729
+LegacyXmlImporter,Legacy XML Importer,integration,2018,JsonImporter,MIG-9736

@@ -1,0 +1,26 @@
+id: BUG-0006
+title: "Loan state machine skips FUNDED when transitioning from APPROVED to ACTIVE"
+module: lending-corporate
+difficulty: EASY
+category: STATE_MACHINE
+
+breakCommit: bug/BUG-0006/break
+fixCommit:   bug/BUG-0006/fix
+
+filesTouched:
+  - lending-corporate/src/main/java/com/omnibank/lending/corporate/api/LoanStatus.java
+oracleDiffLines: 1
+
+hiddenTest:
+  class: com.omnibank.lending.corporate.api.LoanStatusTest
+  method: approved_cannot_go_directly_to_active
+  file: lending-corporate/src/test/java/com/omnibank/lending/corporate/api/LoanStatusTest.java
+
+problemStatement: |
+  LoanStatus.canTransitionTo(APPROVED → ACTIVE) currently returns true but
+  should return false — a loan must pass through FUNDED first so the
+  disbursement posting is recorded. Remove the illegal transition.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.lending.corporate.api.LoanStatusTest

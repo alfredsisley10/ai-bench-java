@@ -1,0 +1,30 @@
+id: BUG-0002
+title: "Money division silently truncates on non-terminating quotient"
+module: shared-domain
+difficulty: EASY
+category: NUMERIC
+
+breakCommit: bug/BUG-0002/break
+fixCommit:   bug/BUG-0002/fix
+
+filesTouched:
+  - shared-domain/src/main/java/com/omnibank/shared/domain/Money.java
+oracleDiffLines: 1
+
+hiddenTest:
+  class: com.omnibank.shared.domain.MoneyTest
+  method: division_does_not_throw_on_non_terminating
+  file: shared-domain/src/test/java/com/omnibank/shared/domain/MoneyTest.java
+
+problemStatement: |
+  Money.dividedBy currently throws ArithmeticException when the result cannot
+  be represented exactly (e.g. 100 / 3). Banker's rounding should be used at
+  a scale of currency.minorUnits + 4 to avoid truncation and still survive
+  non-terminating quotients. Fix Money.dividedBy to specify the scale and
+  rounding mode explicitly.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.shared.domain.MoneyTest
+  traceFocus:
+    - Money.dividedBy

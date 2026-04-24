@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Demo', ~{::main})}">
+<body>
+<main>
+    <h2>Sample banking app (Omnibank)</h2>
+    <p class="subtitle">Select a demo issue to prepare the banking app at the bug's break commit, then run benchmark tests against it.</p>
+
+    <section>
+        <h3>Banking app</h3>
+        <div class="cards">
+            <div class="card">
+                <span class="label">Location</span>
+                <span class="value" style="font-size:0.9em" th:text="${bankingAppPath}"></span>
+            </div>
+            <div class="card">
+                <span class="label">Repository</span>
+                <span class="value" style="font-size:0.9em" th:text="${bankingAppRepo}"></span>
+            </div>
+            <div class="card">
+                <span class="label">Baseline commit</span>
+                <span class="value" th:text="${baselineCommit != '' ? baselineCommit : 'N/A'}"></span>
+            </div>
+            <div class="card">
+                <span class="label">Demo issues</span>
+                <span class="value" th:text="${#lists.size(issues)}">12</span>
+            </div>
+        </div>
+
+        <h4 style="margin-top:1em">Codebase size</h4>
+        <div class="cards">
+            <div class="card"><span class="label">Modules</span><span class="value" th:text="${#numbers.formatInteger(stats.modules, 1, 'COMMA')}">25</span></div>
+            <div class="card"><span class="label">Java source files</span><span class="value" th:text="${#numbers.formatInteger(stats.javaFiles, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Lines of code</span><span class="value" th:text="${#numbers.formatInteger(stats.linesOfCode, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Test files</span><span class="value" th:text="${#numbers.formatInteger(stats.testFiles, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">DB migrations</span><span class="value" th:text="${#numbers.formatInteger(stats.migrationFiles, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Total size</span><span class="value" th:text="${#numbers.formatDecimal(stats.totalSizeMb, 1, 1)} + ' MB'">0 MB</span></div>
+        </div>
+
+        <h4 style="margin-top:1em">Architecture complexity</h4>
+        <div class="cards">
+            <div class="card"><span class="label">Spring services</span><span class="value" th:text="${#numbers.formatInteger(stats.springServices, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">JPA entities</span><span class="value" th:text="${#numbers.formatInteger(stats.jpaEntities, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">REST endpoints</span><span class="value" th:text="${#numbers.formatInteger(stats.restEndpoints, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">JMS topics</span><span class="value" th:text="${#numbers.formatInteger(stats.jmsTopics, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">JMS queues</span><span class="value" th:text="${#numbers.formatInteger(stats.jmsQueues, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Event stores</span><span class="value" th:text="${#numbers.formatInteger(stats.eventStores, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Cache regions</span><span class="value" th:text="${#numbers.formatInteger(stats.cacheRegions, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Circuit breakers</span><span class="value" th:text="${#numbers.formatInteger(stats.circuitBreakers, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Saga orchestrators</span><span class="value" th:text="${#numbers.formatInteger(stats.sagaOrchestrators, 1, 'COMMA')}">0</span></div>
+        </div>
+
+        <h4 style="margin-top:1em">App controls</h4>
+        <div th:replace="~{fragments/app-status :: appStatus}"></div>
+
+        <p class="help-text" style="margin-top:0.5em">
+            The banking app has its own git repository (<span th:text="${bankingAppRepo}"></span>) with separate commit history.
+            When running, it serves the customer portal and admin console APIs at <code th:text="${appUrl}"></code>.
+        </p>
+    </section>
+
+    <div th:if="${runStatus != null}" th:class="'status-banner ' + (${runStatus.success == false} ? 'error' : 'ok')">
+        <strong th:text="${runStatus.phase}"></strong>: <span th:text="${runStatus.detail}"></span>
+    </div>
+
+    <!-- Live benchmark-run panel. htmx polls /demo/run/{id}/panel
+         every second while running, then stops once terminal. -->
+    <section id="live-run" th:if="${activeRunId != null}">
+        <h3>Active benchmark run
+            <span class="help-text" style="font-weight:normal">— live status (auto-refreshes)</span>
+        </h3>
+        <div th:attr="hx-get='/demo/run/' + ${activeRunId} + '/panel'"
+             hx-trigger="load"
+             hx-swap="outerHTML">
+            <p class="help-text">Loading run status…</p>
+        </div>
+    </section>
+
+    <section th:if="${recentRuns != null and !recentRuns.isEmpty()}">
+        <h3>Recent benchmark runs</h3>
+        <table>
+            <thead><tr><th>Run</th><th>Issue</th><th>Model</th><th>Status</th><th>Pass / total</th><th>Duration</th><th>Cost</th></tr></thead>
+            <tbody>
+                <tr th:each="r : ${recentRuns}">
+                    <td><a th:href="'/demo#live-run'" onclick="return loadRun('${r.id}')"><code th:text="${r.id}"></code></a></td>
+                    <td th:text="${r.issueId}"></td>
+                    <td th:text="${r.modelId}"></td>
+                    <td>
+                        <span th:class="'badge ' + (${r.status.name() == 'PASSED'} ? 'available'
+                                                  : (${r.status.name() == 'FAILED' or r.status.name() == 'ERRORED'} ? 'unavailable'
+                                                  : 'partial'))"
+                              th:text="${r.status.name()}"></span>
+                    </td>
+                    <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
+                    <td th:text="${(r.durationMs / 1000) + 's'}"></td>
+                    <td th:text="${'$' + #numbers.formatDecimal(r.stats.estimatedCostUsd, 1, 6, 'POINT')}"></td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section>
+        <h3>Demo issues
+            <span class="help-text" id="demo-issues-count" style="font-weight:normal; font-size:0.85em"></span>
+        </h3>
+        <p class="help-text" style="margin-top:-0.25em">
+            Click any column header to sort (asc → desc → off). Use the
+            per-column filter inputs below the headers to narrow rows.
+            All filtering and sorting is client-side.
+        </p>
+        <table id="demo-issues-table" class="sortable-table"
+               data-count-target="#demo-issues-count">
+            <thead>
+            <tr class="sort-row">
+                <th data-sort-key="id">ID <span class="sort-indicator"></span></th>
+                <th data-sort-key="title">Title <span class="sort-indicator"></span></th>
+                <th data-sort-key="module">Module <span class="sort-indicator"></span></th>
+                <th data-sort-key="difficulty"
+                    data-sort-order="EASY,MEDIUM,HARD">Difficulty <span class="sort-indicator"></span></th>
+                <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
+                <th data-sort-key="break">Break code <span class="sort-indicator"></span></th>
+                <th data-sort-key="fix">Fix tests <span class="sort-indicator"></span></th>
+                <th>Description</th>
+                <th></th>
+            </tr>
+            <tr class="filter-row">
+                <th><input type="text" data-filter-col="0" placeholder="filter ID"></th>
+                <th><input type="text" data-filter-col="1" placeholder="filter title"></th>
+                <th><input type="text" data-filter-col="2" placeholder="filter module"></th>
+                <th><input type="text" data-filter-col="3" placeholder="EASY/MED/HARD"></th>
+                <th><input type="text" data-filter-col="4" placeholder="filter category"></th>
+                <th><input type="text" data-filter-col="5" placeholder="commit/pending"></th>
+                <th><input type="text" data-filter-col="6" placeholder="commit/pending"></th>
+                <th></th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="issue : ${issues}"
+                th:attr="data-id=${issue.id},
+                         data-title=${issue.title},
+                         data-module=${issue.module},
+                         data-difficulty=${issue.difficulty},
+                         data-category=${issue.category},
+                         data-break=${issue.breakCommit},
+                         data-fix=${issue.fixCommit}">
+                <td><a th:href="'/demo/' + ${issue.id}" th:text="${issue.id}"></a></td>
+                <td th:text="${issue.title}"></td>
+                <td th:text="${issue.module}"></td>
+                <td><span th:class="'badge ' + ${issue.difficulty}" th:text="${issue.difficulty}"></span></td>
+                <td th:text="${issue.category}"></td>
+                <td>
+                    <a th:if="${issue.breakCommit != ''}" th:href="'/api/demo/issues/' + ${issue.id} + '/download/break'" th:title="'Download break commit ' + ${issue.breakCommit}"><code th:text="${issue.breakCommit}"></code></a>
+                    <span th:if="${issue.breakCommit == ''}" class="help-text">pending</span>
+                </td>
+                <td>
+                    <a th:if="${issue.fixCommit != ''}" th:href="'/api/demo/issues/' + ${issue.id} + '/download/tests'" th:title="'Download fix tests ' + ${issue.fixCommit}"><code th:text="${issue.fixCommit}"></code></a>
+                    <span th:if="${issue.fixCommit == ''}" class="help-text">pending</span>
+                </td>
+                <td>
+                    <a th:href="'/api/demo/issues/' + ${issue.id} + '/download/description'" class="help-text">download</a>
+                </td>
+                <td>
+                    <form th:if="${issue.breakBranch != ''}" method="post" th:action="'/demo/prepare/' + ${issue.id}" style="display:inline">
+                        <button type="submit" class="btn-sm">Prepare</button>
+                    </form>
+                    <span th:if="${issue.breakBranch == ''}" class="help-text">no branch</span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+
+        <!-- Sort/filter behavior comes from /static/sortable-table.js
+             (loaded once in fragments/layout.html). -->
+    </section>
+
+    <section>
+        <h3>AppMap traces</h3>
+        <p>
+            Browse runtime call graphs recorded by the AppMap Java agent during
+            banking-app test runs.
+            <a href="/demo/appmap"><strong>Open AppMap viewer &rarr;</strong></a>
+        </p>
+        <p class="help-text">
+            Surfaces the same traces the harness primes solvers with. Use
+            "Record from tests" inside the viewer to generate new traces
+            without leaving the WebUI.
+        </p>
+    </section>
+
+    <section>
+        <h3>Interactive verification</h3>
+        <p>Use the demo verification script to interactively explore bug behavior before and after fixing:</p>
+        <pre>./scripts/demo-verify.sh BUG-0001</pre>
+        <p class="help-text">The script checks out the break branch, runs failing tests, then checks out the fix branch and verifies tests pass.</p>
+    </section>
+
+    <section th:if="${isAdmin}">
+        <h3>Quick benchmark</h3>
+        <p class="help-text">Select an issue and configure the solver to run a full benchmark cycle (prepare → solve → score).</p>
+        <form method="post" id="quickRunForm" action="/demo/run/BUG-0001">
+            <label>Issue:
+                <select id="quickIssueSelect" required onchange="updateQuickFormAction()">
+                    <option th:each="issue, it : ${issues}"
+                            th:if="${issue.breakBranch != ''}"
+                            th:value="${issue.id}"
+                            th:text="${issue.id + ' — ' + issue.title}"
+                            th:attr="selected=${it.first ? 'selected' : null}"></option>
+                </select>
+            </label>
+            <!-- Provider + model are now driven entirely off the
+                 Registered models list on /llm — no free-text input
+                 so a typo can't 4xx the run. The provider dropdown
+                 cascades the model dropdown (filters by data-provider
+                 attribute) and a hidden field carries the resolved
+                 provider through to the POST. -->
+            <div th:if="${registeredProviders.isEmpty()}" class="status-banner error" style="margin:0.5em 0">
+                <strong>No LLM models registered yet.</strong>
+                <a href="/llm">Register a model on the LLMs page</a>
+                — finish the GitHub Copilot (VSCode Bridge) or
+                Corporate OpenAI Gateway wizard, then come back here.
+                Quick benchmark requires at least one registered model
+                to run.
+            </div>
+            <label>LLM provider:
+                <select name="provider" id="qbProvider" required onchange="filterQbModels()"
+                        th:disabled="${registeredProviders.isEmpty()}">
+                    <option th:if="${registeredProviders.isEmpty()}" value="" disabled selected>
+                        ⚠ No registered providers — register a model on /llm first
+                    </option>
+                    <option th:each="p, it : ${registeredProviders}"
+                            th:value="${p}" th:text="${p}"
+                            th:attr="selected=${it.first ? 'selected' : null}"></option>
+                </select>
+            </label>
+            <label>Model:
+                <select name="modelId" id="qbModel" required
+                        th:disabled="${registeredModels.isEmpty()}">
+                    <option th:if="${registeredModels.isEmpty()}" value="" disabled selected>
+                        ⚠ No registered models — register one on /llm first
+                    </option>
+                    <option th:each="m : ${registeredModels}"
+                            th:value="${m.id}"
+                            th:attr="data-provider=${m.provider}"
+                            th:text="${m.displayName + ' — ' + m.modelIdentifier + '  ($' + #numbers.formatDecimal(m.costPer1kPrompt, 1, 6, 'POINT') + ' / $' + #numbers.formatDecimal(m.costPer1kCompletion, 1, 6, 'POINT') + ' per 1k)'}"></option>
+                </select>
+            </label>
+            <p class="help-text" style="margin:0 0 0.5em 1.5em">
+                Models come from <a href="/llm#registered-models">Registered models</a>
+                on the LLMs page. Each option shows the model's
+                display name + API identifier + per-1K prompt/completion cost.
+            </p>
+
+            <!-- Context provider is orthogonal to LLM choice. "None"
+                 sends the harness's default context packer to the LLM
+                 above; "AppMap Navie" inserts the AppMap CLI's
+                 retrieval engine in front of the same LLM (Navie does
+                 not pick the model itself — it forwards prompts to
+                 whatever LLM provider/model is selected above). -->
+            <label>Context provider:
+                <select name="contextProvider" id="qbContextProvider">
+                    <option value="none" selected>None — harness default packer</option>
+                    <option th:if="${navieAvailable}" value="appmap-navie">
+                        AppMap Navie — vector-search AppMaps + forward to selected LLM
+                    </option>
+                    <option th:unless="${navieAvailable}" value="appmap-navie" disabled>
+                        AppMap Navie (unavailable — bridge or AppMap CLI missing)
+                    </option>
+                </select>
+            </label>
+            <p class="help-text" style="margin:0 0 0.5em 1.5em">
+                A <em>context provider</em> sits between the harness and
+                the LLM and decides what code/trace excerpts get included
+                in the prompt. It does <strong>not</strong> change which
+                LLM is called — that's still the model selected above.
+                <br><strong>None</strong> — the harness packs its own
+                context (source files + AppMap traces per the AppMap mode
+                below).
+                <br><strong>AppMap Navie</strong> — the AppMap CLI runs
+                its retrieval engine over recorded AppMaps, picks the
+                most relevant excerpts, and forwards a tightly-focused
+                prompt through the bridge's OpenAI shim to the LLM
+                selected above. Configure on
+                <a href="/appmap-navie">the AppMap Navie page</a>.
+            </p>
+
+            <label>AppMap mode:
+                <select name="appmapMode">
+                    <option value="OFF">OFF — no traces</option>
+                    <option value="ON_RECOMMENDED" selected>ON_RECOMMENDED — bug-relevant traces only</option>
+                    <option value="ON_ALL">ON_ALL — full trace collection</option>
+                </select>
+            </label>
+            <p class="help-text" style="margin:0 0 0.5em 1.5em">
+                Controls whether the solver receives runtime context
+                (call graphs, SQL, HTTP) recorded by the AppMap Java
+                agent during the failing tests.
+                <br><strong>OFF</strong> — solver sees only source +
+                test output. Fastest, lowest token cost; lowest fix rate.
+                <br><strong>ON_RECOMMENDED</strong> (default) — primes
+                the solver with traces from the test classes the bug
+                actually fails in. Best balance of context vs cost.
+                <br><strong>ON_ALL</strong> — primes the solver with
+                every trace under <code>banking-app/**/tmp/appmap/</code>.
+                Highest fix rate but ~3-5× the prompt-token cost and
+                slower runs.
+            </p>
+
+            <label>Seeds:
+                <input name="seeds" type="number" value="3" min="1" max="10" required>
+            </label>
+            <p class="help-text" style="margin:0 0 0.5em 1.5em">
+                Number of independent solver attempts per bug — each
+                run uses a different RNG seed for the LLM, producing
+                different solutions for the same prompt. The harness
+                measures <em>pass@k</em>: did at least one of the
+                <em>seeds</em> attempts produce a passing fix? Typical
+                values: <strong>1</strong> for spot-checking, <strong>3</strong>
+                for normal runs (the default), <strong>5–10</strong> when
+                you need statistical significance to compare two
+                models. Cost scales linearly with seeds — a 5-seed run
+                costs ~5× a 1-seed run.
+            </p>
+
+            <button type="submit" th:disabled="${registeredModels.isEmpty()}"
+                    th:title="${registeredModels.isEmpty() ? 'Register an LLM model on /llm first' : null}">
+                Run benchmark
+            </button>
+        </form>
+    </section>
+
+    <section>
+        <h3>API access</h3>
+        <p class="help-text">All demo functionality is available via REST API for programmatic access. Responses include commit identifiers.</p>
+        <table>
+            <thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead>
+            <tbody>
+            <tr><td><code>GET /api/demo/issues</code></td><td>GET</td><td>List all demo issues with commit hashes</td></tr>
+            <tr><td><code>GET /api/demo/issues/{id}</code></td><td>GET</td><td>Get issue details including break/fix commits</td></tr>
+            <tr><td><code>POST /api/demo/issues/{id}/prepare</code></td><td>POST</td><td>Prepare worktree at bug's break commit</td></tr>
+            <tr><td><code>POST /api/demo/issues/{id}/run</code></td><td>POST</td><td>Run benchmark (JSON body: provider, modelId, appmapMode, seeds)</td></tr>
+            <tr><td><code>POST /api/demo/issues/{id}/reset</code></td><td>POST</td><td>Reset banking app to clean state</td></tr>
+            <tr><td><code>GET /api/demo/banking-app/status</code></td><td>GET</td><td>Banking app status (running/stopped), URL, module list</td></tr>
+            <tr><td><code>POST /api/demo/banking-app/start</code></td><td>POST</td><td>Start the banking app (Spring Boot on port 8080)</td></tr>
+            <tr><td><code>POST /api/demo/banking-app/stop</code></td><td>POST</td><td>Stop the banking app</td></tr>
+            <tr><td><code>GET /api/demo/banking-app/log</code></td><td>GET</td><td>Tail the banking app boot log (?lines=80)</td></tr>
+            <tr><td><code>GET /api/demo/issues/{id}/download/description</code></td><td>GET</td><td>Download issue description as text file</td></tr>
+            <tr><td><code>GET /api/demo/issues/{id}/download/break</code></td><td>GET</td><td>Download break commit code as zip</td></tr>
+            <tr><td><code>GET /api/demo/issues/{id}/download/tests</code></td><td>GET</td><td>Download only the fix tests as zip (for offline verification)</td></tr>
+            <tr><td><code>POST /api/demo/issues/{id}/submit</code></td><td>POST</td><td>Submit a unified diff patch for grading (text/plain body)</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <script>
+        function updateQuickFormAction() {
+            var id = document.getElementById('quickIssueSelect').value;
+            if (id) document.getElementById('quickRunForm').action = '/demo/run/' + id;
+        }
+
+        // Cascading provider → model dropdown. Hides any <option> in
+        // qbModel whose data-provider doesn't match the picked
+        // provider, and resets the model selection so a stale id from
+        // the previous provider can't slip through.
+        function filterQbModels() {
+            var prov = document.getElementById('qbProvider').value;
+            var modelSel = document.getElementById('qbModel');
+            var options = modelSel.querySelectorAll('option[data-provider]');
+            modelSel.value = '';
+            var firstMatch = null;
+            options.forEach(function(opt) {
+                var match = !prov || opt.getAttribute('data-provider') === prov;
+                opt.hidden = !match;
+                if (match && !firstMatch) firstMatch = opt;
+            });
+            // If exactly one model exists for this provider, pre-select it.
+            var visible = Array.prototype.filter.call(options, function(o){ return !o.hidden; });
+            if (visible.length === 1) modelSel.value = visible[0].value;
+        }
+        // Initial call so the first render shows nothing in qbModel
+        // until the user picks a provider.
+        if (document.getElementById('qbProvider')) filterQbModels();
+    </script>
+</main>
+</body>
+</html>

@@ -1,0 +1,8 @@
+code,displayName,tagline,primarySegment,primaryColor,digitalOnly,minAge,premiumBrand,supportsForeignCurrency,brandFounded
+OMNIBANK,Omnibank,Banking for everyone,UNIVERSAL,#0A3D62,false,18,false,false,1987
+OMNIDIRECT,OmniDirect,Pure digital banking without the branch,DIGITAL_NATIVE,#00B894,true,18,false,false,2015
+SILVERBANK,SilverBank,Banking designed for life after 55,SENIOR,#B68D40,false,55,false,false,2002
+STARTUPFI,StartupFi,Business banking for founders,SMALL_BUSINESS,#6C5CE7,true,18,false,false,2018
+LEGACYTRUST,Legacy Trust,Private wealth since 1907,HIGH_NET_WORTH,#2D3436,false,25,true,true,1907
+BLUEWATERBANK,BlueWater Community Bank,Your community bank,COMMUNITY,#0984E3,false,18,false,false,1971
+FUTUREBANK,FutureBank,Youth and family banking,FAMILY,#FD79A8,false,0,false,false,2009

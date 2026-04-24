@@ -1,0 +1,31 @@
+id: BUG-0005
+title: "Available balance ignores holds that expire today"
+module: accounts-consumer
+difficulty: MEDIUM
+category: TIMING
+
+breakCommit: bug/BUG-0005/break
+fixCommit:   bug/BUG-0005/fix
+
+filesTouched:
+  - accounts-consumer/src/main/java/com/omnibank/accounts/consumer/internal/ConsumerAccountServiceImpl.java
+oracleDiffLines: 4
+
+hiddenTest:
+  class: com.omnibank.accounts.consumer.internal.BalanceViewIT
+  method: available_balance_still_reflects_hold_expiring_later_today
+  file: accounts-consumer/src/test/java/com/omnibank/accounts/consumer/internal/BalanceViewIT.java
+
+problemStatement: |
+  BalanceView.available = ledger - activeHolds. A hold scheduled to expire
+  later the same calendar day is currently excluded from activeHoldsTotal
+  because the comparison uses isBefore on LocalDate rather than Instant.
+  This lets customers spend money that is still properly reserved. Fix the
+  comparison to use Instant.now from the injected Clock.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.accounts.consumer.internal.BalanceViewIT
+  traceFocus:
+    - ConsumerAccountServiceImpl.activeHoldsTotal
+    - HoldEntity.isActive

@@ -1,0 +1,29 @@
+id: BUG-0004
+title: "30/360 day-count treats Feb 28 as end-of-month"
+module: shared-domain
+difficulty: MEDIUM
+category: NUMERIC
+tags: [day-count, bond, interest]
+
+breakCommit: bug/BUG-0004/break
+fixCommit:   bug/BUG-0004/fix
+
+filesTouched:
+  - shared-domain/src/main/java/com/omnibank/shared/domain/DayCountConvention.java
+oracleDiffLines: 3
+
+hiddenTest:
+  class: com.omnibank.shared.domain.DayCountConventionTest
+  method: thirty_360_does_not_treat_feb_28_as_end_of_month
+  file: shared-domain/src/test/java/com/omnibank/shared/domain/DayCountConventionTest.java
+
+problemStatement: |
+  The US 30/360 convention rolls day-of-month 31 to 30 for the end-date under
+  specific conditions. An accidental branch in THIRTY_360.yearFraction also
+  snaps Feb 28 (or 29 in leap years) to 30, inflating accrual on short-month
+  coupon periods. Restore the textbook 30/360 rule: only d2==31 with d1==30
+  triggers the d2 rewrite.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.shared.domain.DayCountConventionTest

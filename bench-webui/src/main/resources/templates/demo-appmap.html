@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('AppMap traces', ~{::main})}">
+<body>
+<main>
+    <h2>AppMap traces — demo banking app</h2>
+    <p class="subtitle">
+        Runtime call graphs recorded by the AppMap Java agent during banking-app
+        test runs. Use these to localize bug behavior the way the harness will
+        when it primes a solver. Traces are read from
+        <code>banking-app/**/tmp/appmap/</code>.
+    </p>
+
+    <!-- Live recording status panel; htmx self-refreshes via the inner fragment. -->
+    <div th:if="${activeRecording != null}"
+         th:attr="hx-get='/demo/appmap/recording/' + ${activeRecording.id} + '/panel'"
+         hx-trigger="load"
+         hx-swap="outerHTML">
+        <p class="help-text">Loading recording status…</p>
+    </div>
+
+    <!-- Banking-app status banner. Surfaces three orthogonal signals
+         so the operator can tell at a glance whether interactive
+         recording will actually work. -->
+    <div th:class="'status-banner ' + (${appRunning and agentAttached} ? 'ok' : (${appRunning} ? 'partial' : 'error'))"
+         style="display:flex; align-items:center; gap:0.6em; flex-wrap:wrap">
+        <strong>Banking app</strong>
+        <span th:if="${!appRunning}" class="badge unavailable">Stopped</span>
+        <span th:if="${appRunning and agentAttached}" class="badge available">Running with AppMap agent</span>
+        <span th:if="${appRunning and !agentAttached}" class="badge partial">Running WITHOUT AppMap agent</span>
+        <span th:if="${appRunning}" class="help-text">
+            at <a th:href="${bankingAppUrl}" target="_blank" rel="noopener" th:text="${bankingAppUrl}"></a>
+        </span>
+        <span th:if="${appRunning and !agentAttached}" class="help-text" style="color:#856404">
+            Interactive recording is unavailable — restart with <em>1. Start banking app with AppMap agent</em>.
+        </span>
+        <form th:if="${appRunning}" method="post" action="/demo/appmap/stop-app" style="display:inline; margin-left:auto"
+              onsubmit="return confirm('Stop the banking app?');">
+            <button type="submit" class="btn-danger btn-sm">Stop banking app</button>
+        </form>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Inline log viewer (collapsed by default)                     -->
+    <!-- ============================================================ -->
+    <details class="log-viewer" style="margin:0.5em 0">
+        <summary style="cursor:pointer; user-select:none">
+            <strong>Banking app logs</strong>
+            <span class="help-text" style="margin-left:0.5em">
+                Tail of <code>banking-app/tmp/bootRun.log</code> — expand to view, search, and refresh
+            </span>
+        </summary>
+        <div style="margin-top:0.6em; background:#0b1425; color:#d6e2f0; border-radius:4px; padding:0.5em">
+            <div class="button-row" style="align-items:center; gap:0.5em; margin-bottom:0.5em">
+                <input type="text" id="logSearch" placeholder="Search / filter lines (case-insensitive)…"
+                       style="flex:1 1 20em; padding:0.3em 0.5em; background:#132238; color:#d6e2f0; border:1px solid #2a3a56; border-radius:3px; font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:0.85em">
+                <select id="logLines" style="padding:0.3em 0.4em; background:#132238; color:#d6e2f0; border:1px solid #2a3a56; border-radius:3px">
+                    <option value="100">last 100 lines</option>
+                    <option value="500" selected>last 500 lines</option>
+                    <option value="2000">last 2,000 lines</option>
+                    <option value="10000">last 10,000 lines</option>
+                </select>
+                <label style="display:flex; align-items:center; gap:0.3em; color:#d6e2f0; font-size:0.85em">
+                    <input type="checkbox" id="logTailLive"> auto-refresh (2s)
+                </label>
+                <button type="button" class="btn-sm" onclick="refreshLogs()">Refresh</button>
+                <button type="button" class="btn-sm" onclick="scrollLogToBottom()">↓ Bottom</button>
+                <span id="logStatus" class="help-text" style="color:#6c8aab; font-size:0.8em"></span>
+            </div>
+            <pre id="logBody" style="margin:0; background:transparent; color:inherit;
+                 max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-all;
+                 font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:0.82em;
+                 line-height:1.35em; padding:0.4em 0.5em;
+                 border:1px solid #2a3a56; border-radius:3px">Loading…</pre>
+        </div>
+    </details>
+
+    <style>
+        details.log-viewer[open] summary strong { color: #0b2545; }
+        #logBody mark { background: #f0d06a; color: #1a1a1a; padding: 0 0.1em; border-radius: 2px; }
+        #logBody .hit { background: rgba(240,208,106,0.15); }
+    </style>
+
+    <script>
+        (function(){
+            var pollTimer = null;
+            var lastFetchAt = 0;
+            var logViewer = document.querySelector('details.log-viewer');
+            if (!logViewer) return;
+
+            window.refreshLogs = function() {
+                var lines = document.getElementById('logLines').value || 500;
+                var body = document.getElementById('logBody');
+                var status = document.getElementById('logStatus');
+                status.textContent = 'fetching…';
+                lastFetchAt = Date.now();
+                fetch('/api/demo/banking-app/log?lines=' + encodeURIComponent(lines), {
+                    credentials: 'include'
+                }).then(function(r){
+                    if (!r.ok) {
+                        body.textContent = '(HTTP ' + r.status + ' fetching log — banking app may be stopped)';
+                        status.textContent = '';
+                        return;
+                    }
+                    return r.text().then(function(raw){
+                        // Endpoint returns {"log": "…"} — unwrap to raw text.
+                        // Gracefully degrade if the server ever switches to
+                        // plain text.
+                        var text = raw;
+                        try {
+                            var parsed = JSON.parse(raw);
+                            if (parsed && typeof parsed.log === 'string') text = parsed.log;
+                        } catch (_) { /* not JSON — treat raw as text */ }
+                        renderLogBody(text, document.getElementById('logSearch').value);
+                        status.textContent = 'updated ' + new Date().toLocaleTimeString()
+                            + ' · ' + (text.split('\\n').length) + ' lines';
+                    });
+                }).catch(function(e){
+                    body.textContent = 'Error: ' + e;
+                    status.textContent = '';
+                });
+            };
+
+            // Re-render the body with the current search term applied as
+            // a highlight. We never remove lines — non-matching lines
+            // are dimmed so the context around matches stays visible.
+            function renderLogBody(text, term) {
+                var body = document.getElementById('logBody');
+                var lines = text.split('\\n');
+                var needle = (term || '').toLowerCase().trim();
+                var wasAtBottom = isAtBottom(body);
+                if (!needle) {
+                    body.textContent = text;
+                } else {
+                    var html = lines.map(function(line){
+                        var idx = line.toLowerCase().indexOf(needle);
+                        if (idx < 0) return '<span style="opacity:0.35">' + escapeHtml(line) + '</span>';
+                        return '<span class="hit">' +
+                            escapeHtml(line.substring(0, idx)) +
+                            '<mark>' + escapeHtml(line.substr(idx, needle.length)) + '</mark>' +
+                            escapeHtml(line.substring(idx + needle.length)) +
+                            '</span>';
+                    }).join('\\n');
+                    body.innerHTML = html;
+                }
+                if (wasAtBottom) scrollLogToBottom();
+            }
+            function escapeHtml(s) {
+                return s.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            }
+            function isAtBottom(el) {
+                return el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+            }
+            window.scrollLogToBottom = function() {
+                var body = document.getElementById('logBody');
+                body.scrollTop = body.scrollHeight;
+            };
+
+            // Debounce search input so every keystroke doesn't re-render.
+            var searchTimer = null;
+            document.getElementById('logSearch').addEventListener('input', function() {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(function(){ refreshLogs(); }, 150);
+            });
+            document.getElementById('logLines').addEventListener('change', function(){ refreshLogs(); });
+
+            // Auto-refresh toggle — polls every 2s while on, stops on off / close.
+            document.getElementById('logTailLive').addEventListener('change', function(e){
+                if (e.target.checked) {
+                    refreshLogs();
+                    pollTimer = setInterval(refreshLogs, 2000);
+                } else if (pollTimer) {
+                    clearInterval(pollTimer); pollTimer = null;
+                }
+            });
+
+            // Lazy: only fetch the first time the viewer opens.
+            logViewer.addEventListener('toggle', function(){
+                if (logViewer.open && Date.now() - lastFetchAt > 2000) refreshLogs();
+                if (!logViewer.open && pollTimer) {
+                    clearInterval(pollTimer); pollTimer = null;
+                    document.getElementById('logTailLive').checked = false;
+                }
+            });
+        })();
+    </script>
+
+    <div th:if="${deleteResult != null}" class="status-banner ok">
+        <strong>Delete:</strong> <span th:text="${deleteResult}"></span>
+    </div>
+    <div th:if="${interactiveStatus != null}" class="status-banner ok">
+        <strong>Interactive:</strong> <span th:text="${interactiveStatus}"></span>
+    </div>
+
+    <section th:if="${isAdmin}">
+        <h3>Interactive recording (drive the running app)</h3>
+        <p class="help-text">
+            Start the banking app with the AppMap Java agent attached, then
+            use Start / Stop here to bracket recordings while you exercise
+            the running app from your browser. Stop captures the agent's
+            trace and saves it under
+            <code>banking-app/app-bootstrap/tmp/appmap/interactive/</code>
+            so it appears in the table below.
+        </p>
+        <div class="button-row">
+            <form method="post" action="/demo/appmap/start-with-agent" style="display:inline">
+                <button type="submit" class="btn-primary btn-sm">
+                    1. Start banking app with AppMap agent
+                </button>
+            </form>
+            <a href="/demo/app/open" target="_blank" rel="noopener"
+               class="btn-sm" style="margin-left:0.5em">
+                1b. Open app (auto-login)
+            </a>
+            <form method="post" action="/demo/appmap/interactive/start" style="display:inline; margin-left:0.5em">
+                <button type="submit" class="btn-sm">
+                    2. Start recording
+                </button>
+            </form>
+            <form method="post" action="/demo/appmap/interactive/stop" style="display:inline; margin-left:0.5em">
+                <button type="submit" class="btn-danger btn-sm">
+                    3. Stop &amp; save recording
+                </button>
+            </form>
+            <form method="post" action="/demo/appmap/stop-app" style="display:inline; margin-left:0.5em"
+                  onsubmit="return confirm('Stop the banking app?');">
+                <button type="submit" class="btn-danger btn-sm">
+                    4. Stop banking app
+                </button>
+            </form>
+        </div>
+        <p class="help-text" style="margin-top:0.5em">
+            Step <strong>1b</strong> opens the banking app in a new tab and
+            exchanges a single-use in-memory token for a session cookie —
+            no password prompt. Then between steps 2 and 3, click around
+            the banking app (or hit <code>http://localhost:8080/api/...</code>
+            from curl) and the agent records every request that flows
+            through the banking-app while the recording is active. Only
+            one agent recording can run at a time.
+        </p>
+    </section>
+
+    <section th:if="${isAdmin}">
+        <h3>Record from tests</h3>
+        <p class="help-text">
+            Kicks off <code>./gradlew test</code> in banking-app with
+            <code>ORG_GRADLE_PROJECT_appmap_enabled=true</code>. The
+            recording runs detached as a child JVM; the status panel
+            above polls every 2 seconds with the live gradle log tail and
+            updates the trace count as new AppMap files appear under
+            <code>banking-app/**/tmp/appmap/</code>.
+        </p>
+        <p class="help-text">
+            <strong>Why a delay?</strong> Each test class' AppMap files
+            are written when its test task completes, not as individual
+            tests run. A full <code>./gradlew test</code> across all
+            generated modules can take 30–60s; narrow the scope with
+            <em>Module</em> and <em>Test filter</em> for quicker
+            iteration.
+        </p>
+        <form method="post" action="/demo/appmap/record-tests">
+            <label>Module (optional, e.g. <code>payments-hub</code>):
+                <input type="text" name="module" placeholder="leave blank for all modules">
+            </label>
+            <label style="margin-left:1em">Test filter (optional):
+                <input type="text" name="testFilter" placeholder="e.g. PaymentLifecycleManagerTest">
+            </label>
+            <button type="submit" class="btn-primary" style="margin-left:1em">Record AppMaps from tests</button>
+        </form>
+    </section>
+
+    <section>
+        <h3>Available traces
+            <span class="help-text" id="traces-count" style="font-weight:normal; font-size:0.85em"></span>
+        </h3>
+
+        <!-- Summary tiles directly above the table they describe so the
+             aggregate stats and the per-row stats read as one unit. -->
+        <div class="cards" style="margin-bottom:0.6em">
+            <div class="card"><span class="label">Trace files</span><span class="value" th:text="${totalCount}">0</span></div>
+            <div class="card"><span class="label">Total events</span><span class="value" th:text="${#numbers.formatInteger(totalEvents, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">SQL events</span><span class="value" th:text="${#numbers.formatInteger(totalSql, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">HTTP events</span><span class="value" th:text="${#numbers.formatInteger(totalHttp, 1, 'COMMA')}">0</span></div>
+        </div>
+
+        <p th:if="${totalCount == 0}" class="help-text">
+            No traces recorded yet. Run banking-app tests with the AppMap Java
+            agent enabled (use the button above, or
+            <code>./gradlew -Pappmap_enabled=true test</code> from a terminal).
+        </p>
+        <p th:if="${totalCount > 0}" class="help-text" style="margin-top:-0.25em">
+            Click any header to sort; per-column filters narrow the list.
+            <strong>Stats</strong> shows event counts (total · SQL · HTTP);
+            <strong>Complexity</strong> shows
+            <em>Deps</em>/<em>Seq</em>/<em>Trace</em>/<em>Flame</em>
+            (distinct packages, sequence-diagram roots, trace-view rows,
+            flame-graph frames). Hover any number for the verbose label.
+        </p>
+        <div th:if="${totalCount > 0}" class="button-row" style="margin:0.4em 0">
+            <input type="text" id="appmap-search" placeholder="Search across all columns…"
+                   style="flex:1 1 18em; max-width:28em; padding:0.3em 0.6em">
+            <button type="button" id="appmap-export" class="btn-sm">Export visible rows as CSV</button>
+        </div>
+        <table th:if="${totalCount > 0}" id="appmap-traces-table"
+               class="sortable-table"
+               data-count-target="#traces-count"
+               data-search-target="#appmap-search"
+               data-csv-target="#appmap-export"
+               data-csv-filename="appmap-traces.csv">
+            <thead>
+            <tr class="sort-row">
+                <th data-sort-key="module" style="width:11em">Module <span class="sort-indicator"></span></th>
+                <th data-sort-key="name">Trace <span class="sort-indicator"></span></th>
+                <th class="num" data-sort-key="events" data-sort-numeric="true"
+                    title="Total events · SQL events · HTTP events"
+                    style="width:8em">Stats <span class="sort-indicator"></span></th>
+                <th class="num" data-sort-key="flame" data-sort-numeric="true"
+                    title="Deps · Seq · Trace · Flame — see help text above"
+                    style="width:9em">Complexity <span class="sort-indicator"></span></th>
+                <th class="num" data-sort-key="size" data-sort-numeric="true" style="width:5.5em">Size <span class="sort-indicator"></span></th>
+                <th style="width:9em"></th>
+            </tr>
+            <tr class="filter-row">
+                <th><input type="text" data-filter-col="0" placeholder="filter module"></th>
+                <th><input type="text" data-filter-col="1" placeholder="filter trace"></th>
+                <th><input type="text" data-filter-col="2" placeholder=""></th>
+                <th><input type="text" data-filter-col="3" placeholder=""></th>
+                <th><input type="text" data-filter-col="4" placeholder=""></th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="t : ${traces}"
+                th:attr="data-module=${t.module},
+                         data-name=${t.displayName},
+                         data-events=${t.eventCount},
+                         data-sql=${t.sqlCount},
+                         data-http=${t.httpCount},
+                         data-deps=${t.dependencyCount},
+                         data-seq=${t.sequenceRootCount},
+                         data-trace=${t.traceCallCount},
+                         data-flame=${t.flameFrameCount},
+                         data-size=${t.sizeBytes},
+                         data-recorder=${t.recorderName != null ? t.recorderName : ''}">
+                <td>
+                    <span th:text="${t.module}"></span>
+                    <span th:if="${t.recorderName != null}" class="help-text"
+                          style="display:block; font-size:0.78em"
+                          th:text="${t.recorderName}"></span>
+                </td>
+                <td>
+                    <strong th:text="${t.displayName}"></strong>
+                    <code class="help-text" style="display:block; font-size:0.78em"
+                          th:text="${t.relativePath}"></code>
+                </td>
+                <td class="num"
+                    th:title="${#numbers.formatInteger(t.eventCount, 1, 'COMMA')} + ' events · '
+                              + ${#numbers.formatInteger(t.sqlCount, 1, 'COMMA')} + ' SQL · '
+                              + ${#numbers.formatInteger(t.httpCount, 1, 'COMMA')} + ' HTTP'">
+                    <strong th:text="${#numbers.formatInteger(t.eventCount, 1, 'COMMA')}"></strong>
+                    <span class="help-text" style="display:block; font-size:0.78em"
+                          th:text="${t.sqlCount} + ' SQL · ' + ${t.httpCount} + ' HTTP'"></span>
+                </td>
+                <td class="num"
+                    th:title="${t.dependencyCount} + ' packages · '
+                              + ${t.sequenceRootCount} + ' seq roots · '
+                              + ${t.traceCallCount} + ' trace rows · '
+                              + ${t.flameFrameCount} + ' flame frames'">
+                    <span th:text="${t.dependencyCount} + ' / ' + ${t.sequenceRootCount}
+                                  + ' / ' + ${#numbers.formatInteger(t.traceCallCount, 1, 'COMMA')}
+                                  + ' / ' + ${t.flameFrameCount}"></span>
+                    <span class="help-text" style="display:block; font-size:0.78em">D / S / T / F</span>
+                </td>
+                <td class="num" th:text="${#numbers.formatInteger(t.sizeBytes / 1024, 1, 'COMMA') + ' KB'}"></td>
+                <td>
+                    <a th:href="'/demo/appmap/view?id=' + ${t.id}" class="btn-sm"
+                       style="display:inline-block; padding:0.2em 0.6em; text-decoration:none">view</a>
+                    <form th:if="${isAdmin}" method="post" action="/demo/appmap/delete-one"
+                          style="display:inline; margin-left:0.3em"
+                          onsubmit="return confirm('Delete this trace?');">
+                        <input type="hidden" name="id" th:value="${t.id}">
+                        <button type="submit" class="btn-danger btn-sm">delete</button>
+                    </form>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+
+        <!-- Bulk delete sits directly under the table it operates on
+             so the consequence ("delete every row above") is visually
+             contiguous with the trigger. The confirm checkbox AND the
+             JS confirm dialog must both fire before delete-all runs —
+             belt-and-suspenders to prevent accidental wipes. -->
+        <div th:if="${isAdmin and totalCount > 0}"
+             style="margin-top:1em; padding:0.7em 0.9em; background:#fff3cd;
+                    border-left:3px solid #b91c1c; border-radius:4px">
+            <form method="post" action="/demo/appmap/delete-all"
+                  style="display:flex; gap:0.6em; align-items:center; flex-wrap:wrap"
+                  onsubmit="return confirm('Delete ALL ' + document.title + ' traces? This cannot be undone.');">
+                <strong>Delete all traces</strong>
+                <span class="help-text">
+                    Removes every <code>*.appmap.json</code> under
+                    <code>banking-app/**/tmp/appmap/</code>. Deletion is
+                    irreversible from this UI.
+                </span>
+                <label class="help-text" style="display:inline-flex; align-items:center; gap:0.3em">
+                    <input type="checkbox" name="confirm" value="yes" required>
+                    I understand this deletes all <strong th:text="${totalCount}"></strong> trace file(s)
+                </label>
+                <button type="submit" class="btn-danger btn-sm">Delete all traces</button>
+            </form>
+        </div>
+    </section>
+</main>
+</body>
+</html>

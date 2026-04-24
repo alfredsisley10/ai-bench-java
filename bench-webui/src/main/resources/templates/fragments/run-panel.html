@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<body>
+<!--
+    Live benchmark-run status fragment. htmx swaps this in every 1s
+    while the run is RUNNING / QUEUED, then stops once terminal so we
+    don't keep polling forever for a finished run.
+-->
+<div th:fragment="panel" id="live-run-panel"
+     th:attr="hx-get=${run != null and (run.status.name() == 'RUNNING' or run.status.name() == 'QUEUED')
+                       ? '/demo/run/' + runId + '/panel' : null},
+              hx-trigger=${run != null and (run.status.name() == 'RUNNING' or run.status.name() == 'QUEUED')
+                       ? 'every 1s' : null},
+              hx-swap=outerHTML">
+
+    <div th:if="${run == null}" class="status-banner error">
+        Active run id <code th:text="${runId}"></code> is unknown — it may have been evicted.
+    </div>
+
+    <div th:if="${run != null}"
+         th:class="'panel ' + (${run.status.name() == 'PASSED'} ? 'panel-pass'
+                              : (${run.status.name() == 'FAILED'} ? 'panel-fail'
+                              : (${run.status.name() == 'ERRORED'} ? 'panel-fail'
+                              : (${run.status.name() == 'CANCELED'} ? 'panel-warn' : 'panel-running'))))"
+         style="background: white; padding: 1em 1.2em; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid">
+        <div style="display:flex; align-items:center; gap:0.6em; flex-wrap:wrap">
+            <h3 style="margin:0">
+                Run <code th:text="${run.id}"></code>
+                <span class="help-text" style="font-weight:normal" th:text="' · ' + ${run.issueId} + ' — ' + ${run.issueTitle}"></span>
+            </h3>
+            <span th:class="'badge ' + (${run.status.name() == 'PASSED'} ? 'available'
+                                      : (${run.status.name() == 'FAILED' or run.status.name() == 'ERRORED'} ? 'unavailable'
+                                      : 'partial'))"
+                  th:text="${run.status.name()}"></span>
+            <span class="help-text" style="margin-left:auto"
+                  th:text="${run.provider} + '/' + ${run.modelId}
+                          + (${run.contextProvider != null and run.contextProvider != 'none'} ? ' + ctx=' + ${run.contextProvider} : '')
+                          + ' · ' + ${run.appmapMode} + ' · seeds=' + ${run.seeds}"></span>
+            <form th:if="${run.status.name() == 'RUNNING' or run.status.name() == 'QUEUED'}"
+                  method="post" th:action="'/demo/run/' + ${run.id} + '/cancel'" style="display:inline">
+                <button type="submit" class="btn-danger btn-sm">Cancel</button>
+            </form>
+        </div>
+
+        <!-- Progress bar -->
+        <div style="margin:0.6em 0">
+            <div style="background:#e0e2e8; border-radius:3px; height:10px; position:relative; overflow:hidden">
+                <div th:style="'width:' + ${run.percent} + '%; height:100%; background:'
+                              + (${run.status.name() == 'PASSED'} ? '#2c6d3a'
+                                : (${run.status.name() == 'FAILED' or run.status.name() == 'ERRORED'} ? '#b91c1c'
+                                : '#0b2545'))
+                              + '; transition: width 0.4s ease-out'"></div>
+            </div>
+            <div class="help-text" style="display:flex; justify-content:space-between; margin-top:0.25em; font-size:0.82em">
+                <span th:text="'Phase: ' + ${run.phase}"></span>
+                <span th:text="${run.percent} + '%'"></span>
+            </div>
+        </div>
+
+        <!-- Live stats grid -->
+        <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 0.4em 0; gap:0.5em">
+            <div class="card" style="padding:0.5em">
+                <span class="label">Traces recorded</span>
+                <span class="value" style="font-size:1.2em" th:text="${run.stats.tracesRecorded}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Traces submitted</span>
+                <span class="value" style="font-size:1.2em" th:text="${run.stats.tracesSubmitted}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Source files in prompt</span>
+                <span class="value" style="font-size:1.2em" th:text="${run.stats.sourceFilesSubmitted}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Prompt tokens</span>
+                <span class="value" style="font-size:1.2em"
+                      th:text="${#numbers.formatInteger(run.stats.totalPromptTokens, 1, 'COMMA')}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Completion tokens</span>
+                <span class="value" style="font-size:1.2em"
+                      th:text="${#numbers.formatInteger(run.stats.totalCompletionTokens, 1, 'COMMA')}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Est. cost (USD)</span>
+                <span class="value" style="font-size:1.2em"
+                      th:text="${'$' + #numbers.formatDecimal(run.stats.estimatedCostUsd, 1, 6, 'POINT')}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Elapsed</span>
+                <span class="value" style="font-size:1.2em"
+                      th:text="${(run.durationMs / 1000) + 's'}"></span>
+            </div>
+            <div class="card" style="padding:0.5em">
+                <span class="label">Seed</span>
+                <span class="value" style="font-size:1.2em"
+                      th:text="${run.currentSeed} + ' / ' + ${run.seeds}"></span>
+            </div>
+        </div>
+
+        <!-- Per-seed results (appears as seeds finish) -->
+        <div th:unless="${run.seedResults.isEmpty()}" style="margin: 0.4em 0">
+            <strong>Seed results so far:</strong>
+            <ul style="margin: 0.3em 0; padding-left: 1.2em">
+                <li th:each="sr : ${run.seedResults}">
+                    Seed <strong th:text="${sr.seed}"></strong>:
+                    <span th:class="'badge ' + (${sr.passed} ? 'available' : 'unavailable')"
+                          th:text="${sr.passed ? 'PASS' : 'FAIL'}"></span>
+                    <span class="help-text"
+                          th:text="${sr.testsPassed} + '/' + ${sr.testsTotal} + ' tests · '
+                                  + ${sr.completionTokens} + ' completion tokens'"></span>
+                </li>
+            </ul>
+        </div>
+
+        <!-- Live log feed — last ~40 entries -->
+        <details open style="margin-top:0.5em">
+            <summary class="help-text" style="cursor:pointer">Live log (last 40 entries)</summary>
+            <pre style="background:#0b1425; color:#d6e2f0; padding:0.6em 0.7em; border-radius:4px;
+                        max-height:300px; overflow:auto; font-size:0.82em; line-height:1.4em;
+                        margin:0.3em 0 0 0; font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace"
+                ><th:block th:each="e : ${run.logEntries.subList(
+                          run.logEntries.size > 40 ? run.logEntries.size - 40 : 0,
+                          run.logEntries.size)}"
+                ><span th:style="'color:' + (${e.category.name() == 'PHASE'} ? '#f0d06a'
+                                            : (${e.category.name() == 'TRACE'} ? '#79c8be'
+                                            : (${e.category.name() == 'CONTEXT'} ? '#9eb8e0'
+                                            : (${e.category.name() == 'LLM'} ? '#d8a0e0'
+                                            : (${e.category.name() == 'RESULT'} ? '#a0d0a0'
+                                            : (${e.category.name() == 'TEST'} ? '#e8b878'
+                                            : (${e.category.name() == 'ERROR'} ? '#e88080'
+                                            : '#6c8aab')))))))"
+                       th:text="${'[' + e.category.name() + '] '}"></span><span
+                       th:text="${e.message}"></span>
+</th:block></pre>
+        </details>
+    </div>
+</div>
+</body>
+</html>

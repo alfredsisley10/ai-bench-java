@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Results', ~{::main})}">
+<body>
+<main>
+    <h2>Benchmark Results</h2>
+    <p class="subtitle">All completed benchmark runs across Omnibank and enterprise targets.</p>
+
+    <div th:if="${#lists.isEmpty(runs)}">
+        <p class="empty-state">No results yet. Runs will appear here once benchmarks complete.</p>
+    </div>
+    <table th:unless="${#lists.isEmpty(runs)}">
+        <thead>
+        <tr>
+            <th>Run ID</th><th>Target</th><th>Bug / Ticket</th><th>Solver</th>
+            <th>Model</th><th>AppMap</th><th>Result</th>
+            <th>Prompt tokens</th><th>Completion tokens</th><th>Wall clock</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="r : ${runs}">
+            <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
+            <td th:text="${r.targetType}"></td>
+            <td th:text="${r.bugId}"></td>
+            <td th:text="${r.solver}"></td>
+            <td th:text="${r.model}"></td>
+            <td th:text="${r.appmapMode}"></td>
+            <td th:text="${r.passed ? 'PASS' : 'FAIL'}"></td>
+            <td th:text="${r.promptTokens}"></td>
+            <td th:text="${r.completionTokens}"></td>
+            <td th:text="${r.wallClockSec + 's'}"></td>
+        </tr>
+        </tbody>
+    </table>
+</main>
+</body>
+</html>

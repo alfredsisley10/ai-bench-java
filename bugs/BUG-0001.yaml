@@ -1,0 +1,34 @@
+id: BUG-0001
+title: "ACH same-day cutoff off-by-one at final window"
+module: payments-hub
+difficulty: MEDIUM
+category: TIMING
+tags: [ach, cutoff, timezone]
+
+breakCommit: bug/BUG-0001/break
+fixCommit:   bug/BUG-0001/fix
+
+filesTouched:
+  - payments-hub/src/main/java/com/omnibank/payments/ach/AchCutoffPolicy.java
+oracleDiffLines: 2
+
+hiddenTest:
+  class: com.omnibank.payments.ach.AchCutoffPolicyTest
+  method: rejects_submission_exactly_at_final_cutoff
+  file: payments-hub/src/test/java/com/omnibank/payments/ach/AchCutoffPolicyTest.java
+
+problemStatement: |
+  Customers report that ACH submissions made exactly at the published 4:45 PM
+  ET same-day final cutoff are sometimes accepted into the same-day window and
+  sometimes rejected. The intended semantic is "on or after 16:45:00.000 ET"
+  must miss the same-day window. Fix AchCutoffPolicy.isBeforeFinalSameDayCutoff
+  so the comparison is strictly before (exclusive on cutoff).
+
+hints:
+  - "Look at how the comparison operator interacts with the cutoff constant."
+
+appmap:
+  recommendedTests:
+    - com.omnibank.payments.ach.AchCutoffPolicyTest
+  traceFocus:
+    - AchCutoffPolicy.isBeforeFinalSameDayCutoff

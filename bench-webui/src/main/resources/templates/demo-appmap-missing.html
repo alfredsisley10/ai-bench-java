@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('AppMap not found', ~{::main})}">
+<body>
+<main>
+    <p><a href="/demo/appmap">&larr; back to traces</a></p>
+    <h2>AppMap trace not found</h2>
+    <p>No trace exists for id <code th:text="${missingId}"></code>. It may have
+        been deleted, moved, or the encoded path is invalid.</p>
+</main>
+</body>
+</html>

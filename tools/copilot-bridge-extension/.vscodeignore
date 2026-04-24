@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+src/**
+tsconfig.json
+node_modules/**
+.gitignore
+.yarnrc
+vsc-extension-quickstart.md
+**/.eslintrc.json
+**/*.map
+**/*.ts
+!out/**/*.js
+copilot-bridge.vsix
+copilot-bridge-*.vsix
+build-icon.py
+appmap.log
+*.log

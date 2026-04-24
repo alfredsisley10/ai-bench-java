@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Proxy', ~{::main})}">
+<body>
+<main>
+    <h2>Proxy &amp; TLS settings</h2>
+    <p class="subtitle">
+        Outbound connections from the WebUI (GitHub, JIRA, AppMap agent,
+        Gradle subprocesses, banking-app health probe) all honor these
+        settings. Proxy host/port is also written to
+        <code>~/.gradle/gradle.properties</code> so Gradle builds
+        launched outside the WebUI inherit the same proxy.
+    </p>
+
+    <div th:if="${saveResult != null}" class="status-banner ok">
+        <span th:text="${saveResult}"></span>
+    </div>
+
+    <section>
+        <h3>Active settings</h3>
+        <p>
+            Source:
+            <span class="badge available" th:text="${settings.source}"></span>
+        </p>
+        <table>
+            <tr><th>HTTPS proxy</th><td><code th:text="${settings.httpsProxy != '' ? settings.httpsProxy : '(none)'}"></code></td></tr>
+            <tr><th>HTTP proxy</th><td><code th:text="${settings.httpProxy != '' ? settings.httpProxy : '(none)'}"></code></td></tr>
+            <tr><th>No proxy</th><td><code th:text="${settings.noProxy != '' ? settings.noProxy : '(none)'}"></code></td></tr>
+            <tr><th>TLS verification</th>
+                <td>
+                    <span th:if="${settings.insecureSsl}" class="badge" style="background:#b91c1c; color:white">DISABLED (insecure)</span>
+                    <span th:unless="${settings.insecureSsl}" class="badge available">Enabled (default)</span>
+                </td></tr>
+        </table>
+    </section>
+
+    <section>
+        <h3>Configure</h3>
+        <form method="post" action="/proxy/save">
+            <label>HTTPS proxy:
+                <input name="httpsProxy" th:value="${settings.httpsProxy}" type="text"
+                       placeholder="http://proxy.corp.example.com:8080" style="width:350px">
+            </label>
+            <label>HTTP proxy:
+                <input name="httpProxy" th:value="${settings.httpProxy}" type="text"
+                       placeholder="http://proxy.corp.example.com:8080" style="width:350px">
+            </label>
+            <label>No proxy (comma-separated):
+                <input name="noProxy" th:value="${settings.noProxy}"
+                       placeholder="localhost,127.0.0.1,*.corp.example.com" style="width:350px">
+            </label>
+            <label style="margin-top:0.75em">
+                <input name="insecureSsl" type="checkbox" value="true"
+                       th:checked="${settings.insecureSsl}">
+                <strong>Ignore SSL certificate errors</strong>
+                <span class="help-text" style="margin-left:0.5em">
+                    (trust all certificates — use only for testing against
+                    hosts with self-signed or internal-CA certs)
+                </span>
+            </label>
+            <div class="button-row" style="margin-top:0.75em">
+                <button type="submit">Save &amp; apply</button>
+            </div>
+        </form>
+        <form method="post" action="/proxy/reset" style="margin-top:0.5em">
+            <button type="submit" class="btn-secondary">Reset to auto-detect</button>
+        </form>
+        <p class="help-text" style="margin-top:0.75em">
+            <strong>Insecure-SSL scope:</strong> applies to all WebUI-originated
+            HTTP clients (GitHub, JIRA, banking-app probes, AppMap agent
+            calls). For Gradle subprocesses the WebUI also passes
+            <code>-Dcom.sun.net.ssl.checkRevocation=false</code> on the
+            command line, which most JVM-based resolvers honor — but
+            Gradle plugins that bring their own HTTP client may still
+            require a CA cert installed in the JVM truststore.
+        </p>
+    </section>
+
+    <section th:if="${gradleSystemProps != null and !gradleSystemProps.isEmpty()}">
+        <h3>Gradle subprocess args</h3>
+        <p class="help-text">
+            These JVM system-property flags are automatically appended to
+            every <code>./gradlew</code> invocation the WebUI spawns:
+        </p>
+        <pre th:text="${#strings.listJoin(gradleSystemProps, ' ')}"
+             style="background:#f4f6fa; padding:0.75em; border-radius:4px; overflow-x:auto"></pre>
+    </section>
+
+    <section>
+        <h3>API</h3>
+        <table>
+            <tr><td><code>GET /api/proxy</code></td><td>Current active connection settings</td></tr>
+            <tr><td><code>POST /proxy/save</code></td><td>Save proxy + TLS settings (form: httpsProxy, httpProxy, noProxy, insecureSsl)</td></tr>
+            <tr><td><code>POST /proxy/reset</code></td><td>Reset to auto-detected defaults</td></tr>
+        </table>
+    </section>
+</main>
+</body>
+</html>

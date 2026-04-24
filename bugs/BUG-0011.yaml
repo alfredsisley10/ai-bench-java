@@ -1,0 +1,22 @@
+id: BUG-0011
+title: "Percent.of rounds Money to 10 decimals instead of currency scale"
+module: shared-domain
+difficulty: TRIVIAL
+category: NUMERIC
+
+breakCommit: bug/BUG-0011/break
+fixCommit:   bug/BUG-0011/fix
+
+filesTouched:
+  - shared-domain/src/main/java/com/omnibank/shared/domain/Percent.java
+oracleDiffLines: 1
+
+hiddenTest:
+  class: com.omnibank.shared.domain.PercentTest
+  method: applying_percent_preserves_currency_scale
+  file: shared-domain/src/test/java/com/omnibank/shared/domain/PercentTest.java
+
+problemStatement: |
+  Percent.of(Money) applies a BigDecimal multiplier then delegates to
+  Money.times, which re-rounds to the currency scale. An extra .setScale(10)
+  call left over from debugging breaks the final-scale guarantee. Remove it.

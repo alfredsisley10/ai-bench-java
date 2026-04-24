@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('JIRA', ~{::main})}">
+<body>
+<main>
+    <h2>JIRA configuration</h2>
+
+    <div th:if="${configured}" class="status-banner ok">
+        <strong>Connected</strong> to <span th:text="${baseUrl}"></span>
+    </div>
+
+    <div th:if="${testResult != null}" th:class="'status-banner ' + (${testResult.success} ? 'ok' : 'error')">
+        <span th:text="${testResult.message}"></span>
+    </div>
+
+    <section>
+        <h3>Connection</h3>
+        <form method="post" action="/jira/save" id="jiraForm">
+            <label>Base URL:
+                <input name="baseUrl" th:value="${baseUrl}" required type="url" placeholder="https://yourcorp.atlassian.net" title="Full JIRA URL including https://">
+            </label>
+            <label>Email:
+                <input name="email" th:value="${email}" required type="email" placeholder="you@company.com">
+            </label>
+
+            <label>Authentication method:
+                <select name="authMethod" id="authMethod" onchange="toggleAuthFields()">
+                    <option value="api-token" th:selected="${authMethod == 'api-token'}">API token</option>
+                    <option value="basic" th:selected="${authMethod == 'basic'}">Username and password</option>
+                </select>
+            </label>
+
+            <div id="apiTokenField">
+                <label>API token:
+                    <input name="apiToken" type="password" autocomplete="new-password"
+                           th:placeholder="${apiTokenPresent ? '(unchanged — leave blank to keep)' : 'Enter JIRA API token'}">
+                </label>
+                <p class="help-text">Generate at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API tokens</a>.</p>
+            </div>
+
+            <div id="basicAuthFields" style="display:none">
+                <label>Username:
+                    <input name="username" th:value="${username}" placeholder="JIRA username" autocomplete="off">
+                </label>
+                <label>Password:
+                    <input name="password" type="password" autocomplete="new-password"
+                           th:placeholder="${passwordPresent ? '(unchanged — leave blank to keep)' : 'JIRA password'}">
+                </label>
+                <p class="help-text">For JIRA Server/Data Center installations that use basic authentication.</p>
+            </div>
+
+            <label>Default project key:
+                <input name="defaultProject" th:value="${defaultProject}" required pattern="[A-Z][A-Z0-9]*" title="Uppercase project key (e.g. PAY, CORE)" placeholder="PAY">
+            </label>
+
+            <fieldset style="margin-top:0.5em; padding:0.5em; border:1px solid #d6d8db; border-radius:4px">
+                <legend class="help-text">Credential storage</legend>
+                <label style="margin:0.2em 0">
+                    <input type="radio" name="secretStorage" value="memory"
+                           th:checked="${secretStorage == 'memory'}">
+                    <strong>In memory only</strong>
+                    <span class="help-text" style="margin-left:0.5em">— kept in this session; cleared on WebUI restart</span>
+                </label>
+                <label style="margin:0.2em 0" th:if="${keystoreAvailable}">
+                    <input type="radio" name="secretStorage" value="keystore"
+                           th:checked="${secretStorage == 'keystore'}">
+                    <strong>OS keystore</strong>
+                    <span class="help-text" style="margin-left:0.5em"
+                          th:text="'— persistent (' + ${keystoreBackendName} + '), survives restart'"></span>
+                </label>
+                <label style="margin:0.2em 0">
+                    <input type="radio" name="secretStorage" value="vault"
+                           th:checked="${secretStorage == 'vault'}">
+                    <strong>HashiCorp Vault (via env var)</strong>
+                    <span class="help-text" style="margin-left:0.5em">
+                        — the API-token / password input box holds the
+                        env-var NAME; the actual secret is injected by
+                        Vault Agent or the OpenShift Vault injector at
+                        launch time
+                    </span>
+                </label>
+                <p class="help-text" th:unless="${keystoreAvailable}" style="margin:0.2em 0">
+                    OS keystore not detected on this host —
+                    <code th:text="${keystoreBackendName}"></code>. Use memory or Vault mode.
+                </p>
+            </fieldset>
+
+            <div class="button-row">
+                <button type="submit">Save credentials</button>
+            </div>
+        </form>
+
+        <form method="post" action="/jira/test" style="display:inline; margin-top:0.5em">
+            <button type="submit" class="btn-secondary">Test connection</button>
+        </form>
+    </section>
+
+    <section id="repo-jira-associations">
+        <h3>Repository ↔ JIRA project associations</h3>
+        <p class="subtitle">
+            Map a GitHub repo to a JIRA project so the harness pulls
+            problem statements from JIRA instead of GitHub Issues.
+            Saved to <code>~/.ai-bench/repo-jira-associations.json</code>
+            and survives WebUI restarts. Both sides need network
+            access for the harness to actually fetch tickets.
+        </p>
+
+        <div th:if="${repoJiraSaveResult != null}" class="status-banner ok">
+            <span th:text="${repoJiraSaveResult}"></span>
+        </div>
+
+        <table th:unless="${#lists.isEmpty(repoJiraLinks)}">
+            <thead>
+                <tr>
+                    <th>GitHub repo</th>
+                    <th>JIRA project key</th>
+                    <th>JIRA base URL</th>
+                    <th>Notes</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="link : ${repoJiraLinks}">
+                    <td><code th:text="${link.repo}"></code></td>
+                    <td><code th:text="${link.jiraProjectKey}"></code></td>
+                    <td>
+                        <a th:if="${link.jiraBaseUrl != ''}" th:href="${link.jiraBaseUrl}"
+                           target="_blank" rel="noopener" th:text="${link.jiraBaseUrl}"></a>
+                        <span th:if="${link.jiraBaseUrl == ''}" class="help-text">(uses configured JIRA host)</span>
+                    </td>
+                    <td th:text="${link.notes}" class="help-text"></td>
+                    <td>
+                        <form method="post" action="/associations/repo-jira/delete" style="display:inline"
+                              onsubmit="return confirm('Remove this association?')">
+                            <input type="hidden" name="repo" th:value="${link.repo}">
+                            <button type="submit" class="btn-danger btn-sm">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <p th:if="${#lists.isEmpty(repoJiraLinks)}" class="empty-state">
+            No associations yet — add one below.
+        </p>
+
+        <h4 style="margin-top:1em">Add or update association</h4>
+        <form method="post" action="/associations/repo-jira/save"
+              style="background:#f4f6fa; padding:0.6em 0.8em; border-radius:4px; border-left:3px solid #4a9be8">
+            <p class="help-text" style="margin:0 0 0.4em 0">
+                Adding a row with an existing <em>GitHub repo</em>
+                replaces the old link.
+            </p>
+            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                <span style="min-width:11em"><strong>GitHub repo</strong></span>
+                <input name="repo" required pattern="[A-Za-z0-9_\-.]+/[A-Za-z0-9_\-.]+"
+                       title="Format: owner/repo (e.g. apache/kafka)"
+                       placeholder="owner/repo" style="width:22em">
+            </label>
+            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                <span style="min-width:11em"><strong>JIRA project key</strong></span>
+                <input name="jiraProjectKey" required pattern="[A-Z][A-Z0-9_]*"
+                       title="Uppercase project key (e.g. PAY, KAFKA)"
+                       placeholder="PAY" style="width:10em">
+                <span class="help-text">stored uppercase</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                <span style="min-width:11em"><strong>JIRA base URL (opt)</strong></span>
+                <input name="jiraBaseUrl" type="url"
+                       th:value="${baseUrl}"
+                       placeholder="https://yourcorp.atlassian.net"
+                       style="width:22em">
+                <span class="help-text">leave blank to use the JIRA host configured above</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                <span style="min-width:11em"><strong>Notes (opt)</strong></span>
+                <input name="notes" placeholder="e.g. tracks customer-reported bugs only" style="width:30em">
+            </label>
+            <div class="button-row">
+                <button type="submit">Save association</button>
+            </div>
+        </form>
+
+        <p class="help-text" style="margin-top:0.5em">
+            <strong>API:</strong>
+            <code>GET /api/associations/repo-jira</code> returns the
+            full list as JSON;
+            <code>GET /api/associations/repo-jira/lookup?repo=owner/name</code>
+            returns one link or <code>null</code>. The harness uses
+            these to pick its issue source per repo.
+        </p>
+    </section>
+
+    <script>
+        function toggleAuthFields() {
+            var method = document.getElementById('authMethod').value;
+            document.getElementById('apiTokenField').style.display = method === 'api-token' ? 'block' : 'none';
+            document.getElementById('basicAuthFields').style.display = method === 'basic' ? 'block' : 'none';
+        }
+    </script>
+</main>
+</body>
+</html>

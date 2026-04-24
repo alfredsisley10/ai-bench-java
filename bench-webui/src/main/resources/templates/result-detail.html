@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Run ' + ${runId}, ~{::main})}">
+<body>
+<main>
+    <h2 th:text="'Run: ' + ${runId}">Run detail</h2>
+
+    <div th:if="${run == null}">
+        <p class="empty-state">Run not found or still in progress.</p>
+    </div>
+
+    <div th:if="${run != null}">
+        <div class="cards">
+            <div class="card"><span class="label">Result</span><span class="value" th:text="${run.passed ? 'PASS' : 'FAIL'}"></span></div>
+            <div class="card"><span class="label">Solver</span><span class="value" th:text="${run.solver}"></span></div>
+            <div class="card"><span class="label">Model</span><span class="value" th:text="${run.model}"></span></div>
+            <div class="card"><span class="label">AppMap</span><span class="value" th:text="${run.appmapMode}"></span></div>
+        </div>
+
+        <section>
+            <h3>Token usage</h3>
+            <table>
+                <tr><th>Prompt tokens</th><td th:text="${run.promptTokens}"></td></tr>
+                <tr><th>Completion tokens</th><td th:text="${run.completionTokens}"></td></tr>
+                <tr><th>Estimated cost</th><td th:text="${'$' + run.estimatedCost}"></td></tr>
+            </table>
+        </section>
+
+        <section>
+            <h3>Quality metrics</h3>
+            <table>
+                <tr><th>Cyclomatic delta</th><td th:text="${run.cyclomaticDelta}"></td></tr>
+                <tr><th>Patch lines</th><td th:text="${run.patchLines}"></td></tr>
+                <tr><th>Regressions</th><td th:text="${run.regressions}"></td></tr>
+                <tr><th>Wall clock</th><td th:text="${run.wallClockSec + 's'}"></td></tr>
+            </table>
+        </section>
+
+        <section>
+            <h3>Generated patch</h3>
+            <pre th:text="${run.patch}"></pre>
+        </section>
+    </div>
+</main>
+</body>
+</html>

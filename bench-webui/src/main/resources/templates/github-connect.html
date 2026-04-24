@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('GitHub', ~{::main})}">
+<body>
+<main>
+    <h2>GitHub connection</h2>
+
+    <div th:if="${connected}" class="status-banner ok">
+        <strong>Connected</strong>
+        <span th:if="${isEnterprise}" th:text="' to enterprise host ' + ${host}"></span>
+        <span th:unless="${isEnterprise}"> to github.com</span>
+        <span th:if="${tokenPreview != ''}" th:text="' · Token: ' + ${tokenPreview}"></span>
+    </div>
+
+    <div th:if="${testResult != null}" th:class="'status-banner ' + (${testResult.success} ? 'ok' : 'error')">
+        <span th:text="${testResult.message}"></span>
+    </div>
+
+    <section>
+        <h3>GitHub host</h3>
+        <p class="help-text">
+            Choose <code>github.com</code> for the public service or your
+            organization's hostname (e.g. <code>github.acme-corp.internal</code>)
+            for a GitHub Enterprise Server deployment. The REST API base
+            becomes <code>https://HOST/api/v3</code> for enterprise hosts;
+            the device-flow URL becomes <code>https://HOST/login/device</code>.
+        </p>
+        <form method="post" action="/github/save-host">
+            <label>Host:
+                <input name="host" type="text" th:value="${host}" required
+                       placeholder="github.com or github.your-company.com"
+                       pattern="[a-zA-Z0-9][a-zA-Z0-9.\-]*[a-zA-Z0-9]"
+                       title="Hostname only — no https:// prefix or path">
+            </label>
+            <button type="submit" class="btn-secondary">Save host</button>
+        </form>
+        <p class="help-text" style="margin-top:0.25em">
+            Current API base: <code th:text="${apiBaseUrl}"></code>
+        </p>
+    </section>
+
+    <section th:unless="${connected}">
+        <p class="help-text">
+            Pick whichever auth flow your environment supports.
+            <strong>Option 1 (device flow)</strong> avoids ever holding a
+            long-lived secret on this host — best for shared / unattended
+            machines and orgs that mandate OAuth Apps.
+            <strong>Option 2 (personal access token)</strong> is faster
+            to set up if you already have a PAT or your org doesn't
+            allow OAuth Apps.
+        </p>
+
+        <!-- ============================================================ -->
+        <!-- Option 1 — Device flow                                       -->
+        <!-- ============================================================ -->
+        <h3>Option 1 — Device flow (OAuth App)</h3>
+        <p class="help-text">
+            Uses GitHub's <em>device-authorization grant</em>: this WebUI
+            generates a short user code, you paste it into a browser
+            tab on any device, and GitHub returns an access token
+            scoped to whatever the OAuth App is configured for. No
+            long-lived secret ever sits on this host — the token lives
+            in your session and is wiped on restart.
+        </p>
+
+        <details style="margin-bottom:0.5em">
+            <summary class="help-text" style="cursor:pointer">
+                <strong>How to set this up (one-time)</strong>
+            </summary>
+            <ol class="help-text" style="margin-top:0.5em">
+                <li>
+                    Create an OAuth App on the host you configured above:
+                    <ul>
+                        <li><strong>github.com:</strong>
+                            <a href="https://github.com/settings/developers"
+                               target="_blank" rel="noopener">Settings → Developer settings → OAuth Apps → New OAuth App</a>
+                            (or <a href="https://github.com/organizations/YOUR-ORG/settings/applications"
+                                target="_blank" rel="noopener">your org's OAuth Apps page</a>
+                            if the OAuth App should be org-owned)
+                        </li>
+                        <li><strong>GitHub Enterprise Server:</strong>
+                            <code th:text="'https://' + ${host} + '/settings/developers'"></code>
+                            then <em>OAuth Apps → New OAuth App</em>
+                        </li>
+                    </ul>
+                </li>
+                <li>
+                    Fill in the form:
+                    <ul>
+                        <li><em>Application name</em>: anything (e.g. <code>ai-bench-webui</code>)</li>
+                        <li><em>Homepage URL</em>: <code>http://localhost:7777/</code></li>
+                        <li><em>Authorization callback URL</em>: <code>http://localhost:7777/github/callback</code> (not used by device flow but required by the form)</li>
+                        <li>Check <em>Enable Device Flow</em> ⚠️ (this is required and OFF by default — easy to miss)</li>
+                    </ul>
+                </li>
+                <li>After saving, GitHub shows a <strong>Client ID</strong> at the top of the app page (looks like <code>Ov23li…</code> on github.com or <code>Iv1.…</code> on older OAuth Apps). Copy it.</li>
+                <li>Paste the Client ID below and click <strong>Start device flow</strong>. The page returns a verification URL + a short user code.</li>
+                <li>Open the verification URL in any browser, paste the user code, and approve. The WebUI polls for the resulting access token and saves it to your session.</li>
+            </ol>
+            <p class="help-text" style="margin-top:0.4em">
+                <strong>Required scopes:</strong> typically
+                <code>repo</code> (issues, PRs, contents) and
+                <code>read:org</code> (membership info). Configure these
+                on the OAuth App page if needed for your benchmarks.
+            </p>
+        </details>
+
+        <form hx-post="/github/start-device-flow" hx-target="#device-code">
+            <label>OAuth client ID:
+                <input name="clientId" required minlength="5"
+                       placeholder="Ov23li... or Iv1...."
+                       title="GitHub OAuth App client ID — get it from Settings → Developer settings → OAuth Apps">
+            </label>
+            <button type="submit">Start device flow</button>
+        </form>
+        <p class="help-text" style="margin-top:0.25em">
+            The verification URL returned by this step will be on the host
+            you configured above (<code th:text="'https://' + ${host} + '/login/device'"></code>).
+        </p>
+        <div id="device-code"></div>
+
+        <!-- ============================================================ -->
+        <!-- Option 2 — Personal access token                             -->
+        <!-- ============================================================ -->
+        <h3 style="margin-top:1.5em">Option 2 — Personal access token (PAT)</h3>
+        <p class="help-text">
+            Skip the OAuth dance and just paste a token. GitHub supports
+            two PAT flavors: <strong>classic</strong>
+            (<code>ghp_…</code>, scopes-only, lives forever unless you
+            set an expiry) and <strong>fine-grained</strong>
+            (<code>github_pat_…</code>, scoped to specific repos with
+            individual permissions, mandatory expiry). Both work here —
+            ai-bench picks whichever is on the
+            <code>Authorization</code> header.
+        </p>
+
+        <details style="margin-bottom:0.5em">
+            <summary class="help-text" style="cursor:pointer">
+                <strong>How to create a PAT</strong>
+            </summary>
+            <p class="help-text" style="margin-top:0.5em">
+                <strong>Classic PAT (simplest, recommended for dev/test):</strong>
+            </p>
+            <ol class="help-text" style="margin-top:0.25em">
+                <li>
+                    Go to
+                    <span th:if="${isEnterprise}">
+                        <code th:text="'https://' + ${host} + '/settings/tokens'"></code>
+                        (enterprise host)
+                    </span>
+                    <span th:unless="${isEnterprise}">
+                        <a href="https://github.com/settings/tokens" target="_blank" rel="noopener">github.com/settings/tokens</a>
+                    </span>
+                </li>
+                <li>Click <em>Generate new token (classic)</em></li>
+                <li>Set a note (e.g. <code>ai-bench-webui</code>), pick an expiry, and select scopes:
+                    <ul>
+                        <li><code>repo</code> — full repo access (required for issue / PR / contents read)</li>
+                        <li><code>read:org</code> — read org membership (required if you list org repos)</li>
+                        <li><code>workflow</code> — only if you also need to read GitHub Actions runs</li>
+                    </ul>
+                </li>
+                <li>Click <em>Generate token</em>, copy the resulting <code>ghp_…</code> string immediately (GitHub only shows it once)</li>
+            </ol>
+            <p class="help-text" style="margin-top:0.5em">
+                <strong>Fine-grained PAT (recommended if your org enforces them):</strong>
+            </p>
+            <ol class="help-text" style="margin-top:0.25em">
+                <li>
+                    Go to
+                    <span th:if="${isEnterprise}">
+                        <code th:text="'https://' + ${host} + '/settings/personal-access-tokens'"></code>
+                    </span>
+                    <span th:unless="${isEnterprise}">
+                        <a href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener">github.com/settings/personal-access-tokens</a>
+                    </span>
+                </li>
+                <li>Click <em>Generate new token</em>, pick the resource owner (your account or the org)</li>
+                <li>Choose <em>Repository access</em> (specific repos or all)</li>
+                <li>Under <em>Repository permissions</em> grant at minimum: <code>Contents: Read</code>, <code>Issues: Read</code>, <code>Pull requests: Read</code>, <code>Metadata: Read</code></li>
+                <li>Generate, copy the resulting <code>github_pat_…</code> string</li>
+            </ol>
+            <p class="help-text" style="margin-top:0.5em">
+                <strong>Storage &amp; security:</strong> ai-bench keeps the
+                token in your session only — never written to disk by
+                the WebUI. The session ends when you close the browser
+                / restart bench-webui. To persist across restarts, set
+                the <code>GITHUB_TOKEN</code> env var when launching
+                <code>./gradlew bootRun</code>.
+            </p>
+        </details>
+
+        <form method="post" action="/github/save-token" id="tokenForm">
+            <label>Token:
+                <input name="token" type="password" required minlength="4"
+                       placeholder="ghp_... / github_pat_... / ghs_... / enterprise token"
+                       pattern="\S{4,255}"
+                       autocomplete="new-password"
+                       title="GitHub personal access token — classic ghp_, fine-grained github_pat_, or an enterprise-issued token">
+            </label>
+            <button type="submit">Save token</button>
+        </form>
+        <p class="help-text" style="margin-top:0.25em">
+            Token format is not enforced — public github.com issues
+            <code>ghp_</code> (classic) and <code>github_pat_</code>
+            (fine-grained) prefixes, but self-hosted GitHub Enterprise
+            deployments may mint tokens with different prefixes.
+            Validation happens when you <em>Test GitHub access</em>.
+        </p>
+    </section>
+
+    <section th:if="${connected}">
+        <h3>Connection test</h3>
+        <form method="post" action="/github/test" style="display:inline">
+            <button type="submit" class="btn-secondary">Test GitHub access</button>
+        </form>
+        <p class="help-text">
+            Calls <code th:text="${apiBaseUrl} + '/user'"></code> with the
+            saved token to verify authentication.
+        </p>
+    </section>
+
+    <section>
+        <h3>Repository management</h3>
+        <p><a href="/github/repos">Scan and rank repository candidates</a></p>
+        <p><a href="/github/repos/status">View build and test status</a></p>
+    </section>
+</main>
+</body>
+</html>

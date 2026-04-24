@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Repos', ~{::main})}">
+<body>
+<main>
+    <h2>Ranked benchmark candidates</h2>
+    <p class="subtitle">Repositories are scored by language match, CI presence, test coverage, and size.</p>
+
+    <div th:if="${#lists.isEmpty(candidates)}">
+        <p class="empty-state">No repositories scanned yet. <a href="/github">Connect GitHub</a> first, then scan.</p>
+    </div>
+
+    <form th:unless="${#lists.isEmpty(candidates)}" method="post" action="/github/repos/select">
+        <table>
+            <thead><tr><th></th><th>Repository</th><th>Language</th><th>Score</th><th>CI</th><th>Tests</th><th>JIRA project</th></tr></thead>
+            <tbody>
+            <tr th:each="c : ${candidates}">
+                <td><input type="checkbox" name="repos" th:value="${c.fullName}" th:checked="${c.selected}"></td>
+                <td th:text="${c.fullName}"></td>
+                <td th:text="${c.primaryLanguage}"></td>
+                <td th:text="${#numbers.formatDecimal(c.score, 1, 1)}"></td>
+                <td th:text="${c.hasCi ? 'Yes' : 'No'}"></td>
+                <td th:text="${c.hasTests ? 'Yes' : 'No'}"></td>
+                <td>
+                    <span th:if="${jiraLinks.containsKey(c.fullName)}">
+                        <code th:text="${jiraLinks[__${c.fullName}__].jiraProjectKey}"></code>
+                        <a href="/jira#repo-jira-associations" class="help-text" style="margin-left:0.3em">edit</a>
+                    </span>
+                    <span th:unless="${jiraLinks.containsKey(c.fullName)}">
+                        <a th:href="@{/jira(#=${'repo-jira-associations'})}" class="help-text">link to JIRA</a>
+                    </span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+        <button type="submit">Select for benchmarking</button>
+    </form>
+    <p class="help-text" style="margin-top:0.5em">
+        Some repos use JIRA (not GitHub Issues) as their bug source.
+        Click <em>link to JIRA</em> for any row whose problem
+        statements live in a JIRA project — the benchmark harness will
+        fetch tickets from the linked project at run time. Manage the
+        full list on the <a href="/jira#repo-jira-associations">JIRA configuration page</a>.
+    </p>
+</main>
+</body>
+</html>

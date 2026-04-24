@@ -1,0 +1,38 @@
+# Build outputs
+.gradle/
+build/
+out/
+bin/
+
+# Gradle wrapper jar is checked in
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AppMap runtime artifacts
+appmap.log
+**/tmp/appmap/
+
+# AppMap traces
+tmp/
+*.appmap.json
+appmap.log
+.kotlin/
+
+# Node (vscode-copilot-bridge)
+node_modules/
+dist/
+
+# Secrets / local config
+.env
+*.local.yaml
+banking-app/.git

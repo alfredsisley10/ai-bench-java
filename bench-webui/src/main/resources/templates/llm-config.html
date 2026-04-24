@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('LLMs', ~{::main})}">
+<body>
+<main>
+    <h2>LLM providers &amp; setup wizards</h2>
+    <p class="subtitle">
+        Step-by-step setup for GitHub Copilot (via VSCode Bridge) and the
+        Corporate OpenAI Gateway (Apigee &rarr; OpenAI-compatible endpoint).
+        Both wizards respect the Proxy / TLS choices on
+        <a href="/proxy">/proxy</a>.
+    </p>
+
+    <!-- =========================================================== -->
+    <!-- Provider status summary                                     -->
+    <!-- =========================================================== -->
+    <section>
+        <h3>Provider status</h3>
+        <table>
+            <thead><tr><th>Provider</th><th>Status</th><th>Details</th></tr></thead>
+            <tbody>
+            <tr th:each="p : ${providers}">
+                <td th:text="${p.displayName}"></td>
+                <td><span th:class="'badge ' + ${p.status}" th:text="${p.status}"></span></td>
+                <td th:text="${p.detail}"></td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- Copilot wizard                                              -->
+    <!-- =========================================================== -->
+    <section id="copilot">
+        <details class="setup-card" th:attr="open=${copilotBridgeHealthy ? null : null}">
+            <summary><h3 style="display:inline; margin:0">GitHub Copilot (VSCode Bridge) — setup</h3>
+                <span class="help-text" style="margin-left:0.5em; font-size:0.85em"
+                      th:text="${copilotBridgeHealthy ? '✓ bridge detected — click to review' : '▸ click to expand'}"></span>
+            </summary>
+        <p class="help-text">
+            The harness talks to Copilot through a local Unix socket that
+            a small VSCode extension exposes. Walk through the three
+            steps below; state icons turn green once each step succeeds.
+        </p>
+
+        <div th:if="${copilotProbeResult != null}"
+             th:class="'status-banner ' + (${copilotProbeResult.success} ? 'ok' : 'error')">
+            <span th:text="${copilotProbeResult.message}"></span>
+        </div>
+
+        <ol class="wizard-steps">
+            <li>
+                <strong>
+                    <span th:text="${copilotBridgeHealthy ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 1 — Install the VSCode extension
+                </strong>
+                <p class="help-text">
+                    The <code>ai-bench Copilot Bridge</code> VSCode
+                    extension publishes a Unix socket at the path below
+                    and relays requests to GitHub Copilot through the
+                    VSCode Copilot extension. Pick whichever install
+                    link matches how your editor is reachable:
+                </p>
+                <div th:if="${copilotVsixPresent}" class="button-row">
+                    <a href="/llm/copilot/download-bridge"
+                       class="btn-sm" style="margin-right:0.5em" download>
+                        Download copilot-bridge.vsix
+                    </a>
+                    <span class="help-text"
+                          th:text="'(built locally, ' + ${#numbers.formatInteger(copilotVsixSize / 1024, 1, 'COMMA')} + ' KB)'"></span>
+                </div>
+                <div th:unless="${copilotVsixPresent}" style="background:#fff3cd; padding:0.5em 0.75em; border-radius:4px; border-left:3px solid #f0ad4e; margin:0.25em 0">
+                    <strong>VSIX not built yet.</strong>
+                    <p class="help-text" style="margin-top:0.25em">
+                        The extension source lives in
+                        <code>tools/copilot-bridge-extension/</code>.
+                        Build it once and this page will auto-detect the
+                        artifact:
+                    </p>
+                    <pre style="margin:0.25em 0; padding:0.4em 0.6em; background:#f4f6fa; border-radius:3px">cd tools/copilot-bridge-extension
+npm install
+npm run package      # produces copilot-bridge.vsix</pre>
+                </div>
+                <p class="help-text" style="margin-top:0.5em">
+                    Once downloaded, install it in VSCode via
+                    <em>Extensions → &hellip; → Install from VSIX&hellip;</em>,
+                    then run <em>ai-bench: Start Copilot Bridge</em> from
+                    the command palette. Override the bundled VSIX with
+                    the <code>AI_BENCH_COPILOT_VSIX</code> env var if you
+                    package it somewhere else.
+                </p>
+                <p class="help-text" style="margin-top:0.5em">
+                    If your organization publishes the bridge to an
+                    <em>internal</em> marketplace (Open VSX, private
+                    registry, or a .vsix download server), replace the
+                    extension ID by setting the
+                    <code>AI_BENCH_COPILOT_EXT_ID</code> env var before
+                    launching bench-webui — the link above will pick it
+                    up on the next page load.
+                </p>
+                <p>Socket path: <code th:text="${copilotSockPath}"></code></p>
+            </li>
+            <li>
+                <strong>
+                    <span th:text="${copilotBridgeHealthy ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 2 — Start the bridge
+                </strong>
+                <p class="help-text">
+                    Open VSCode's command palette (<code>&#8984;&#8679;P</code>
+                    / <code>Ctrl+Shift+P</code>) and run
+                    <em>ai-bench: Start Copilot Bridge</em>. The extension
+                    creates / re-binds the socket at the path above.
+                    Override the path by setting the
+                    <code>AI_BENCH_COPILOT_SOCK</code> env var before
+                    launching bench-webui.
+                </p>
+            </li>
+            <li>
+                <strong>
+                    <span th:text="${copilotBridgeHealthy ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 3 — Verify &amp; enumerate available models
+                </strong>
+                <div class="button-row">
+                    <form method="post" action="/llm/copilot/probe" style="display:inline">
+                        <button type="submit" class="btn-sm">Probe bridge socket</button>
+                    </form>
+                    <form method="post" action="/llm/copilot/list-models" style="display:inline; margin-left:0.5em">
+                        <button type="submit" class="btn-sm">List Copilot models</button>
+                    </form>
+                </div>
+                <p class="help-text" style="margin-top:0.5em">
+                    "List models" dials the bridge with
+                    <code>{"op":"list-models"}</code> and renders every
+                    Copilot-vended chat model the user is entitled to in
+                    the current VSCode session, including a synthetic
+                    <code>auto</code> entry that maps to whichever model
+                    GitHub returns first (its own "let GitHub pick"
+                    default).
+                </p>
+
+                <div th:if="${!copilotEnumeratedModels.isEmpty()}" style="margin-top:0.5em">
+                    <form method="post" action="/llm/copilot/register-all" style="display:inline">
+                        <button type="submit" class="btn-sm">Register all enumerated models</button>
+                    </form>
+                    <span class="help-text" style="margin-left:0.5em">
+                        Adds each row below — and a synthetic
+                        <code>auto</code> entry — to the
+                        <a href="#registered-models">Registered models</a>
+                        table. Costs default to $0 (Copilot is
+                        seat-priced); override per-model via the catalog
+                        if your org tracks chargeback.
+                    </span>
+                </div>
+
+                <table th:if="${!copilotEnumeratedModels.isEmpty()}" style="margin-top:0.5em">
+                    <thead>
+                        <tr>
+                            <th>Model ID</th>
+                            <th>Name</th>
+                            <th>Family</th>
+                            <th>Version</th>
+                            <th>Vendor</th>
+                            <th class="num">Max input tokens</th>
+                            <th>Use as 'auto'?</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Synthetic 'auto' row, always shown when at least one model exists -->
+                        <tr style="background:#fff7d6">
+                            <td><code>auto</code></td>
+                            <td>(GitHub picks)</td>
+                            <td>—</td>
+                            <td>—</td>
+                            <td>copilot</td>
+                            <td class="num">—</td>
+                            <td><span class="badge available">always 'auto'</span></td>
+                            <td>
+                                <form method="post" action="/llm/copilot/register-model" style="display:inline">
+                                    <input type="hidden" name="modelId" value="auto">
+                                    <input type="hidden" name="displayName" value="Copilot (auto-routed)">
+                                    <button type="submit" class="btn-sm">Register</button>
+                                </form>
+                            </td>
+                        </tr>
+                        <tr th:each="m : ${copilotEnumeratedModels}">
+                            <td><code th:text="${m.id}"></code></td>
+                            <td th:text="${m.name}"></td>
+                            <td th:text="${m.family}"></td>
+                            <td th:text="${m.version}"></td>
+                            <td th:text="${m.vendor}"></td>
+                            <td class="num" th:text="${#numbers.formatInteger(m.maxInputTokens, 1, 'COMMA')}"></td>
+                            <td>
+                                <span th:if="${m.auto}" class="badge available">resolves here</span>
+                                <span th:unless="${m.auto}" class="help-text">—</span>
+                            </td>
+                            <td>
+                                <form method="post" action="/llm/copilot/register-model" style="display:inline">
+                                    <input type="hidden" name="modelId" th:value="${m.id}">
+                                    <input type="hidden" name="displayName" th:value="${m.name}">
+                                    <button type="submit" class="btn-sm">Register</button>
+                                </form>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </li>
+        </ol>
+        </details>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- Corporate OpenAI wizard                                     -->
+    <!-- =========================================================== -->
+    <section id="corp-openai">
+        <details class="setup-card">
+            <summary><h3 style="display:inline; margin:0">Corporate OpenAI Gateway — setup</h3>
+                <span class="help-text" style="margin-left:0.5em; font-size:0.85em"
+                      th:text="${corpWizardComplete ? '✓ configured — click to review' : '▸ click to expand'}"></span>
+            </summary>
+        <p class="help-text">
+            Two-hop flow: <strong>(a)</strong> exchange client credentials
+            at the Apigee login URL for an access bearer token, then
+            <strong>(b)</strong> call the OpenAI-compatible endpoint on
+            the corporate gateway with that bearer token plus any custom
+            headers your gateway requires (tenant ID, correlation ID, etc.).
+            Saved configuration lands in <code th:text="${corpConfigPath}"></code>.
+        </p>
+
+        <div th:if="${oaiTestResult != null}"
+             th:class="'status-banner ' + (${oaiTestResult.success} ? 'ok' : 'error')">
+            <strong th:text="${oaiTestResult.step == 'apigee' ? 'Step 2' : 'Step 4'} + ': '"></strong>
+            <span th:text="${oaiTestResult.message}"></span>
+        </div>
+
+        <ol class="wizard-steps">
+            <!-- Step 1 — Apigee credentials -->
+            <li>
+                <strong>
+                    <span th:text="${apigeeConfigured ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 1 — Apigee credentials
+                </strong>
+                <form method="post" action="/llm/corp-openai/apigee/save">
+                    <label>Login URL (Apigee token endpoint):
+                        <input name="loginUrl" type="url" th:value="${apigeeLoginUrl}"
+                               required placeholder="https://login.apigee.corp.example.com/oauth/token"
+                               style="width:500px">
+                    </label>
+                    <label>Client ID:
+                        <input name="clientId" type="text" required minlength="3" style="width:400px"
+                               th:value="${apigeeClientId}">
+                    </label>
+                    <label>Client secret:
+                        <input name="clientSecret" type="password" style="width:400px"
+                               th:placeholder="${apigeeClientSecretPresent ? '(unchanged — leave blank to keep)' : 'paste secret'}"
+                               th:autocomplete="'new-password'">
+                    </label>
+                    <label>Scope (optional):
+                        <input name="scope" type="text" th:value="${apigeeScope}"
+                               placeholder="openai.read openai.write" style="width:400px">
+                    </label>
+
+                    <fieldset style="margin-top:0.5em; padding:0.5em; border:1px solid #d6d8db; border-radius:4px">
+                        <legend class="help-text">Secret storage (applies to client_secret and to any header marked secret)</legend>
+                        <label style="margin:0.2em 0">
+                            <input type="radio" name="secretStorage" value="memory"
+                                   th:checked="${secretStorage == 'memory'}">
+                            <strong>In memory only</strong>
+                            <span class="help-text" style="margin-left:0.5em">— stored in this session; cleared on WebUI restart</span>
+                        </label>
+                        <label style="margin:0.2em 0" th:if="${keystoreAvailable}">
+                            <input type="radio" name="secretStorage" value="keystore"
+                                   th:checked="${secretStorage == 'keystore'}">
+                            <strong>OS keystore</strong>
+                            <span class="help-text" style="margin-left:0.5em"
+                                  th:text="'— persistent (' + ${keystoreBackendName} + ')'"></span>
+                        </label>
+                        <label style="margin:0.2em 0">
+                            <input type="radio" name="secretStorage" value="vault"
+                                   th:checked="${secretStorage == 'vault'}">
+                            <strong>HashiCorp Vault (via env var)</strong>
+                            <span class="help-text" style="margin-left:0.5em">
+                                — secret value is an env-var NAME; actual secret is
+                                injected by Vault Agent / the OpenShift injector at
+                                launch time
+                            </span>
+                        </label>
+                        <p class="help-text" th:unless="${keystoreAvailable}" style="margin:0.2em 0">
+                            OS keystore not available on this host —
+                            <code th:text="${keystoreBackendName}"></code>. Install
+                            <code>security</code>/<code>secret-tool</code>/<code>cmdkey</code>,
+                            or choose memory / Vault mode.
+                        </p>
+                        <label>clientId env-var name (harness reads value from here):
+                            <input name="clientIdEnvName" th:value="${clientIdEnvName}" style="width:250px">
+                        </label>
+                        <label>clientSecret env-var name:
+                            <input name="clientSecretEnvName" th:value="${clientSecretEnvName}" style="width:250px">
+                        </label>
+                    </fieldset>
+                    <div class="button-row">
+                        <button type="submit" class="btn-sm">Save credentials</button>
+                    </div>
+                </form>
+            </li>
+
+            <!-- Step 2 — Test Apigee token exchange -->
+            <li>
+                <strong>
+                    <span th:text="${apigeeVerified ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 2 — Test Apigee login
+                </strong>
+                <p class="help-text">
+                    Exchanges <code>grant_type=client_credentials</code> at
+                    the Apigee login URL and captures the returned
+                    <code>access_token</code>.
+                </p>
+                <p th:if="${apigeeTokenMasked != ''}" style="margin:0.25em 0">
+                    Current token: <code th:text="${apigeeTokenMasked}"></code>
+                    <span class="help-text"
+                          th:text="${apigeeTokenAlive ? '(~' + apigeeExpiresInSec + 's left)' : '(expired — re-run this step)'}"></span>
+                </p>
+                <form method="post" action="/llm/corp-openai/apigee/test" style="display:inline">
+                    <button type="submit" class="btn-sm" th:disabled="${!apigeeConfigured}">Test Apigee login</button>
+                </form>
+            </li>
+
+            <!-- Step 3 — Configure OpenAI endpoint + custom headers -->
+            <li>
+                <strong>
+                    <span th:text="${openAiConfigured ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 3 — OpenAI endpoint &amp; custom headers
+                </strong>
+                <form method="post" action="/llm/corp-openai/openai/save">
+                    <label>Gateway base URL:
+                        <input name="baseUrl" type="url" required th:value="${oaiBaseUrl}"
+                               placeholder="https://api.corp.example.com/openai/v1"
+                               style="width:500px">
+                    </label>
+                    <label>Default model identifier:
+                        <input name="defaultModel" type="text" th:value="${oaiDefaultModel}"
+                               placeholder="gpt-4o" style="width:400px" list="availableModelsList">
+                    </label>
+                    <datalist id="availableModelsList">
+                        <option th:each="m : ${availableModels}" th:value="${m}"></option>
+                    </datalist>
+                    <p class="help-text" th:unless="${availableModels.isEmpty()}" style="margin:0.25em 0">
+                        Models enumerated from the gateway (click to pre-fill):
+                        <span th:each="m, it : ${availableModels}">
+                            <code th:text="${m}" style="margin-right:0.3em"></code>
+                        </span>
+                    </p>
+
+                    <fieldset style="margin-top:0.75em; padding:0.5em; border:1px solid #d6d8db; border-radius:4px">
+                        <legend class="help-text">Custom headers</legend>
+                        <p class="help-text" style="margin-top:0">
+                            Per-row: mark the checkbox to hide the value
+                            behind a password field and route it through
+                            the secret-storage choice in Step 1. Secrets
+                            stored in keystore / Vault show a
+                            <em>source</em> hint and leave the value box
+                            empty — paste a new value to rotate.
+                        </p>
+                        <table id="headersTable" style="margin:0.25em 0">
+                            <thead>
+                                <tr>
+                                    <th style="width:35%">Name</th>
+                                    <th style="width:35%">Value</th>
+                                    <th>Secret?</th>
+                                    <th>Source</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr th:each="h, it : ${oaiHeaderRows}">
+                                    <td>
+                                        <input name="headerName" th:value="${h.name}"
+                                               pattern="[A-Za-z0-9\-_]+"
+                                               title="Header name — letters, digits, dash, underscore"
+                                               style="width:100%">
+                                    </td>
+                                    <td>
+                                        <input name="headerValue" th:value="${h.value}"
+                                               th:type="${h.secret} ? 'password' : 'text'"
+                                               th:placeholder="${h.secret and h.value == '' ? '(secret on file — paste to rotate)' : 'header value'}"
+                                               style="width:100%">
+                                    </td>
+                                    <td style="text-align:center">
+                                        <input type="hidden" name="headerSecret" th:value="${h.secret}">
+                                        <input type="checkbox" th:checked="${h.secret}"
+                                               onchange="this.previousElementSibling.value = this.checked; toggleHeaderValueType(this);">
+                                    </td>
+                                    <td>
+                                        <span th:if="${h.secret}"
+                                              th:class="'badge ' + (${h.source == 'keystore'} ? 'available' : (${h.source == 'vault'} ? 'partial' : 'unavailable'))"
+                                              th:text="${h.source}"></span>
+                                        <span th:unless="${h.secret}" class="help-text">public</span>
+                                    </td>
+                                    <td><button type="button" class="btn-danger btn-sm" onclick="removeHeaderRow(this)">Remove</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div class="button-row">
+                            <button type="button" class="btn-sm" onclick="addHeaderRow()">+ Add header</button>
+                        </div>
+                    </fieldset>
+
+                    <div class="button-row">
+                        <button type="submit" class="btn-sm">Save endpoint settings</button>
+                    </div>
+                </form>
+            </li>
+
+            <!-- Step 4 — Test OpenAI endpoint + enumerate models -->
+            <li>
+                <strong>
+                    <span th:text="${openAiVerified ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 4 — Test OpenAI endpoint &amp; enumerate models
+                </strong>
+                <p class="help-text">
+                    Calls <code th:text="${oaiBaseUrl + '/models'}"></code>
+                    with the Apigee bearer token + your custom headers.
+                    On success, available model IDs are listed above
+                    and <code th:text="${corpConfigPath}"></code> is
+                    written.
+                </p>
+                <form method="post" action="/llm/corp-openai/openai/test" style="display:inline">
+                    <button type="submit" class="btn-sm"
+                            th:disabled="${!apigeeVerified or !openAiConfigured}">Test OpenAI endpoint</button>
+                </form>
+            </li>
+
+            <!-- Step 5 — Capabilities probe -->
+            <li>
+                <strong>
+                    <span th:text="${oaiCapabilities != null ? '✓' : '○'}" style="margin-right:0.3em"></span>
+                    Step 5 — Probe API capabilities (optional)
+                </strong>
+                <p class="help-text">
+                    Checks which OpenAI REST surfaces the gateway
+                    actually implements and flags non-standard response
+                    shapes. Sends a minimum-cost request per endpoint.
+                </p>
+                <form method="post" action="/llm/corp-openai/probe-capabilities" style="display:inline">
+                    <button type="submit" class="btn-sm" th:disabled="${!openAiVerified}">Probe capabilities</button>
+                </form>
+
+                <div th:if="${oaiCapabilities != null}" style="margin-top:0.5em">
+                    <p th:text="${oaiCapabilities.message}"></p>
+                    <table class="sortable-table">
+                        <thead>
+                        <tr>
+                            <th data-sort-key="label">Endpoint</th>
+                            <th data-sort-key="method">Method</th>
+                            <th data-sort-key="path">Path</th>
+                            <th data-sort-key="verdict">Verdict</th>
+                            <th data-sort-key="status">HTTP</th>
+                            <th>Spec</th>
+                            <th>Customization signals</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr th:each="r : ${oaiCapabilities.results}"
+                            th:attr="data-label=${r.label}, data-method=${r.method}, data-path=${r.path}, data-verdict=${r.verdict}, data-status=${r.status}">
+                            <td th:text="${r.label}"></td>
+                            <td th:text="${r.method}"></td>
+                            <td><code th:text="${r.path}"></code></td>
+                            <td>
+                                <span th:class="'badge ' + (${r.verdict == 'supported'} ? 'available' : (${r.verdict == 'unsupported'} ? 'unavailable' : 'partial'))"
+                                      th:text="${r.verdict}"></span>
+                            </td>
+                            <td th:text="${r.status}"></td>
+                            <td th:text="${r.spec}"></td>
+                            <td>
+                                <span th:if="${r.customization.isEmpty()}" class="help-text">—</span>
+                                <ul th:unless="${r.customization.isEmpty()}" style="margin:0; padding-left:1em">
+                                    <li th:each="c : ${r.customization}" th:text="${c}"></li>
+                                </ul>
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </li>
+
+            <!-- Reset -->
+            <li>
+                <form method="post" action="/llm/corp-openai/reset">
+                    <button type="submit" class="btn-danger btn-sm">Reset wizard (clear session state)</button>
+                    <span class="help-text">— leaves the persisted YAML in place.</span>
+                </form>
+            </li>
+        </ol>
+        </details>
+    </section>
+
+    <!-- =========================================================== -->
+    <!-- Registered models + Add model                               -->
+    <!-- =========================================================== -->
+    <section id="registered-models">
+        <h3>Registered models</h3>
+        <p class="subtitle">
+            Automatically-available models (from the wizards above) plus
+            any manually-added entries. Edit cost metadata to enable
+            cost comparison in results.
+        </p>
+        <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model ID</th><th>Status</th><th>$/1k prompt</th><th>$/1k completion</th><th></th></tr></thead>
+            <tbody>
+            <tr th:each="m : ${models}">
+                <td th:text="${m.id}"></td>
+                <td th:text="${m.displayName}"></td>
+                <td th:text="${m.provider}"></td>
+                <td th:text="${m.modelIdentifier}"></td>
+                <td><span th:class="'badge ' + ${m.status}" th:text="${m.status}"></span></td>
+                <td th:text="${'$' + #numbers.formatDecimal(m.costPer1kPrompt, 1, 6, 'POINT')}"></td>
+                <td th:text="${'$' + #numbers.formatDecimal(m.costPer1kCompletion, 1, 6, 'POINT')}"></td>
+                <td>
+                    <details th:if="${m.editable}">
+                        <summary class="help-text" style="cursor:pointer">edit pricing</summary>
+                        <form th:action="'/llm/models/' + ${m.id} + '/update'" method="post"
+                              style="margin-top:0.4em; padding:0.5em; background:#f4f6fa; border-radius:4px; border-left:3px solid #4a9be8">
+                            <p class="help-text" style="margin:0 0 0.4em 0">
+                                Edit pricing for
+                                <strong th:text="${m.displayName}"></strong>
+                                <code th:text="'(provider: ' + ${m.provider} + ', model id: ' + ${m.modelIdentifier} + ')'"></code>
+                            </p>
+                            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                                <span style="min-width:11em"><strong>Display name</strong></span>
+                                <input name="displayName" th:value="${m.displayName}"
+                                       required minlength="1" style="flex:1 1 16em">
+                            </label>
+                            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                                <span style="min-width:11em"><strong>$/1k prompt tokens</strong></span>
+                                <input name="costPer1kPrompt" type="number" step="0.000001" min="0"
+                                       th:value="${#numbers.formatDecimal(m.costPer1kPrompt, 1, 6, 'POINT')}"
+                                       required style="width:9em">
+                                <span class="help-text">six-decimal precision (matches catalog)</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                                <span style="min-width:11em"><strong>$/1k completion tokens</strong></span>
+                                <input name="costPer1kCompletion" type="number" step="0.000001" min="0"
+                                       th:value="${#numbers.formatDecimal(m.costPer1kCompletion, 1, 6, 'POINT')}"
+                                       required style="width:9em">
+                                <span class="help-text">leave 0 for embeddings / seat-priced</span>
+                            </label>
+                            <div class="button-row" style="margin-top:0.4em">
+                                <button type="submit" class="btn-sm">Save pricing</button>
+                                <button type="submit"
+                                        th:formaction="'/llm/models/' + ${m.id} + '/delete'"
+                                        class="btn-danger btn-sm"
+                                        onclick="return confirm('Remove this model from registered list?')">Remove model</button>
+                            </div>
+                        </form>
+                    </details>
+                    <span th:unless="${m.editable}" class="help-text">auto-derived</span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <!-- "Add model" section removed: models flow into the Registered
+         table via the Copilot wizard's per-row Register buttons /
+         Register-all, or via auto-registration after the Corp-OpenAI
+         Test step. For providers not in either flow, use the public
+         catalog below as a reference (API identifier + published
+         per-1K pricing) and register manually through the harness
+         config; per-row overrides on both the catalog and the
+         registered table cover custom corporate rates. -->
+
+    <!-- Public model catalog reference table — visible below Step 3 so
+         the operator can crib model IDs + per-1K pricing when adding
+         registered models that weren't picked up by the /models
+         enumeration. -->
+    <section id="public-model-catalog">
+        <details class="setup-card">
+            <summary><h3 style="display:inline; margin:0">Public model reference catalog
+                <span class="help-text" id="catalog-count" style="font-weight:normal; font-size:0.85em"></span>
+            </h3>
+                <span class="help-text" style="margin-left:0.5em; font-size:0.85em">▸ click to expand</span>
+            </summary>
+        <p class="help-text">
+            Publicly-listed per-1,000-token prices for common models.
+            Click any column header to sort. Use the per-column
+            filters or the global search box to narrow the list.
+            Override any row inline if your corporate rate differs;
+            overrides are kept in your session and feed the cost
+            calculations on the Results page.
+        </p>
+        <p class="help-text" style="margin-top:0.25em">
+            <strong>Last updated:</strong>
+            <code th:text="${priceCatalogLastUpdated}"></code>
+            &nbsp;·&nbsp; <strong>Sources:</strong>
+            <span th:each="s, it : ${priceCatalogSources}">
+                <a th:href="${s.second}" th:text="${s.first}" target="_blank" rel="noopener"></a><span th:if="${!it.last}">,</span>
+            </span>
+        </p>
+        <div class="button-row" style="margin:0.5em 0; gap:0.5em">
+            <input type="text" id="catalog-search"
+                   placeholder="Search across all columns…"
+                   style="flex:1 1 20em; max-width:30em; padding:0.3em 0.6em">
+            <button type="button" id="catalog-export" class="btn-sm">Export visible rows as CSV</button>
+        </div>
+        <table class="sortable-table"
+               data-count-target="#catalog-count"
+               data-search-target="#catalog-search"
+               data-csv-target="#catalog-export"
+               data-csv-filename="ai-bench-llm-catalog.csv">
+            <thead>
+                <tr class="sort-row">
+                    <th data-sort-key="name">Model <span class="sort-indicator"></span></th>
+                    <th data-sort-key="provider">Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="modelid">API identifier <span class="sort-indicator"></span></th>
+                    <th data-sort-key="modality">Modality <span class="sort-indicator"></span></th>
+                    <th data-sort-key="prompt" data-sort-numeric="true">$/1k prompt <span class="sort-indicator"></span></th>
+                    <th data-sort-key="completion" data-sort-numeric="true">$/1k completion <span class="sort-indicator"></span></th>
+                    <th>Override</th>
+                    <th data-sort-key="notes">Notes <span class="sort-indicator"></span></th>
+                </tr>
+                <tr class="filter-row">
+                    <th><input type="text" data-filter-col="0" placeholder="filter model"></th>
+                    <th><input type="text" data-filter-col="1" placeholder="filter provider"></th>
+                    <th><input type="text" data-filter-col="2" placeholder="filter API id"></th>
+                    <th><input type="text" data-filter-col="3" placeholder="filter modality"></th>
+                    <th><input type="text" data-filter-col="4" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
+                    <th></th>
+                    <th><input type="text" data-filter-col="7" placeholder="filter notes"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="c : ${priceCatalog}"
+                    th:attr="data-name=${c.displayName},
+                             data-provider=${c.provider},
+                             data-modelid=${c.modelIdentifier},
+                             data-modality=${c.modality},
+                             data-prompt=${c.costPer1kPrompt},
+                             data-completion=${c.costPer1kCompletion == null ? 0 : c.costPer1kCompletion},
+                             data-notes=${c.notes}">
+                    <td th:text="${c.displayName}"></td>
+                    <td th:text="${c.provider}"></td>
+                    <td><code th:text="${c.modelIdentifier}"></code></td>
+                    <td th:text="${c.modality}"></td>
+                    <td>
+                        <span th:text="${'$' + #numbers.formatDecimal(c.costPer1kPrompt, 1, 6, 'POINT')}"></span>
+                        <span th:if="${c.overridden}" class="badge partial" style="margin-left:0.3em">override</span>
+                    </td>
+                    <td th:text="${c.costPer1kCompletion == null ? 'n/a' : '$' + #numbers.formatDecimal(c.costPer1kCompletion, 1, 6, 'POINT')}"></td>
+                    <td>
+                        <details>
+                            <summary class="help-text" style="cursor:pointer"
+                                     th:text="${c.overridden ? 'overridden — edit' : 'edit'}"></summary>
+                            <form th:action="'/llm/catalog/' + ${c.id} + '/override'" method="post"
+                                  style="margin-top:0.4em; padding:0.5em; background:#f4f6fa; border-radius:4px; border-left:3px solid #4a9be8">
+                                <p class="help-text" style="margin:0 0 0.4em 0">
+                                    Override prices for
+                                    <strong th:text="${c.displayName}"></strong>
+                                    <code th:text="'(' + ${c.modelIdentifier} + ')'"></code>
+                                </p>
+                                <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                                    <span style="min-width:11em">
+                                        <strong>$/1k prompt tokens</strong>
+                                    </span>
+                                    <input name="costPer1kPrompt" type="number" step="0.000001" min="0"
+                                           th:value="${#numbers.formatDecimal(c.costPer1kPrompt, 1, 6, 'POINT')}"
+                                           required style="width:9em">
+                                    <span class="help-text">
+                                        published:
+                                        <code th:text="${'$' + #numbers.formatDecimal(c.costPer1kPrompt, 1, 6, 'POINT')}"></code>
+                                    </span>
+                                </label>
+                                <label style="display:flex; align-items:center; gap:0.4em; margin:0.3em 0">
+                                    <span style="min-width:11em">
+                                        <strong>$/1k completion tokens</strong>
+                                    </span>
+                                    <input name="costPer1kCompletion" type="number" step="0.000001" min="0"
+                                           th:value="${#numbers.formatDecimal(c.costPer1kCompletion == null ? 0 : c.costPer1kCompletion, 1, 6, 'POINT')}"
+                                           style="width:9em">
+                                    <span class="help-text">
+                                        published:
+                                        <code th:text="${c.costPer1kCompletion == null ? 'n/a' : '$' + #numbers.formatDecimal(c.costPer1kCompletion, 1, 6, 'POINT')}"></code>
+                                    </span>
+                                </label>
+                                <div class="button-row" style="margin-top:0.4em">
+                                    <button type="submit" class="btn-sm">Save override</button>
+                                    <button th:if="${c.overridden}" type="submit"
+                                            th:formaction="'/llm/catalog/' + ${c.id} + '/override/clear'"
+                                            class="btn-danger btn-sm">Revert to published</button>
+                                </div>
+                            </form>
+                        </details>
+                    </td>
+                    <td th:text="${c.notes}"></td>
+                </tr>
+            </tbody>
+        </table>
+        </details>
+    </section>
+
+    <script>
+        // --- Step 3 header-row editor ----------------------------------------
+        function toggleHeaderValueType(checkbox) {
+            var valueInput = checkbox.parentElement.previousElementSibling.querySelector('input[name="headerValue"]');
+            if (!valueInput) return;
+            valueInput.type = checkbox.checked ? 'password' : 'text';
+        }
+        function addHeaderRow() {
+            var tbody = document.getElementById('headersTable').getElementsByTagName('tbody')[0];
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td><input name="headerName" pattern="[A-Za-z0-9\\-_]+" style="width:100%" placeholder="X-Custom-Header"></td>' +
+                '<td><input name="headerValue" type="text" style="width:100%" placeholder="value"></td>' +
+                '<td style="text-align:center">' +
+                '<input type="hidden" name="headerSecret" value="false">' +
+                '<input type="checkbox" onchange="this.previousElementSibling.value = this.checked; toggleHeaderValueType(this);">' +
+                '</td>' +
+                '<td><span class="help-text">public</span></td>' +
+                '<td><button type="button" class="btn-danger btn-sm" onclick="removeHeaderRow(this)">Remove</button></td>';
+            tbody.appendChild(tr);
+        }
+        function removeHeaderRow(btn) {
+            var tr = btn.closest('tr'); tr.parentNode.removeChild(tr);
+        }
+
+    </script>
+
+    <style>
+        .wizard-steps { list-style: none; padding-left: 0; margin-top: 0.5em; counter-reset: wiz; }
+        .wizard-steps > li { border-left: 3px solid #d6d8db; padding: 0.6em 0 0.6em 1em; margin-bottom: 0.6em; }
+        .wizard-steps > li strong { display: block; margin-bottom: 0.3em; }
+        .wizard-steps form label { display: block; margin: 0.4em 0; }
+
+        /* Collapsible setup cards — the Copilot + Corp-OpenAI wizards
+           default to collapsed so the page opens small, and expand
+           on click (or when the URL hash targets them). */
+        details.setup-card { border: 1px solid #d6d8db; border-radius: 6px;
+            padding: 0.6em 0.9em; background: #fafbfd; }
+        details.setup-card > summary { cursor: pointer; user-select: none;
+            list-style: none; padding: 0.2em 0; }
+        details.setup-card > summary::-webkit-details-marker { display: none; }
+        details.setup-card > summary::before { content: '▸'; margin-right: 0.5em;
+            display: inline-block; transition: transform 0.15s; color: #6c7080; }
+        details.setup-card[open] > summary::before { transform: rotate(90deg); }
+        details.setup-card[open] { background: #fff; }
+    </style>
+
+    <script>
+        // Deep-link support: when the URL has a hash pointing at a
+        // setup-card's section (e.g. #copilot after the "Probe bridge
+        // socket" POST redirects back), automatically expand that
+        // card so the user lands on the right spot already open.
+        (function(){
+            function openForHash() {
+                var h = window.location.hash;
+                if (!h) return;
+                var target = document.querySelector(h);
+                if (!target) return;
+                var det = target.querySelector('details.setup-card');
+                if (det) det.open = true;
+            }
+            window.addEventListener('DOMContentLoaded', openForHash);
+            window.addEventListener('hashchange', openForHash);
+        })();
+    </script>
+</main>
+</body>
+</html>

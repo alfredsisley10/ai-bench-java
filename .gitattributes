@@ -1,0 +1,53 @@
+# Normalize line endings for every contributor, regardless of OS.
+# Without this, Windows Git's core.autocrlf=true default rewrites LF
+# files to CRLF on checkout, making every file look "modified" after a
+# fresh clone.
+* text=auto eol=lf
+
+# Windows-only scripts must stay CRLF so cmd.exe / PowerShell can parse
+# them. The Gradle wrapper .bat is the classic example.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# POSIX scripts — LF regardless of platform.
+*.sh       text eol=lf
+gradlew    text eol=lf
+
+# Source / config — explicit for clarity (text=auto above would cover
+# them, but being explicit makes the intent obvious to anyone reading
+# the file).
+*.java       text eol=lf
+*.kt         text eol=lf
+*.kts        text eol=lf
+*.gradle     text eol=lf
+*.properties text eol=lf
+*.md         text eol=lf
+*.html       text eol=lf
+*.css        text eol=lf
+*.js         text eol=lf
+*.ts         text eol=lf
+*.tsx        text eol=lf
+*.json       text eol=lf
+*.yaml       text eol=lf
+*.yml        text eol=lf
+*.xml        text eol=lf
+*.sql        text eol=lf
+*.txt        text eol=lf
+
+# Binaries — never convert line endings.
+*.jar              binary
+*.war              binary
+*.zip              binary
+*.tar              binary
+*.gz               binary
+*.png              binary
+*.jpg              binary
+*.jpeg             binary
+*.gif              binary
+*.ico              binary
+*.svg              text eol=lf
+*.pdf              binary
+*.vsix             binary
+*.class            binary
+gradle-wrapper.jar binary

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Build Status', ~{::main})}">
+<body>
+<main>
+    <h2>Repository build and test status</h2>
+
+    <div th:if="${#lists.isEmpty(builds)}">
+        <p class="empty-state">No repositories selected for building yet. <a href="/github/repos">Select repos</a> first.</p>
+    </div>
+
+    <table th:unless="${#lists.isEmpty(builds)}" hx-get="/github/repos/status" hx-trigger="every 10s" hx-select="table" hx-swap="outerHTML">
+        <thead><tr><th>Repository</th><th>Status</th><th>Last build</th><th>Tests passed</th><th>Tests failed</th><th>Log</th></tr></thead>
+        <tbody>
+        <tr th:each="b : ${builds}">
+            <td th:text="${b.repoName}"></td>
+            <td>
+                <span th:class="'badge ' + ${b.status}" th:text="${b.status}"></span>
+            </td>
+            <td th:text="${b.lastBuildTime}"></td>
+            <td th:text="${b.testsPassed}"></td>
+            <td th:text="${b.testsFailed}"></td>
+            <td><details th:if="${b.log != ''}"><summary>View</summary><pre th:text="${b.log}"></pre></details></td>
+        </tr>
+        </tbody>
+    </table>
+</main>
+</body>
+</html>

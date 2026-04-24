@@ -1,0 +1,26 @@
+code,name,description,consumerOrCorporate,reqAuth,allowsReturn,returnWindowDays,typicalUseCase
+PPD,Prearranged Payment and Deposit,Direct deposit or recurring debit,CONSUMER,true,true,60,Payroll and recurring bills
+CCD,Cash Concentration or Disbursement,Corporate cash management,CORPORATE,true,true,2,Cash concentration
+CTX,Corporate Trade Exchange,Structured remittance payment,CORPORATE,true,true,2,B2B with remittance
+WEB,Internet-Initiated/Mobile Entry,Consumer online payment,CONSUMER,true,true,60,Online bill pay
+TEL,Telephone-Initiated Entry,Phone-authorized debit,CONSUMER,true,true,60,Phone order
+POP,Point-of-Purchase Entry,Check converted at register,CONSUMER,true,true,60,Retail check conversion
+BOC,Back Office Conversion,Check converted in back office,CONSUMER,true,true,60,Lockbox conversion
+ARC,Accounts Receivable Entry,Mailed check converted,CONSUMER,true,true,60,AR conversion
+POS,Point-of-Sale Entry,ATM/POS debit,CONSUMER,true,false,0,ATM/POS
+RCK,Represented Check Entry,Returned check re-presented,CONSUMER,false,true,60,NSF re-presentation
+ADV,Automated Accounting Advice,Non-monetary advice,CORPORATE,false,false,0,Accounting advice only
+COR,Notification of Change,Correction notification,CORPORATE,false,false,0,Update receiver info
+DNE,Death Notification Entry,Government death notification,CORPORATE,false,false,0,SSA death notification
+ENR,Automated Enrollment Entry,Enrollment notification,CORPORATE,false,false,0,Federal enrollment
+IAT,International ACH Transaction,Cross-border ACH,CORPORATE,true,true,60,International funds transfer
+MTE,Machine Transfer Entry,ATM cash withdrawal entry,CONSUMER,true,false,0,ATM network entry
+SHR,Shared Network Transaction,Shared network POS,CONSUMER,true,false,0,Shared POS network
+TRC,Truncated Entry,Truncated check,CONSUMER,false,true,60,Check truncation
+XCK,Destroyed Check Entry,Lost or destroyed check,CONSUMER,false,true,60,Destroyed check
+ACK,ACH Acknowledgement,Prenote acknowledgement,CORPORATE,false,false,0,Prenote ack
+ATX,Acknowledgement With Addenda,Corporate ack with addenda,CORPORATE,false,false,0,Corporate ack
+CIE,Customer-Initiated Entry,Bill payment sent by customer,CONSUMER,true,true,60,Consumer bill payment
+PBR,Consumer Cross-Border Payment,Foreign consumer payment,CONSUMER,true,true,60,Inbound foreign consumer
+RCK,Returned Check,Re-present NSF check,CONSUMER,false,true,60,NSF re-presentation
+TRX,Truncated Check Exchange,Check exchange truncation,CONSUMER,false,true,60,Check exchange

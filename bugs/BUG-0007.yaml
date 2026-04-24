@@ -1,0 +1,31 @@
+id: BUG-0007
+title: "Amortization schedule final installment leaves non-zero closing balance"
+module: lending-corporate
+difficulty: MEDIUM
+category: NUMERIC
+
+breakCommit: bug/BUG-0007/break
+fixCommit:   bug/BUG-0007/fix
+
+filesTouched:
+  - lending-corporate/src/main/java/com/omnibank/lending/corporate/api/AmortizationCalculator.java
+oracleDiffLines: 5
+
+hiddenTest:
+  class: com.omnibank.lending.corporate.api.AmortizationCalculatorTest
+  method: final_installment_zeros_balance_even_under_rounding_drift
+  file: lending-corporate/src/test/java/com/omnibank/lending/corporate/api/AmortizationCalculatorTest.java
+
+problemStatement: |
+  AmortizationCalculator.standardAmortizing is supposed to absorb rounding
+  drift on the final installment so closing balance is zero. A regression
+  dropped the `if (i == periods)` special case; the final installment is now
+  computed like any other, leaving a residual of a few cents. Restore the
+  final-installment branch that sets principalPortion = balance and closing =
+  zero.
+
+appmap:
+  recommendedTests:
+    - com.omnibank.lending.corporate.api.AmortizationCalculatorTest
+  traceFocus:
+    - AmortizationCalculator.standardAmortizing

@@ -1,0 +1,50 @@
+{
+  "name": "ai-bench-copilot-bridge",
+  "displayName": "ai-bench Copilot Bridge",
+  "description": "Exposes VSCode's Language Model API (Copilot) to the ai-bench-java harness over a local Unix socket.",
+  "version": "0.1.0",
+  "publisher": "aibench",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aibench.copilotBridge.status",
+        "title": "ai-bench: Copilot Bridge Status"
+      },
+      {
+        "command": "aibench.copilotBridge.restart",
+        "title": "ai-bench: Restart Copilot Bridge"
+      }
+    ],
+    "configuration": {
+      "title": "ai-bench Copilot Bridge",
+      "properties": {
+        "aibench.copilotBridge.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Unix socket. Blank = $TMPDIR/ai-bench-copilot.sock"
+        },
+        "aibench.copilotBridge.defaultModelFamily": {
+          "type": "string",
+          "default": "gpt-4",
+          "description": "Model family to request from vscode.lm when the harness omits one."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}
