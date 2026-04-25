@@ -38,7 +38,23 @@ function Write-WarnLine([string]$msg) { Write-Host "[warn] $msg" -ForegroundColo
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) {
     throw "java is not on PATH. Install JDK 17-25 (Temurin / OpenJDK / Corretto / Zulu) and re-run."
 }
-$verLine = (& java -version 2>&1 | Select-Object -First 1)
+# `java -version` writes to STDERR (Java quirk). The natural-looking
+# `& java -version 2>&1 | Select-Object -First 1` fails under
+# $ErrorActionPreference = 'Stop' because PowerShell turns each merged
+# stderr line into an ErrorRecord and terminates. Use the .NET Process
+# API to read stderr directly, bypassing the merge.
+$javaPath = (Get-Command java).Source
+$javaPsi  = New-Object System.Diagnostics.ProcessStartInfo
+$javaPsi.FileName               = $javaPath
+$javaPsi.Arguments              = '-version'
+$javaPsi.RedirectStandardOutput = $true
+$javaPsi.RedirectStandardError  = $true
+$javaPsi.UseShellExecute        = $false
+$javaPsi.CreateNoWindow         = $true
+$javaProc = [System.Diagnostics.Process]::Start($javaPsi)
+$javaOut  = $javaProc.StandardError.ReadToEnd() + $javaProc.StandardOutput.ReadToEnd()
+$javaProc.WaitForExit()
+$verLine = ($javaOut -split "`r?`n" | Where-Object { $_ } | Select-Object -First 1)
 if ($verLine -match '"(\d+)') {
     $javaMajor = [int]$Matches[1]
     if ($javaMajor -lt 17 -or $javaMajor -gt 25) {
