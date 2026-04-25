@@ -1387,11 +1387,335 @@ if ($MavenConfigPath) {
     }
 }
 
-# Note: we intentionally DO NOT write to ~/.m2/settings.xml here. That
-# file is only read by the Maven binary, which we don't use. Everything
-# we need for the Gradle build gets translated into ~/.gradle/init.d/
-# and ~/.gradle/gradle.properties in the Maven-Central remediation
-# block below.
+# Note: up to this point we've only PARSED settings.xml. The next
+# section offers to WRITE a proactive 'artifactory-external-mirror'
+# configuration, the canonical enterprise reference setup. It produces
+# matching entries in ~/.m2/settings.xml (<mirror> + <server>),
+# ~/.gradle/gradle.properties (Gradle credential aliases + proxy creds),
+# and ~/.gradle/init.d/corp-repos.gradle.kts. After it runs, the Maven
+# Central reachability check below tests the wired-up mirror end-to-end.
+
+# --- Artifactory external-mirror proactive setup ----------------------------
+Write-Section "Artifactory external-mirror setup"
+
+$settingsXmlAm = Join-Path $env:USERPROFILE '.m2\settings.xml'
+$artifactoryMirrorId = 'artifactory-external-mirror'
+$initDirAm    = Join-Path $env:USERPROFILE '.gradle\init.d'
+$initScriptAm = Join-Path $initDirAm 'corp-repos.gradle.kts'
+
+# State detection -- have we already wired this id end-to-end?
+$haveSettingsMirror = $false
+$haveSettingsServer = $false
+$haveInitScriptAm   = Test-Path $initScriptAm
+if (Test-Path $settingsXmlAm) {
+    $sxAm = Get-Content -Raw -LiteralPath $settingsXmlAm -ErrorAction SilentlyContinue
+    if ($sxAm) {
+        $idEsc = [regex]::Escape($artifactoryMirrorId)
+        foreach ($mm in [regex]::Matches($sxAm, '(?s)<mirror>(.*?)</mirror>')) {
+            if ($mm.Groups[1].Value -match "<id>\s*$idEsc\s*</id>") { $haveSettingsMirror = $true; break }
+        }
+        foreach ($mm in [regex]::Matches($sxAm, '(?s)<server>(.*?)</server>')) {
+            if ($mm.Groups[1].Value -match "<id>\s*$idEsc\s*</id>") { $haveSettingsServer = $true; break }
+        }
+    }
+}
+
+if ($haveSettingsMirror -and $haveSettingsServer -and $haveInitScriptAm) {
+    Write-Pass "$artifactoryMirrorId already wired in $settingsXmlAm + ~/.gradle/init.d/."
+    Write-Info "  To reconfigure, delete the matching <mirror>/<server> blocks (or the init script) and re-run."
+} elseif ($NonInteractive) {
+    Write-Info "Non-interactive mode: skipping $artifactoryMirrorId setup prompt."
+} else {
+    Write-Host ""
+    Write-Host "  Many enterprise reference configurations name their Maven Central proxy" -ForegroundColor Cyan
+    Write-Host "  '$artifactoryMirrorId'. If you have that URL, this script can wire it" -ForegroundColor Cyan
+    Write-Host "  into settings.xml (mirror + server), gradle.properties, and an init script." -ForegroundColor Cyan
+    if ($haveSettingsMirror) { Write-Info "  Existing: <mirror id='$artifactoryMirrorId'> in $settingsXmlAm" }
+    if ($haveSettingsServer) { Write-Info "  Existing: <server id='$artifactoryMirrorId'> in $settingsXmlAm" }
+    if ($haveInitScriptAm)   { Write-Info "  Existing: $initScriptAm (will be replaced if you proceed)" }
+
+    # Default URL from any candidate the parser already discovered.
+    $suggestedUrl = ''
+    if ($script:mavenHints -and $script:mavenHints.Count -gt 0) {
+        $suggestedUrl = $script:mavenHints[0].Url
+    }
+
+    $promptUrl = if ($suggestedUrl) {
+        "  Enter the artifactory-external-mirror URL [default: $suggestedUrl] (blank to skip)"
+    } else {
+        "  Enter the artifactory-external-mirror URL (blank to skip)"
+    }
+    $amUrl = Read-Host $promptUrl
+    if (-not $amUrl) { $amUrl = $suggestedUrl }
+
+    if (-not $amUrl) {
+        Write-Info "Skipped (no URL provided)."
+    } else {
+        if (-not $amUrl.EndsWith('/')) { $amUrl = "$amUrl/" }
+
+        # Pull existing proxy creds as defaults so the user can hit ENTER
+        # twice if they're already configured.
+        $proxyUserDefault = ''
+        $proxyPassDefault = ''
+        if (Test-Path $gradleProps) {
+            $gpRaw = Get-Content -LiteralPath $gradleProps
+            $userLine = $gpRaw | Where-Object { $_ -match '^\s*systemProp\.https\.proxyUser\s*=' } | Select-Object -First 1
+            $passLine = $gpRaw | Where-Object { $_ -match '^\s*systemProp\.https\.proxyPassword\s*=' } | Select-Object -First 1
+            if ($userLine) { $proxyUserDefault = ($userLine -replace '^[^=]+=\s*','').Trim() }
+            if ($passLine) { $proxyPassDefault = ($passLine -replace '^[^=]+=\s*','').Trim() }
+        }
+
+        $userPrompt = if ($proxyUserDefault) {
+            "  Proxy username [default: $proxyUserDefault]"
+        } else {
+            "  Proxy username"
+        }
+        $amUser = Read-Host $userPrompt
+        if (-not $amUser) { $amUser = $proxyUserDefault }
+
+        $passPrompt = if ($proxyPassDefault) {
+            "  Proxy password (input hidden) [press ENTER to reuse the password already in $gradleProps]"
+        } else {
+            "  Proxy password (input hidden)"
+        }
+        $secPwd = Read-Host -AsSecureString $passPrompt
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPwd)
+        try {
+            $amPass = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        } finally {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+        if (-not $amPass) { $amPass = $proxyPassDefault }
+
+        if (-not $amUser -or -not $amPass) {
+            Write-Warn "Username or password is empty -- aborting mirror setup." `
+                "Re-run with proxy credentials to hand. Nothing has been written."
+        } else {
+            Write-Host ""
+            Write-Host "  About to write/update:" -ForegroundColor Yellow
+            Write-Host "    1. $settingsXmlAm"
+            Write-Host "         <server id='$artifactoryMirrorId'> + <mirror id='$artifactoryMirrorId' mirrorOf='*'>"
+            Write-Host "    2. $gradleProps"
+            Write-Host "         orgInternalMavenUser/Password (+ wrapper, resolver, http(s) proxy aliases)"
+            Write-Host "    3. $initScriptAm"
+            Write-Host "         redirects mavenCentral() / gradlePluginPortal() to $amUrl"
+            Write-Host "  Existing files will be backed up to .backup-<timestamp> siblings."
+            $resp = Read-Host "  Proceed? [y/N]"
+            if ($resp -match '^[Yy]') {
+                # 1. settings.xml -- BACKUP-BEFORE-WRITE: if we can't
+                #    successfully copy an existing file to a sibling
+                #    .backup-*, abort the entire mirror setup so no one
+                #    ends up with a modified settings.xml and no rollback.
+                $settingsDir = Split-Path -Parent $settingsXmlAm
+                if (-not (Test-Path $settingsDir)) {
+                    New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+                }
+                $backupOk = $true
+                $settingsBackup = ''
+                if (Test-Path $settingsXmlAm) {
+                    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+                    $settingsBackup = "$settingsXmlAm.backup-$stamp"
+                    try {
+                        Copy-Item -LiteralPath $settingsXmlAm -Destination $settingsBackup -Force -ErrorAction Stop
+                        if ((Test-Path $settingsBackup) -and ((Get-Item $settingsBackup).Length -gt 0)) {
+                            Write-Pass "Backed up $settingsXmlAm to $settingsBackup"
+                        } else {
+                            $backupOk = $false
+                        }
+                    } catch {
+                        $backupOk = $false
+                    }
+                    if (-not $backupOk) {
+                        Write-Fail "Could not back up $settingsXmlAm to $settingsBackup -- aborting mirror setup; no files were modified." `
+                            "Check write perms on $settingsDir and free disk space, then re-run."
+                    }
+                }
+
+                if ($backupOk) {
+                    $newServer = @"
+    <server>
+      <id>$artifactoryMirrorId</id>
+      <username>$amUser</username>
+      <password>$amPass</password>
+    </server>
+"@
+                    $newMirror = @"
+    <mirror>
+      <id>$artifactoryMirrorId</id>
+      <mirrorOf>*</mirrorOf>
+      <name>Corporate Maven Central proxy (artifactory-external-mirror)</name>
+      <url>$amUrl</url>
+    </mirror>
+"@
+
+                    if (Test-Path $settingsXmlAm) {
+                        $txt = Get-Content -Raw -LiteralPath $settingsXmlAm
+                    } else {
+                        $txt = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+</settings>
+"@
+                    }
+
+                    # Strip any prior <server>/<mirror> blocks carrying our id
+                    # (idempotent re-run). Done with an explicit Match loop +
+                    # StringBuilder to avoid the scriptblock-to-MatchEvaluator
+                    # coercion path, whose behavior varies across PowerShell
+                    # 5.1 vs 7 in some configurations.
+                    $idEscW    = [regex]::Escape($artifactoryMirrorId)
+                    $idPattern = "<id>\s*$idEscW\s*</id>"
+                    foreach ($tag in @('server','mirror')) {
+                        $outerRx = [regex]"(?s)\s*<$tag>(.*?)</$tag>"
+                        $sb = New-Object System.Text.StringBuilder
+                        $lastEnd = 0
+                        foreach ($m in $outerRx.Matches($txt)) {
+                            [void]$sb.Append($txt.Substring($lastEnd, $m.Index - $lastEnd))
+                            if (-not ($m.Groups[1].Value -match $idPattern)) {
+                                [void]$sb.Append($m.Value)
+                            }
+                            $lastEnd = $m.Index + $m.Length
+                        }
+                        [void]$sb.Append($txt.Substring($lastEnd))
+                        $txt = $sb.ToString()
+                    }
+
+                    # Insert into <servers>/<mirrors>; create the parent if missing; create inside <settings>.
+                    function Insert-IntoParent($parentTag, $childBlock, $text) {
+                        $closeTag = "</$parentTag>"
+                        if ($text.Contains($closeTag)) {
+                            $idx = $text.IndexOf($closeTag)
+                            return $text.Substring(0, $idx) + "$childBlock`n  " + $text.Substring($idx)
+                        }
+                        $block = "  <$parentTag>`n$childBlock`n  </$parentTag>`n"
+                        if ($text.Contains('</settings>')) {
+                            $idx = $text.IndexOf('</settings>')
+                            return $text.Substring(0, $idx) + $block + $text.Substring($idx)
+                        }
+                        return $text + $block
+                    }
+                    $txt = Insert-IntoParent 'servers' $newServer $txt
+                    $txt = Insert-IntoParent 'mirrors' $newMirror $txt
+
+                    # Write UTF-8 (no BOM) to keep settings.xml clean for Maven.
+                    [System.IO.File]::WriteAllText($settingsXmlAm, $txt, (New-Object System.Text.UTF8Encoding($false)))
+
+                    # Tighten ACL: remove inheritance, grant only current user.
+                    try {
+                        $acl = Get-Acl -LiteralPath $settingsXmlAm
+                        $acl.SetAccessRuleProtection($true, $false)
+                        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                            'FullControl','Allow')
+                        $acl.SetAccessRule($rule)
+                        Set-Acl -LiteralPath $settingsXmlAm -AclObject $acl
+                    } catch {
+                        Write-Warn "Could not tighten ACL on $settingsXmlAm ($_)"
+                    }
+                    Write-Pass "Wrote <server> + <mirror> id='$artifactoryMirrorId' to $settingsXmlAm (ACL tightened to current user)"
+
+                    # 2. gradle.properties -- back up, strip prior keys we own, append fresh.
+                    if (Test-Path $gradleProps) {
+                        $stampGp = Get-Date -Format 'yyyyMMdd-HHmmss'
+                        Copy-Item -LiteralPath $gradleProps -Destination "$gradleProps.backup-$stampGp" -Force
+                        Write-Pass "Backed up $gradleProps to $gradleProps.backup-$stampGp"
+                    } else {
+                        $gpDir = Split-Path -Parent $gradleProps
+                        if (-not (Test-Path $gpDir)) {
+                            New-Item -ItemType Directory -Path $gpDir -Force | Out-Null
+                        }
+                    }
+                    $gpKeep = @()
+                    if (Test-Path $gradleProps) {
+                        $gpKeep = Get-Content -LiteralPath $gradleProps | Where-Object {
+                            $_ -notmatch '^\s*(orgInternalMaven(User|Password)|systemProp\.gradle\.wrapper(User|Password)|artifactoryResolver(Username|Password)|systemProp\.https?\.proxy(User|Password))\s*='
+                        }
+                    }
+                    $now = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+                    $gpAppend = @(
+                        ''
+                        "# Added by build-health-check.ps1 on $now -- artifactory-external-mirror."
+                        "# Same username/password drives BOTH the corporate proxy AND the Artifactory mirror."
+                        "orgInternalMavenUser=$amUser"
+                        "orgInternalMavenPassword=$amPass"
+                        "systemProp.gradle.wrapperUser=$amUser"
+                        "systemProp.gradle.wrapperPassword=$amPass"
+                        "artifactoryResolverUsername=$amUser"
+                        "artifactoryResolverPassword=$amPass"
+                        "systemProp.https.proxyUser=$amUser"
+                        "systemProp.https.proxyPassword=$amPass"
+                        "systemProp.http.proxyUser=$amUser"
+                        "systemProp.http.proxyPassword=$amPass"
+                    )
+                    Set-Content -LiteralPath $gradleProps -Value (($gpKeep + $gpAppend) -join "`r`n")
+                    try {
+                        $aclGp = Get-Acl -LiteralPath $gradleProps
+                        $aclGp.SetAccessRuleProtection($true, $false)
+                        $ruleGp = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                            'FullControl','Allow')
+                        $aclGp.SetAccessRule($ruleGp)
+                        Set-Acl -LiteralPath $gradleProps -AclObject $aclGp
+                    } catch {
+                        Write-Warn "Could not tighten ACL on $gradleProps ($_)"
+                    }
+                    Write-Pass "Wrote credential aliases (3 Gradle pairs + 2 proxy pairs) to $gradleProps (ACL tightened to current user)"
+
+                    # 3. init.d/corp-repos.gradle.kts -- references creds via
+                    #    providers.gradleProperty so values stay in gradle.properties.
+                    if (-not (Test-Path $initDirAm)) {
+                        New-Item -ItemType Directory -Path $initDirAm -Force | Out-Null
+                    }
+                    if (Test-Path $initScriptAm) {
+                        $stampIs = Get-Date -Format 'yyyyMMdd-HHmmss'
+                        Copy-Item -LiteralPath $initScriptAm -Destination "$initScriptAm.backup-$stampIs" -Force
+                        Write-Pass "Backed up $initScriptAm to $initScriptAm.backup-$stampIs"
+                    }
+                    $initContentAm = @"
+// Added by build-health-check.ps1 on $now.
+// Routes mavenCentral() + gradlePluginPortal() through the corporate
+// artifactory-external-mirror. Credentials are loaded from
+// ~/.gradle/gradle.properties (NOT committed). To revert: delete this file.
+val corpMavenUrl = "$amUrl"
+
+fun maybeRewrite(repo: ArtifactRepository) {
+    if (repo is MavenArtifactRepository) {
+        val u = repo.url.toString()
+        if (u.contains("repo.maven.apache.org") ||
+            u.contains("plugins.gradle.org") ||
+            u.contains("repo1.maven.org")) {
+            repo.setUrl(corpMavenUrl)
+            repo.credentials {
+                username = providers.gradleProperty("orgInternalMavenUser").get()
+                password = providers.gradleProperty("orgInternalMavenPassword").get()
+            }
+        }
+    }
+}
+
+settingsEvaluated {
+    pluginManagement.repositories.configureEach { maybeRewrite(this) }
+    dependencyResolutionManagement.repositories.configureEach { maybeRewrite(this) }
+}
+
+allprojects {
+    buildscript.repositories.configureEach { maybeRewrite(this) }
+    repositories.configureEach { maybeRewrite(this) }
+}
+"@
+                    Set-Content -LiteralPath $initScriptAm -Value $initContentAm
+                    Write-Pass "Wrote $initScriptAm  ->  redirects mavenCentral() / gradlePluginPortal() to $amUrl"
+                    Write-Info "All three '$artifactoryMirrorId' configuration elements are in place."
+                    Write-Info "The Maven Central reachability check below will probe the wired-up mirror end-to-end."
+                }
+            } else {
+                Write-Info "Skipped. No files were modified."
+            }
+        }
+    }
+}
 
 # --- Gradle init-script shape verification ---------------------------------
 # Runs UNCONDITIONALLY. If the user has an existing corp-repos.gradle.kts
