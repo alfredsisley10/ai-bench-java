@@ -51,14 +51,37 @@ them locally. The `banking-app` is intentionally **not** prebuilt: it's
 the thing under evaluation, and the harness has to compile and test it
 locally to measure the metrics that matter.
 
-Download the latest release from
-[GitHub Releases](https://github.com/alfredsisley10/ai-bench-java/releases),
-or via the `gh` CLI:
+**One-command install + start.** From a clone of this repo (or after
+copying the two `scripts/start-bench-tools.*` files to a working
+directory), run:
+
+```bash
+# macOS / Linux
+./scripts/start-bench-tools.sh
+```
+
+```powershell
+# Windows (PowerShell)
+.\scripts\start-bench-tools.ps1
+```
+
+Each script: verifies a JDK 17–25 is on `PATH`, downloads the latest
+release artifacts via `gh release download` into `~/ai-bench` (override
+with `INSTALL_DIR=…` / `-InstallDir`), unzips `bench-cli`, launches
+`bench-webui` in the background, and prints the `bench-cli` launcher
+path plus a one-liner to add it to `PATH`. Re-running detects an
+already-running `bench-webui` and exits without launching a duplicate.
+
+Stop the web UI with `kill $(cat ~/ai-bench/bench-webui.pid)` (Linux/macOS)
+or `Stop-Process -Id (Get-Content $HOME\ai-bench\bench-webui.pid)` (Windows).
+
+**Manual install** if you'd rather not run the script:
 
 ```bash
 # macOS / Linux
 mkdir -p ~/ai-bench && cd ~/ai-bench
-gh release download --repo alfredsisley10/ai-bench-java \
+LATEST=$(gh release list --repo alfredsisley10/ai-bench-java --limit 1 --json tagName -q '.[0].tagName')
+gh release download "$LATEST" --repo alfredsisley10/ai-bench-java \
     --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
 unzip -q bench-cli-*.zip
 ./bench-cli-*/bin/bench-cli --help               # CLI entry point
@@ -69,12 +92,17 @@ java -jar bench-webui-*.jar                       # web UI on http://localhost:7
 # Windows (PowerShell)
 New-Item -ItemType Directory -Force -Path $HOME\ai-bench | Out-Null
 Set-Location $HOME\ai-bench
-gh release download --repo alfredsisley10/ai-bench-java `
+$Latest = gh release list --repo alfredsisley10/ai-bench-java --limit 1 --json tagName -q '.[0].tagName'
+gh release download $Latest --repo alfredsisley10/ai-bench-java `
     --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
 Expand-Archive -Force -Path .\bench-cli-*.zip -DestinationPath .
 & .\bench-cli-0.1.0-SNAPSHOT\bin\bench-cli.bat --help
 java -jar .\bench-webui-0.1.0-SNAPSHOT.jar         # web UI on http://localhost:7777
 ```
+
+(The `LATEST=`/`$Latest` step is needed because `gh release download`
+without an explicit tag defaults to "latest STABLE," which excludes
+prereleases — and the current artifacts are tagged as a prerelease.)
 
 Only requires JDK 17–25 on `PATH` — no Gradle, no internet egress to
 Maven Central, no source build. The same artifacts run on macOS, Linux,
