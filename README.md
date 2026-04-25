@@ -78,8 +78,22 @@ background; and prints the `bench-cli` launcher path plus a one-liner
 to add it to `PATH`. Re-running detects an already-running `bench-webui`
 and exits without launching a duplicate.
 
-Stop the web UI with `kill $(cat ~/ai-bench/bench-webui.pid)` (Linux/macOS)
-or `Stop-Process -Id (Get-Content $HOME\ai-bench\bench-webui.pid)` (Windows).
+Stop the web UI with the matching companion script:
+
+```bash
+# macOS / Linux
+./scripts/stop-bench-tools.sh
+```
+
+```powershell
+# Windows (PowerShell)
+.\scripts\stop-bench-tools.ps1
+```
+
+The stop script reads the same PID file the start script writes,
+sends a graceful shutdown, waits up to 15 s, and escalates to a
+force-kill if the process refuses to exit. A missing/stale PID file
+is reported as "nothing to stop" — re-running is always safe.
 
 **Manual install** if you'd rather skip the script. From a clone of the
 repo:

@@ -2,6 +2,7 @@ package com.aibench.webui
 
 import jakarta.servlet.http.HttpSession
 import org.slf4j.LoggerFactory
+import org.springframework.core.io.ClassPathResource
 import org.springframework.stereotype.Controller
 import org.springframework.ui.Model
 import org.springframework.web.bind.annotation.GetMapping
@@ -123,8 +124,8 @@ class LlmConfigController(
         model.addAttribute("copilotExtId", copilotExtId)
         val vsix = locateCopilotVsix()
         model.addAttribute("copilotVsixPresent", vsix != null)
-        model.addAttribute("copilotVsixPath", vsix?.absolutePath ?: "")
-        model.addAttribute("copilotVsixSize", vsix?.length() ?: 0L)
+        model.addAttribute("copilotVsixPath", vsix?.displayPath ?: "")
+        model.addAttribute("copilotVsixSize", vsix?.size ?: 0L)
         model.addAttribute("copilotProbeResult", session.getAttribute(COPILOT_PROBE_RESULT))
         session.removeAttribute(COPILOT_PROBE_RESULT)
 
@@ -326,18 +327,52 @@ class LlmConfigController(
      * "not built yet — run <code>npm run package</code>" hint in that
      * case.
      */
-    private fun locateCopilotVsix(): java.io.File? {
-        System.getenv("AI_BENCH_COPILOT_VSIX")?.takeIf { it.isNotBlank() }?.let {
-            val f = java.io.File(it)
-            if (f.isFile) return f
+    /**
+     * Resolved location of the bundled Copilot bridge VSIX. Abstracts over
+     * three possible sources so callers don't care whether it lives on disk
+     * or inside the Spring Boot fat jar:
+     *   - explicit env-var path (AI_BENCH_COPILOT_VSIX)
+     *   - sibling-checkout layout used in dev (../tools/copilot-bridge-extension/...)
+     *   - classpath resource bundled at static/dist/copilot-bridge.vsix
+     */
+    private data class CopilotVsixSource(
+        /** Filesystem path or "classpath:..." -- shown in the UI for diagnostics. */
+        val displayPath: String,
+        /** Bytes the resource will stream. -1 if unknown. */
+        val size: Long,
+        /** Filename used in Content-Disposition. */
+        val name: String,
+        /** Caller-provided stream factory. Each call returns a fresh InputStream. */
+        val openStream: () -> java.io.InputStream
+    )
+
+    private fun locateCopilotVsix(): CopilotVsixSource? {
+        System.getenv("AI_BENCH_COPILOT_VSIX")?.takeIf { it.isNotBlank() }?.let { path ->
+            val f = java.io.File(path)
+            if (f.isFile) return CopilotVsixSource(f.absolutePath, f.length(), f.name) { f.inputStream() }
         }
         val repoLocal = java.io.File(
             System.getProperty("user.dir"),
             "../tools/copilot-bridge-extension/copilot-bridge.vsix"
         ).canonicalFile
-        if (repoLocal.isFile) return repoLocal
-        val classpath = javaClass.classLoader.getResource("static/dist/copilot-bridge.vsix")
-        if (classpath != null) return java.io.File(classpath.toURI())
+        if (repoLocal.isFile) {
+            return CopilotVsixSource(repoLocal.absolutePath, repoLocal.length(), repoLocal.name) { repoLocal.inputStream() }
+        }
+        // Spring Boot fat-jar fallback. ClassLoader.getResource returns a
+        // jar:file:.../bench-webui.jar!/static/dist/copilot-bridge.vsix URL
+        // which is NOT convertible to java.io.File ("URI is not hierarchical"
+        // — caused a 500 on /llm in earlier code). Use Spring's
+        // ClassPathResource so we can report contentLength() and stream
+        // bytes through the classloader instead.
+        val resource = ClassPathResource("static/dist/copilot-bridge.vsix")
+        if (resource.exists()) {
+            val size = runCatching { resource.contentLength() }.getOrDefault(0L)
+            return CopilotVsixSource(
+                displayPath = "classpath:static/dist/copilot-bridge.vsix",
+                size        = if (size > 0) size else 0L,
+                name        = "copilot-bridge.vsix"
+            ) { resource.inputStream }
+        }
         return null
     }
 
@@ -367,8 +402,8 @@ class LlmConfigController(
         response.contentType = "application/octet-stream"
         response.setHeader("Content-Disposition",
             "attachment; filename=\"${vsix.name}\"")
-        response.setContentLengthLong(vsix.length())
-        vsix.inputStream().use { it.copyTo(response.outputStream) }
+        if (vsix.size > 0) response.setContentLengthLong(vsix.size)
+        vsix.openStream().use { it.copyTo(response.outputStream) }
     }
 
     /**
