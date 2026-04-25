@@ -43,6 +43,46 @@ ai-bench-java/
 - **Git** for checkout.
 - No separate Gradle install needed — each sub-project ships its own wrapper.
 
+### Install pre-built bench tools (recommended for most users)
+
+The benchmark tooling — `bench-cli` and `bench-webui` — is published as
+pre-built artifacts on every release, so you do **not** need to build
+them locally. The `banking-app` is intentionally **not** prebuilt: it's
+the thing under evaluation, and the harness has to compile and test it
+locally to measure the metrics that matter.
+
+Download the latest release from
+[GitHub Releases](https://github.com/alfredsisley10/ai-bench-java/releases),
+or via the `gh` CLI:
+
+```bash
+# macOS / Linux
+mkdir -p ~/ai-bench && cd ~/ai-bench
+gh release download --repo alfredsisley10/ai-bench-java \
+    --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
+unzip -q bench-cli-*.zip
+./bench-cli-*/bin/bench-cli --help               # CLI entry point
+java -jar bench-webui-*.jar                       # web UI on http://localhost:7777
+```
+
+```powershell
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force -Path $HOME\ai-bench | Out-Null
+Set-Location $HOME\ai-bench
+gh release download --repo alfredsisley10/ai-bench-java `
+    --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
+Expand-Archive -Force -Path .\bench-cli-*.zip -DestinationPath .
+& .\bench-cli-0.1.0-SNAPSHOT\bin\bench-cli.bat --help
+java -jar .\bench-webui-0.1.0-SNAPSHOT.jar         # web UI on http://localhost:7777
+```
+
+Only requires JDK 17–25 on `PATH` — no Gradle, no internet egress to
+Maven Central, no source build. The same artifacts run on macOS, Linux,
+and Windows.
+
+If you need to **modify** the bench tools (or build the `banking-app`
+target), use the source build below.
+
 ### Pre-build health check (recommended on a fresh machine)
 
 Before the first build — especially on Windows behind a corporate proxy —

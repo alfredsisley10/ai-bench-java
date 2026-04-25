@@ -4,13 +4,7 @@ import picocli.CommandLine
 import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
-    val exit = CommandLine(BenchCommand())
-        .addSubcommand(CatalogCommand())
-        .addSubcommand(SolveCommand())
-        .addSubcommand(ScanCommand())
-        .addSubcommand(BuildCommand())
-        .addSubcommand(ReportCommand())
-        .execute(*args)
+    val exit = CommandLine(BenchCommand()).execute(*args)
     exitProcess(exit)
 }
 
