@@ -45,15 +45,19 @@ ai-bench-java/
 
 ### Install pre-built bench tools (recommended for most users)
 
-The benchmark tooling — `bench-cli` and `bench-webui` — is published as
-pre-built artifacts on every release, so you do **not** need to build
-them locally. The `banking-app` is intentionally **not** prebuilt: it's
-the thing under evaluation, and the harness has to compile and test it
-locally to measure the metrics that matter.
+The benchmark tooling — `bench-cli` and `bench-webui` — is published
+both as a [GitHub Release](https://github.com/alfredsisley10/ai-bench-java/releases)
+**and** committed to `dist/` in this repo, so you do **not** need to
+build them locally. The `banking-app` is intentionally **not** prebuilt:
+it's the thing under evaluation, and the harness has to compile and
+test it locally to measure the metrics that matter.
 
-**One-command install + start.** From a clone of this repo (or after
-copying the two `scripts/start-bench-tools.*` files to a working
-directory), run:
+> **Enterprise note.** Because the artifacts are also stored under
+> `dist/`, a plain `git clone` (or `git fetch` of an existing checkout)
+> is sufficient — no GitHub-Releases access required. The startup
+> script below copies them out of `dist/` automatically when present.
+
+**One-command install + start.** From a clone of this repo, run:
 
 ```bash
 # macOS / Linux
@@ -65,25 +69,26 @@ directory), run:
 .\scripts\start-bench-tools.ps1
 ```
 
-Each script: verifies a JDK 17–25 is on `PATH`, downloads the latest
-release artifacts via `gh release download` into `~/ai-bench` (override
-with `INSTALL_DIR=…` / `-InstallDir`), unzips `bench-cli`, launches
-`bench-webui` in the background, and prints the `bench-cli` launcher
-path plus a one-liner to add it to `PATH`. Re-running detects an
-already-running `bench-webui` and exits without launching a duplicate.
+Each script: verifies a JDK 17–25 is on `PATH`; either copies pre-built
+artifacts from the repo's `dist/` (if present) or downloads them from
+the GitHub Releases API (built-in `Invoke-WebRequest` / `curl` — no
+`gh` CLI required) into `~/ai-bench` (override with `INSTALL_DIR=…` /
+`-InstallDir`); unzips `bench-cli`; launches `bench-webui` in the
+background; and prints the `bench-cli` launcher path plus a one-liner
+to add it to `PATH`. Re-running detects an already-running `bench-webui`
+and exits without launching a duplicate.
 
 Stop the web UI with `kill $(cat ~/ai-bench/bench-webui.pid)` (Linux/macOS)
 or `Stop-Process -Id (Get-Content $HOME\ai-bench\bench-webui.pid)` (Windows).
 
-**Manual install** if you'd rather not run the script:
+**Manual install** if you'd rather skip the script. From a clone of the
+repo:
 
 ```bash
 # macOS / Linux
-mkdir -p ~/ai-bench && cd ~/ai-bench
-LATEST=$(gh release list --repo alfredsisley10/ai-bench-java --limit 1 --json tagName -q '.[0].tagName')
-gh release download "$LATEST" --repo alfredsisley10/ai-bench-java \
-    --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
-unzip -q bench-cli-*.zip
+mkdir -p ~/ai-bench
+cp dist/bench-cli-*.zip dist/bench-webui-*.jar ~/ai-bench/
+cd ~/ai-bench && unzip -q bench-cli-*.zip
 ./bench-cli-*/bin/bench-cli --help               # CLI entry point
 java -jar bench-webui-*.jar                       # web UI on http://localhost:7777
 ```
@@ -91,18 +96,12 @@ java -jar bench-webui-*.jar                       # web UI on http://localhost:7
 ```powershell
 # Windows (PowerShell)
 New-Item -ItemType Directory -Force -Path $HOME\ai-bench | Out-Null
+Copy-Item .\dist\bench-cli-*.zip,.\dist\bench-webui-*.jar $HOME\ai-bench\
 Set-Location $HOME\ai-bench
-$Latest = gh release list --repo alfredsisley10/ai-bench-java --limit 1 --json tagName -q '.[0].tagName'
-gh release download $Latest --repo alfredsisley10/ai-bench-java `
-    --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar'
 Expand-Archive -Force -Path .\bench-cli-*.zip -DestinationPath .
 & .\bench-cli-0.1.0-SNAPSHOT\bin\bench-cli.bat --help
 java -jar .\bench-webui-0.1.0-SNAPSHOT.jar         # web UI on http://localhost:7777
 ```
-
-(The `LATEST=`/`$Latest` step is needed because `gh release download`
-without an explicit tag defaults to "latest STABLE," which excludes
-prereleases — and the current artifacts are tagged as a prerelease.)
 
 Only requires JDK 17–25 on `PATH` — no Gradle, no internet egress to
 Maven Central, no source build. The same artifacts run on macOS, Linux,

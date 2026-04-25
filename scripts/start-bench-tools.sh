@@ -48,24 +48,66 @@ cd "$INSTALL_DIR"
 cli_zip=$(ls bench-cli-*.zip 2>/dev/null | head -1 || true)
 webui_jar=$(ls bench-webui-*.jar 2>/dev/null | head -1 || true)
 if [ -z "$cli_zip" ] || [ -z "$webui_jar" ]; then
-    if ! command -v gh >/dev/null 2>&1; then
-        err "$INSTALL_DIR is missing one or both release artifacts and 'gh' is not on PATH.
-Install gh (https://cli.github.com) OR download manually from
-https://github.com/$REPO/releases/latest into $INSTALL_DIR, then re-run."
+    # Cache lookup: if the script lives inside a repo checkout that
+    # ships pre-built artifacts under dist/, copy them into INSTALL_DIR
+    # rather than downloading. This makes 'git clone' alone sufficient
+    # for enterprise users who can reach the git remote but not GitHub
+    # Releases.
+    repo_dist="$(cd "$(dirname "$0")/.." && pwd)/dist"
+    if [ -d "$repo_dist" ]; then
+        repo_cli=$(ls "$repo_dist"/bench-cli-*.zip 2>/dev/null | head -1 || true)
+        repo_webui=$(ls "$repo_dist"/bench-webui-*.jar 2>/dev/null | head -1 || true)
+        if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
+            info "Found pre-built artifacts in $repo_dist -- copying into $INSTALL_DIR..."
+            cp "$repo_cli" "$repo_webui" "$INSTALL_DIR/"
+            cli_zip=$(basename "$repo_cli")
+            webui_jar=$(basename "$repo_webui")
+            ok "Copied $cli_zip + $webui_jar from repo dist/."
+        fi
     fi
-    # gh release download without an explicit tag defaults to "latest
-    # STABLE", which excludes prereleases. Resolve the most recent
-    # release tag (prereleases included) first, then download by tag.
-    info "Resolving most recent release tag from $REPO..."
-    latest_tag=$(gh release list --repo "$REPO" --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)
-    [ -n "$latest_tag" ] || err "No releases published in $REPO."
-    info "Downloading $latest_tag from $REPO into $INSTALL_DIR..."
-    gh release download "$latest_tag" --repo "$REPO" \
-        --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar' --clobber
+fi
+
+if [ -z "$cli_zip" ] || [ -z "$webui_jar" ]; then
+    # Use curl + python3 (universal on macOS / Linux) to avoid an
+    # external GitHub-CLI dependency. /releases?per_page=1 returns the
+    # most recent release including prereleases; /releases/latest would
+    # skip prereleases and is therefore avoided.
+    command -v curl    >/dev/null 2>&1 || err "'curl' is required but not on PATH."
+    command -v python3 >/dev/null 2>&1 || err "'python3' is required to parse the GitHub API response but is not on PATH."
+
+    api_url="https://api.github.com/repos/$REPO/releases?per_page=1"
+    info "Resolving most recent release via $api_url ..."
+    release_json=$(curl -fsSL -H 'User-Agent: ai-bench-java-startup' "$api_url" 2>/dev/null) \
+        || err "GitHub API request failed for $api_url"
+
+    # Emit: tag<TAB>name<TAB>url for each asset, one record per line.
+    parsed=$(printf '%s' "$release_json" | python3 -c '
+import json, sys
+data = json.loads(sys.stdin.read())
+if not data:
+    sys.exit("no releases found in API response")
+r = data[0]
+for a in r["assets"]:
+    print(r["tag_name"] + "\t" + a["name"] + "\t" + a["browser_download_url"])
+') || err "Failed to parse release JSON"
+
+    tag=$(printf '%s\n' "$parsed" | head -1 | cut -f1)
+    info "Latest release: $tag -- downloading assets..."
+
+    while IFS=$'\t' read -r _t name url; do
+        case "$name" in
+            bench-cli-*.zip|bench-webui-*.jar)
+                info "  $name"
+                curl -fsSL -H 'User-Agent: ai-bench-java-startup' -o "$name" "$url" \
+                    || err "Download failed: $url"
+                ;;
+        esac
+    done <<< "$parsed"
+
     cli_zip=$(ls bench-cli-*.zip 2>/dev/null | head -1 || true)
     webui_jar=$(ls bench-webui-*.jar 2>/dev/null | head -1 || true)
-    [ -n "$cli_zip" ]   || err "bench-cli zip still missing after gh release download."
-    [ -n "$webui_jar" ] || err "bench-webui jar still missing after gh release download."
+    [ -n "$cli_zip" ]   || err "bench-cli zip still missing after download."
+    [ -n "$webui_jar" ] || err "bench-webui jar still missing after download."
     ok "Downloaded $cli_zip + $webui_jar"
 else
     ok "Found existing artifacts: $cli_zip + $webui_jar"

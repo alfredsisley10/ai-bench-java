@@ -74,28 +74,82 @@ Set-Location $InstallDir
 $cliZip   = Get-ChildItem -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1
 $webuiJar = Get-ChildItem -Filter 'bench-webui-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
 
+# Cache lookup: if the script lives inside a repo checkout that ships
+# pre-built artifacts under dist/, copy them into $InstallDir rather
+# than downloading. This makes 'git clone' alone sufficient for
+# enterprise users who can reach the git remote but not GitHub
+# Releases.
 if (-not $cliZip -or -not $webuiJar) {
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        throw @"
-$InstallDir is missing one or both release artifacts and 'gh' is not on PATH.
-Install gh (https://cli.github.com) OR download manually from
-https://github.com/$Repo/releases/latest into $InstallDir, then re-run.
-"@
+    $repoDist = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\dist') -ErrorAction SilentlyContinue)
+    if ($repoDist -and (Test-Path $repoDist)) {
+        $repoCli   = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        $repoWebui = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-webui-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($repoCli -and $repoWebui) {
+            Write-Info "Found pre-built artifacts in $repoDist -- copying into $InstallDir..."
+            Copy-Item -LiteralPath $repoCli.FullName   -Destination $InstallDir -Force
+            Copy-Item -LiteralPath $repoWebui.FullName -Destination $InstallDir -Force
+            $cliZip   = Get-ChildItem -Filter 'bench-cli-*.zip'   -File | Select-Object -First 1
+            $webuiJar = Get-ChildItem -Filter 'bench-webui-*.jar' -File | Select-Object -First 1
+            Write-Ok "Copied $($cliZip.Name) + $($webuiJar.Name) from repo dist/."
+        }
     }
-    # gh release download without an explicit tag defaults to "latest
-    # STABLE", which excludes prereleases. Resolve the most recent
-    # release tag (prereleases included) first, then download by tag.
-    Write-Info "Resolving most recent release tag from $Repo..."
-    $latestTag = & gh release list --repo $Repo --limit 1 --json tagName -q '.[0].tagName' 2>$null
-    if (-not $latestTag) { throw "No releases published in $Repo." }
-    Write-Info "Downloading $latestTag from $Repo into $InstallDir..."
-    & gh release download $latestTag --repo $Repo `
-        --pattern 'bench-cli-*.zip' --pattern 'bench-webui-*.jar' --clobber
-    if ($LASTEXITCODE -ne 0) { throw "gh release download exited with code $LASTEXITCODE" }
+}
+
+if (-not $cliZip -or -not $webuiJar) {
+    # Use built-in cmdlets (Invoke-RestMethod / Invoke-WebRequest) so this
+    # script depends only on PowerShell 5.1+. /releases?per_page=1 returns
+    # the most recent release including prereleases; /releases/latest would
+    # skip prereleases and is therefore avoided.
+    try {
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+
+    # IWR progress bar is 5-10x slower on PS 5.1; suppress it.
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+
+    $apiUrl  = "https://api.github.com/repos/$Repo/releases?per_page=1"
+    $headers = @{ 'User-Agent' = 'ai-bench-java-startup' }
+
+    Write-Info "Resolving most recent release via $apiUrl ..."
+    try {
+        $releases = Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing
+    } catch {
+        $ProgressPreference = $prevProgress
+        throw "GitHub API request failed: $($_.Exception.Message)"
+    }
+    if (-not $releases -or $releases.Count -lt 1) {
+        $ProgressPreference = $prevProgress
+        throw "No releases found at $apiUrl."
+    }
+    $release = $releases[0]
+    $tag     = $release.tag_name
+    Write-Info "Latest release: $tag -- downloading assets..."
+
+    foreach ($pat in @('bench-cli-*.zip', 'bench-webui-*.jar')) {
+        $asset = $release.assets | Where-Object { $_.name -like $pat } | Select-Object -First 1
+        if (-not $asset) {
+            $ProgressPreference = $prevProgress
+            throw "Release $tag has no asset matching '$pat'."
+        }
+        $dest = Join-Path $InstallDir $asset.name
+        $sizeMB = [math]::Round($asset.size / 1MB, 1)
+        Write-Info "  $($asset.name) ($sizeMB MB)"
+        try {
+            Invoke-WebRequest -Uri $asset.browser_download_url -Headers $headers `
+                -OutFile $dest -UseBasicParsing
+        } catch {
+            $ProgressPreference = $prevProgress
+            throw "Download failed: $($asset.browser_download_url) -- $($_.Exception.Message)"
+        }
+    }
+    $ProgressPreference = $prevProgress
+
     $cliZip   = Get-ChildItem -Filter 'bench-cli-*.zip'   -File | Select-Object -First 1
     $webuiJar = Get-ChildItem -Filter 'bench-webui-*.jar' -File | Select-Object -First 1
-    if (-not $cliZip)   { throw "bench-cli zip still missing after gh release download." }
-    if (-not $webuiJar) { throw "bench-webui jar still missing after gh release download." }
+    if (-not $cliZip)   { throw "bench-cli zip still missing after download." }
+    if (-not $webuiJar) { throw "bench-webui jar still missing after download." }
     Write-Ok "Downloaded $($cliZip.Name) + $($webuiJar.Name)"
 } else {
     Write-Ok "Found existing artifacts: $($cliZip.Name) + $($webuiJar.Name)"
@@ -133,12 +187,19 @@ if (Test-Path $pidFile) {
 
 if (-not $alreadyRunning) {
     Write-Info "Starting bench-webui ..."
-    $proc = Start-Process -FilePath java `
-        -ArgumentList @('-jar', $webuiJar.FullName) `
-        -RedirectStandardOutput $logFile `
-        -RedirectStandardError  $errFile `
-        -WindowStyle Hidden `
-        -PassThru
+    # -WindowStyle Hidden is supported on Windows only. PowerShell 7+
+    # exposes $IsWindows; Windows PowerShell 5.1 (PSEdition=Desktop)
+    # always runs on Windows. Either signal is enough.
+    $onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
+    $startArgs = @{
+        FilePath               = 'java'
+        ArgumentList           = @('-jar', $webuiJar.FullName)
+        RedirectStandardOutput = $logFile
+        RedirectStandardError  = $errFile
+        PassThru               = $true
+    }
+    if ($onWindows) { $startArgs.WindowStyle = 'Hidden' }
+    $proc = Start-Process @startArgs
     $proc.Id | Set-Content -Path $pidFile
 
     Start-Sleep -Seconds 2
