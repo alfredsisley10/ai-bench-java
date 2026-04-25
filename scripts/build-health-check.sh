@@ -1200,15 +1200,27 @@ else
     fi
 
     if [ -n "$suggested_url" ]; then
-        printf "  Enter the artifactory-external-mirror URL [default: %s] (blank to skip): " "$suggested_url"
+        echo "  A candidate URL was discovered during this run:"
+        echo "    $suggested_url"
+        echo "  Options:"
+        echo "    - Press ENTER to use the candidate above"
+        echo "    - Paste a different URL to use instead"
+        echo "    - Type 'skip' to skip this setup entirely"
+        printf "  Your choice: "
     else
-        printf "  Enter the artifactory-external-mirror URL (blank to skip): "
+        echo "  Options:"
+        echo "    - Paste the artifactory-external-mirror URL to wire it up"
+        echo "    - Press ENTER (or type 'skip') to skip this setup entirely"
+        printf "  Your choice: "
     fi
     read -r am_url
-    [ -z "$am_url" ] && am_url="$suggested_url"
+    case "$am_url" in
+        skip|SKIP|Skip) am_url="" ;;
+        "")             am_url="$suggested_url" ;;
+    esac
 
     if [ -z "$am_url" ]; then
-        info "Skipped (no URL provided)."
+        info "Skipped artifactory-external-mirror setup."
     else
         am_url="${am_url%/}/"
 

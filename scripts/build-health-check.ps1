@@ -1440,16 +1440,27 @@ if ($haveSettingsMirror -and $haveSettingsServer -and $haveInitScriptAm) {
         $suggestedUrl = $script:mavenHints[0].Url
     }
 
-    $promptUrl = if ($suggestedUrl) {
-        "  Enter the artifactory-external-mirror URL [default: $suggestedUrl] (blank to skip)"
+    if ($suggestedUrl) {
+        Write-Host "  A candidate URL was discovered during this run:"
+        Write-Host "    $suggestedUrl"
+        Write-Host "  Options:"
+        Write-Host "    - Press ENTER to use the candidate above"
+        Write-Host "    - Paste a different URL to use instead"
+        Write-Host "    - Type 'skip' to skip this setup entirely"
     } else {
-        "  Enter the artifactory-external-mirror URL (blank to skip)"
+        Write-Host "  Options:"
+        Write-Host "    - Paste the artifactory-external-mirror URL to wire it up"
+        Write-Host "    - Press ENTER (or type 'skip') to skip this setup entirely"
     }
-    $amUrl = Read-Host $promptUrl
-    if (-not $amUrl) { $amUrl = $suggestedUrl }
+    $amUrl = Read-Host "  Your choice"
+    if ($amUrl -match '^(?i:skip)$') {
+        $amUrl = ''
+    } elseif (-not $amUrl) {
+        $amUrl = $suggestedUrl
+    }
 
     if (-not $amUrl) {
-        Write-Info "Skipped (no URL provided)."
+        Write-Info "Skipped artifactory-external-mirror setup."
     } else {
         if (-not $amUrl.EndsWith('/')) { $amUrl = "$amUrl/" }
 
