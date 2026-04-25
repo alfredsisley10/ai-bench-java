@@ -1145,11 +1145,294 @@ else
     esac
 fi
 
-# Note: we intentionally DO NOT write to ~/.m2/settings.xml here. That
-# file is only read by the Maven binary, which we don't use. Everything
-# we need for the Gradle build gets translated into ~/.gradle/init.d/
-# and ~/.gradle/gradle.properties in the Maven-Central remediation
-# block below.
+# Note: up to this point we've only PARSED settings.xml. The next
+# section offers to WRITE a proactive 'artifactory-external-mirror'
+# configuration, the canonical enterprise reference setup. It produces
+# matching entries in ~/.m2/settings.xml (<mirror> + <server>),
+# ~/.gradle/gradle.properties (Gradle credential aliases + proxy creds),
+# and ~/.gradle/init.d/corp-repos.gradle.kts. After it runs, the Maven
+# Central reachability check below tests the wired-up mirror end-to-end.
+
+# --- Artifactory external-mirror proactive setup ----------------------------
+sect "Artifactory external-mirror setup"
+
+settings_xml="$HOME/.m2/settings.xml"
+artifactory_mirror_id="artifactory-external-mirror"
+
+# State detection -- have we already wired this id end-to-end?
+have_settings_mirror=0
+have_settings_server=0
+have_init_script=0
+if [ -f "$settings_xml" ]; then
+    grep -q "<id>${artifactory_mirror_id}</id>" "$settings_xml" 2>/dev/null \
+        && have_settings_server=1
+    python3 - "$settings_xml" "$artifactory_mirror_id" <<'PY' >/dev/null 2>&1 \
+        && have_settings_mirror=1
+import re, sys, pathlib
+txt = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8', errors='replace')
+mid = sys.argv[2]
+for m in re.finditer(r'(?s)<mirror>(.*?)</mirror>', txt):
+    idm = re.search(r'<id>\s*([^<]+)\s*</id>', m.group(1))
+    if idm and idm.group(1).strip() == mid:
+        sys.exit(0)
+sys.exit(1)
+PY
+fi
+[ -f "$HOME/.gradle/init.d/corp-repos.gradle.kts" ] && have_init_script=1
+
+if [ "$have_settings_mirror" = "1" ] && [ "$have_settings_server" = "1" ] && [ "$have_init_script" = "1" ]; then
+    ok "${artifactory_mirror_id} already wired in $settings_xml + ~/.gradle/init.d/."
+    info "  To reconfigure, delete the matching <mirror>/<server> blocks (or the init script) and re-run."
+elif [ "$NON_INTERACTIVE" = "1" ]; then
+    info "Non-interactive mode: skipping ${artifactory_mirror_id} setup prompt."
+else
+    echo
+    echo "  ${CYN}Many enterprise reference configurations name their Maven Central proxy${CLR}"
+    echo "  ${CYN}'${artifactory_mirror_id}'. If you have that URL, this script can wire it${CLR}"
+    echo "  ${CYN}into settings.xml (mirror + server), gradle.properties, and an init script.${CLR}"
+    [ "$have_settings_mirror" = "1" ] && info "  Existing: <mirror id='${artifactory_mirror_id}'> in $settings_xml"
+    [ "$have_settings_server" = "1" ] && info "  Existing: <server id='${artifactory_mirror_id}'> in $settings_xml"
+    [ "$have_init_script"     = "1" ] && info "  Existing: ~/.gradle/init.d/corp-repos.gradle.kts (will be replaced if you proceed)"
+
+    suggested_url=""
+    if [ "${#mav_hints[@]}" -gt 0 ]; then
+        suggested_url=$(echo "${mav_hints[0]}" | cut -d'|' -f1)
+    fi
+
+    if [ -n "$suggested_url" ]; then
+        printf "  Enter the artifactory-external-mirror URL [default: %s] (blank to skip): " "$suggested_url"
+    else
+        printf "  Enter the artifactory-external-mirror URL (blank to skip): "
+    fi
+    read -r am_url
+    [ -z "$am_url" ] && am_url="$suggested_url"
+
+    if [ -z "$am_url" ]; then
+        info "Skipped (no URL provided)."
+    else
+        am_url="${am_url%/}/"
+
+        # Pull existing proxy creds as defaults so the user can hit
+        # ENTER twice if they're already configured.
+        proxy_user_default=""
+        proxy_pass_default=""
+        if [ -f "$GRADLE_PROPS" ]; then
+            proxy_user_default=$(grep -E '^\s*systemProp\.https\.proxyUser\s*=' "$GRADLE_PROPS" | head -1 | sed -E 's/.*=[[:space:]]*//')
+            proxy_pass_default=$(grep -E '^\s*systemProp\.https\.proxyPassword\s*=' "$GRADLE_PROPS" | head -1 | sed -E 's/.*=[[:space:]]*//')
+        fi
+
+        if [ -n "$proxy_user_default" ]; then
+            printf "  Proxy username [default: %s]: " "$proxy_user_default"
+        else
+            printf "  Proxy username: "
+        fi
+        read -r am_user
+        [ -z "$am_user" ] && am_user="$proxy_user_default"
+
+        if [ -n "$proxy_pass_default" ]; then
+            printf "  Proxy password (input hidden) [press ENTER to reuse the password already in %s]: " "$GRADLE_PROPS"
+        else
+            printf "  Proxy password (input hidden): "
+        fi
+        stty -echo 2>/dev/null
+        read -r am_pass
+        stty echo 2>/dev/null
+        echo
+        [ -z "$am_pass" ] && am_pass="$proxy_pass_default"
+
+        if [ -z "$am_user" ] || [ -z "$am_pass" ]; then
+            warn "Username or password is empty -- aborting mirror setup." \
+                 "Re-run with proxy credentials to hand. Nothing has been written."
+        else
+            echo
+            echo "  ${YEL}About to write/update:${CLR}"
+            echo "    1. $settings_xml"
+            echo "         <server id='${artifactory_mirror_id}'> + <mirror id='${artifactory_mirror_id}' mirrorOf='*'>"
+            echo "    2. $GRADLE_PROPS"
+            echo "         orgInternalMavenUser/Password (+ wrapper, resolver, http(s) proxy aliases)"
+            echo "    3. $HOME/.gradle/init.d/corp-repos.gradle.kts"
+            echo "         redirects mavenCentral() / gradlePluginPortal() to ${am_url}"
+            echo "  Existing files will be backed up to .backup-<timestamp> siblings."
+            printf "  Proceed? [y/N] "
+            read -r resp
+            case "$resp" in
+                [Yy]|[Yy][Ee][Ss])
+                    # 1. settings.xml -- merge via Python so existing
+                    #    <server>/<mirror> blocks are preserved. Any block
+                    #    already carrying our id is replaced (idempotent).
+                    #    BACKUP-BEFORE-WRITE: if we can't successfully copy
+                    #    an existing settings.xml to a sibling .backup-*,
+                    #    abort the entire mirror setup so no one ends up
+                    #    with a modified settings.xml and no rollback path.
+                    mkdir -p "$(dirname "$settings_xml")"
+                    backup_ok=1
+                    settings_backup=""
+                    if [ -f "$settings_xml" ]; then
+                        stamp=$(date +%Y%m%d-%H%M%S)
+                        settings_backup="$settings_xml.backup-$stamp"
+                        if cp -p "$settings_xml" "$settings_backup" 2>/dev/null && [ -s "$settings_backup" ]; then
+                            ok "Backed up $settings_xml to $settings_backup"
+                        else
+                            backup_ok=0
+                            bad "Could not back up $settings_xml to $settings_backup -- aborting mirror setup; no files were modified." \
+                                "Check write perms on $(dirname "$settings_xml") and free disk space, then re-run."
+                        fi
+                    fi
+                    if [ "$backup_ok" = "0" ]; then
+                        # Stop the mirror-setup branch entirely; the Maven
+                        # Central remediation later in the script can still
+                        # offer a recovery path.
+                        info "Skipping gradle.properties + init script writes since settings.xml backup failed."
+                    else
+                    AM_URL="$am_url" AM_ID="$artifactory_mirror_id" \
+                    AM_USER="$am_user" AM_PASS="$am_pass" \
+                    AM_FILE="$settings_xml" python3 <<'PY'
+import os, re, pathlib
+fp = pathlib.Path(os.environ["AM_FILE"])
+mid  = os.environ["AM_ID"]
+url  = os.environ["AM_URL"]
+user = os.environ["AM_USER"]
+pwd  = os.environ["AM_PASS"]
+
+new_server = f"""    <server>
+      <id>{mid}</id>
+      <username>{user}</username>
+      <password>{pwd}</password>
+    </server>"""
+new_mirror = f"""    <mirror>
+      <id>{mid}</id>
+      <mirrorOf>*</mirrorOf>
+      <name>Corporate Maven Central proxy (artifactory-external-mirror)</name>
+      <url>{url}</url>
+    </mirror>"""
+
+if fp.exists():
+    txt = fp.read_text(encoding="utf-8", errors="replace")
+else:
+    txt = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"\n'
+           '          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n'
+           '          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 '
+           'https://maven.apache.org/xsd/settings-1.2.0.xsd">\n'
+           '</settings>\n')
+
+def strip_by_id(txt, tag, target_id):
+    pattern = re.compile(rf'(?s)\s*<{tag}>(.*?)</{tag}>')
+    def repl(m):
+        idm = re.search(r'<id>\s*([^<]*)\s*</id>', m.group(1))
+        if idm and idm.group(1).strip() == target_id:
+            return ""
+        return m.group(0)
+    return pattern.sub(repl, txt)
+
+txt = strip_by_id(txt, "server", mid)
+txt = strip_by_id(txt, "mirror", mid)
+
+def insert_in(parent_tag, child_block, txt):
+    close_tag = f"</{parent_tag}>"
+    if close_tag in txt:
+        return txt.replace(close_tag, child_block + "\n  " + close_tag, 1)
+    block = f"  <{parent_tag}>\n{child_block}\n  </{parent_tag}>\n"
+    if "</settings>" in txt:
+        return txt.replace("</settings>", block + "</settings>", 1)
+    return txt + block
+
+txt = insert_in("servers", new_server, txt)
+txt = insert_in("mirrors", new_mirror, txt)
+fp.write_text(txt, encoding="utf-8")
+PY
+                    chmod 600 "$settings_xml" 2>/dev/null || true
+                    ok "Wrote <server> + <mirror> id='${artifactory_mirror_id}' to $settings_xml (mode 600)"
+
+                    # 2. gradle.properties -- write all three Gradle credential
+                    #    pairs PLUS http(s) proxy creds (the user just confirmed
+                    #    the same username/password drives both). Strip any
+                    #    prior versions of these keys so re-runs are clean.
+                    if [ -f "$GRADLE_PROPS" ]; then
+                        stamp=$(date +%Y%m%d-%H%M%S)
+                        cp "$GRADLE_PROPS" "$GRADLE_PROPS.backup-$stamp"
+                        ok "Backed up $GRADLE_PROPS to $GRADLE_PROPS.backup-$stamp"
+                    else
+                        mkdir -p "$(dirname "$GRADLE_PROPS")"
+                    fi
+                    tmp=$(mktemp)
+                    if [ -f "$GRADLE_PROPS" ]; then
+                        grep -Ev \
+                            '^\s*(orgInternalMaven(User|Password)|systemProp\.gradle\.wrapper(User|Password)|artifactoryResolver(Username|Password)|systemProp\.https?\.proxy(User|Password))\s*=' \
+                            "$GRADLE_PROPS" > "$tmp"
+                    fi
+                    cat >> "$tmp" <<EOF
+
+# Added by build-health-check.sh on $(date +%FT%T) -- artifactory-external-mirror.
+# Same username/password drives BOTH the corporate proxy AND the Artifactory mirror.
+orgInternalMavenUser=$am_user
+orgInternalMavenPassword=$am_pass
+systemProp.gradle.wrapperUser=$am_user
+systemProp.gradle.wrapperPassword=$am_pass
+artifactoryResolverUsername=$am_user
+artifactoryResolverPassword=$am_pass
+systemProp.https.proxyUser=$am_user
+systemProp.https.proxyPassword=$am_pass
+systemProp.http.proxyUser=$am_user
+systemProp.http.proxyPassword=$am_pass
+EOF
+                    mv "$tmp" "$GRADLE_PROPS"
+                    chmod 600 "$GRADLE_PROPS" 2>/dev/null || true
+                    ok "Wrote credential aliases (3 Gradle pairs + 2 proxy pairs) to $GRADLE_PROPS (mode 600)"
+
+                    # 3. init.d/corp-repos.gradle.kts -- references creds via
+                    #    providers.gradleProperty so the values stay in
+                    #    gradle.properties, not in the init script itself.
+                    init_dir="$HOME/.gradle/init.d"
+                    init_script="$init_dir/corp-repos.gradle.kts"
+                    mkdir -p "$init_dir"
+                    if [ -f "$init_script" ]; then
+                        stamp=$(date +%Y%m%d-%H%M%S)
+                        cp "$init_script" "$init_script.backup-$stamp"
+                        ok "Backed up $init_script to $init_script.backup-$stamp"
+                    fi
+                    cat > "$init_script" <<EOF
+// Added by build-health-check.sh on $(date +%FT%T).
+// Routes mavenCentral() + gradlePluginPortal() through the corporate
+// artifactory-external-mirror. Credentials are loaded from
+// ~/.gradle/gradle.properties (NOT committed). To revert: delete this file.
+val corpMavenUrl = "$am_url"
+
+fun maybeRewrite(repo: ArtifactRepository) {
+    if (repo is MavenArtifactRepository) {
+        val u = repo.url.toString()
+        if (u.contains("repo.maven.apache.org") ||
+            u.contains("plugins.gradle.org") ||
+            u.contains("repo1.maven.org")) {
+            repo.setUrl(corpMavenUrl)
+            repo.credentials {
+                username = providers.gradleProperty("orgInternalMavenUser").get()
+                password = providers.gradleProperty("orgInternalMavenPassword").get()
+            }
+        }
+    }
+}
+
+settingsEvaluated {
+    pluginManagement.repositories.configureEach { maybeRewrite(this) }
+    dependencyResolutionManagement.repositories.configureEach { maybeRewrite(this) }
+}
+
+allprojects {
+    buildscript.repositories.configureEach { maybeRewrite(this) }
+    repositories.configureEach { maybeRewrite(this) }
+}
+EOF
+                    ok "Wrote $init_script  ->  redirects mavenCentral() / gradlePluginPortal() to $am_url"
+                    info "All three '${artifactory_mirror_id}' configuration elements are in place."
+                    info "The Maven Central reachability check below will probe the wired-up mirror end-to-end."
+                    fi  # end of: if backup_ok
+                    ;;
+                *) info "Skipped. No files were modified." ;;
+            esac
+        fi
+    fi
+fi
 
 # --- Gradle init-script shape verification ---------------------------------
 # Runs UNCONDITIONALLY. Detects outdated corp-repos.gradle.kts from a
