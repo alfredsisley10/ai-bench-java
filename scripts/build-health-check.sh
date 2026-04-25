@@ -22,6 +22,34 @@ for arg in "$@"; do
     esac
 done
 
+# Resolve the *real* script directory up front (before any `cd`s) so
+# every path derived from it below — banking-app/gradle.properties,
+# gradle-wrapper.properties, the four sub-project wrappers — resolves
+# correctly regardless of the caller's cwd or whether the script was
+# invoked via a symlink.
+_src="$0"
+if command -v readlink >/dev/null 2>&1; then
+    while [ -L "$_src" ]; do
+        _link=$(readlink "$_src")
+        case "$_link" in
+            /*) _src="$_link" ;;
+            *)  _src="$(dirname "$_src")/$_link" ;;
+        esac
+    done
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+unset _src _link
+
+# Global state used across every section below.
+# CRITICAL: GRADLE_PROPS is referenced by nearly every check, so it must
+# be defined BEFORE the first `sect` runs. Earlier versions of this
+# script declared it mid-way through the Proxy section, which made the
+# opening info lines reference an unbound variable — with `set -u`, that
+# crashed the entire health check after only printing the JDK section.
+GRADLE_PROPS="$HOME/.gradle/gradle.properties"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+
 PASS=0; FAIL=0; WARN=0
 RED=$'\033[0;31m'; GRN=$'\033[0;32m'; YEL=$'\033[0;33m'; CYN=$'\033[0;36m'; CLR=$'\033[0m'
 
@@ -121,6 +149,62 @@ else
     ok "JAVA_HOME = $JAVA_HOME"
 fi
 
+# Full-JDK check: Gradle needs javac + keytool, not just java. A JRE-only
+# install passes the `java` check above but fails at compile time with
+# opaque "tool not found" errors. Also surfaces when JAVA_HOME points at
+# a JRE directory inside a JDK (jdk-17/jre/ on older Oracle layouts).
+if command -v java >/dev/null 2>&1; then
+    javac_bin=""
+    keytool_bin=""
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/javac" ]; then
+        javac_bin="$JAVA_HOME/bin/javac"
+    elif command -v javac >/dev/null 2>&1; then
+        javac_bin=$(command -v javac)
+    fi
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/keytool" ]; then
+        keytool_bin="$JAVA_HOME/bin/keytool"
+    elif command -v keytool >/dev/null 2>&1; then
+        keytool_bin=$(command -v keytool)
+    fi
+    if [ -z "$javac_bin" ]; then
+        bad "javac not found — this looks like a JRE, not a JDK" \
+            "Gradle compiles .java sources, which requires javac. Install a *JDK* distribution (Temurin/OpenJDK/Corretto/Zulu). On Windows the JRE and JDK have nearly identical names; pick the one that ships javac.exe."
+    else
+        info "javac found at $javac_bin"
+    fi
+    if [ -z "$keytool_bin" ]; then
+        warn "keytool not found — corporate-CA import will not work" \
+            "Install a full JDK or point JAVA_HOME at one that includes bin/keytool."
+    fi
+fi
+
+# Detect a stale org.gradle.java.home override in user-level
+# gradle.properties. This property hard-pins the Gradle daemon's JDK and
+# overrides toolchains. A common enterprise failure mode: the user
+# configured it for a Gradle 8 build years ago, pointing at JDK 11; the
+# current Gradle 9.x daemon refuses to start with "Value 'C:\\...\\jdk-11'
+# given for org.gradle.java.home Gradle property is invalid (Java version
+# too old)." The property is valid but its value is wrong for this repo.
+if [ -f "$GRADLE_PROPS" ]; then
+    pinned_java_home=$(grep -E '^\s*org\.gradle\.java\.home\s*=' "$GRADLE_PROPS" 2>/dev/null | head -1 | sed -E 's/^[^=]*=[[:space:]]*//')
+    if [ -n "$pinned_java_home" ]; then
+        info "org.gradle.java.home = $pinned_java_home  (pinned in $GRADLE_PROPS)"
+        if [ ! -x "$pinned_java_home/bin/java" ]; then
+            bad "org.gradle.java.home points at a path with no bin/java: $pinned_java_home" \
+                "Either delete the line from $GRADLE_PROPS so Gradle uses JAVA_HOME, or update it to a valid JDK 17-25 install root."
+        else
+            pinned_ver=$("$pinned_java_home/bin/java" -version 2>&1 | head -1)
+            pinned_major=$(printf '%s' "$pinned_ver" | awk -F'"' '{ split($2, a, "."); print a[1] }')
+            if [ -n "$pinned_major" ] && [ "$pinned_major" -ge 17 ] && [ "$pinned_major" -le 25 ] 2>/dev/null; then
+                ok "org.gradle.java.home JDK $pinned_major is in range  ($pinned_ver)"
+            else
+                bad "org.gradle.java.home pins Gradle to JDK ${pinned_major:-?}; repo needs 17-25" \
+                    "Gradle 9.4.1 will refuse to start. Delete the org.gradle.java.home line OR update it to a 17-25 install."
+            fi
+        fi
+    fi
+fi
+
 # --- Proxy detection -------------------------------------------------
 sect "Proxy configuration"
 
@@ -134,22 +218,41 @@ sect "Proxy configuration"
 # This script only reads/writes (1). (2) is never modified.
 info "User-level gradle.properties (proxy + creds live here):"
 info "  $GRADLE_PROPS"
-banking_project_props="$(pwd)/banking-app/gradle.properties"
-if [ -f "$banking_project_props" ]; then
+# Resolve project-level gradle.properties for EVERY sub-project wrapper
+# we ship. Historically this only scanned banking-app/, which would miss
+# accidentally-committed proxy/cred lines in the harness / cli / webui
+# projects.
+for proj in banking-app bench-harness bench-cli bench-webui; do
+    proj_props="$REPO_ROOT/$proj/gradle.properties"
+    [ -f "$proj_props" ] || continue
     info "Project-level gradle.properties (NOT used for proxy; only build tuning):"
-    info "  $banking_project_props"
-    if grep -qE 'systemProp\.(http|https)\.proxy|orgInternalMaven(User|Password)|artifactoryResolver(Username|Password)' "$banking_project_props"; then
+    info "  $proj_props"
+    if grep -qE 'systemProp\.(http|https)\.proxy|orgInternalMaven(User|Password)|artifactoryResolver(Username|Password)' "$proj_props"; then
         warn "Project-level gradle.properties contains proxy/credential lines!" \
-            "These would be committed to git. Move them to $GRADLE_PROPS and remove from $banking_project_props."
+            "These would be committed to git. Move them to $GRADLE_PROPS and remove from $proj_props."
     fi
-fi
+done
 env_proxy=""
 for k in HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy; do
     val=$(eval "echo \${$k:-}")
     [ -n "$val" ] && { info "$k = $val"; env_proxy="yes"; }
 done
 
-GRADLE_PROPS="$HOME/.gradle/gradle.properties"
+# Flag JVM-level env vars that silently inject args into every JVM launched
+# (including the Gradle wrapper). Common enterprise gotcha: a forgotten
+# -Dhttp.proxyHost here will override what's in gradle.properties and
+# mislead the operator debugging the build.
+for k in GRADLE_OPTS JAVA_TOOL_OPTIONS _JAVA_OPTIONS JAVA_OPTS; do
+    val=$(eval "echo \${$k:-}")
+    if [ -n "$val" ]; then
+        info "$k = $val"
+        if echo "$val" | grep -qiE 'proxy|truststore|javax\.net\.ssl'; then
+            warn "$k contains TLS/proxy JVM args that may conflict with gradle.properties." \
+                "JVM-level env vars apply to every 'java' process; if they disagree with \$GRADLE_PROPS settings, the env vars win and the build picks up whichever came first."
+        fi
+    fi
+done
+
 gradle_proxy=""
 gradle_proxy_host=""
 gradle_proxy_port=""
@@ -1251,6 +1354,7 @@ for ep in \
     "Gradle distributions|https://services.gradle.org/distributions/" \
     "Maven Central (Gradle mavenCentral())|https://repo.maven.apache.org/maven2/" \
     "Gradle Plugin Portal|https://plugins.gradle.org/m2/" \
+    "Foojay Disco (toolchain auto-download)|https://api.foojay.io/disco/v3.0/packages?version=17&vendor=temurin&architecture=x64&operating_system=linux&archive_type=tar.gz&package_type=jdk&javafx_bundled=false&latest=available" \
     "GitHub|https://github.com/"; do
     name=${ep%%|*}; url=${ep##*|}
     info "-> $url"
@@ -1268,7 +1372,21 @@ for ep in \
         000)
             bad "$name unreachable: $url -- $out" \
                 "Check proxy host/port, VPN, NO_PROXY, and TLS chain (corporate CA may need to be imported)"
-            case "$name" in "Maven Central"*) maven_central_ok=0 ;; esac
+            case "$name" in
+                "Maven Central"*) maven_central_ok=0 ;;
+                "Foojay"*)
+                    info "  -> The Foojay Disco API is what Gradle calls to AUTO-DOWNLOAD a JDK 17 when"
+                    info "     your default JDK is a different major version. It's wired via the"
+                    info "     foojay-resolver-convention plugin in every settings.gradle.kts."
+                    info "  -> If Foojay is blocked but your default JDK is already 17-25, turn OFF"
+                    info "     auto-download in ${GRADLE_PROPS}:"
+                    info "       org.gradle.java.installations.auto-download=false"
+                    info "       org.gradle.java.installations.auto-detect=true"
+                    info "     Gradle will then reuse your locally-installed JDK via path discovery."
+                    info "  -> Alternatively, pin the discovery path explicitly:"
+                    info "       org.gradle.java.installations.paths=/path/to/jdk17"
+                    ;;
+            esac
             ;;
         *)
             warn "$name returned HTTP $code at $url"
@@ -1649,19 +1767,167 @@ if [ -n "$free_gb" ]; then
 fi
 info "Gradle user home: $HOME/.gradle"
 
+# --- JVM-level HTTP auth / tunneling gotchas -------------------------
+# The JVM disables Basic auth over HTTPS CONNECT tunnels by default
+# (Java 8u111+). Corporate proxies that require Basic / NTLM auth on
+# CONNECT will silently reject the Gradle wrapper download BEFORE any
+# application-level proxy config is consulted, producing a 407 that's
+# very hard to diagnose from Gradle's output alone. Surface the flags
+# the user likely needs if we already see proxy creds in
+# gradle.properties.
+sect "JVM HTTP auth settings"
+if [ -f "$GRADLE_PROPS" ] && grep -qE '^\s*systemProp\.(https?)\.proxyPassword\s*=' "$GRADLE_PROPS"; then
+    have_tunneling=$(grep -cE '^\s*systemProp\.jdk\.http\.auth\.tunneling\.disabledSchemes\s*=' "$GRADLE_PROPS" 2>/dev/null || echo 0)
+    have_proxying=$(grep -cE '^\s*systemProp\.jdk\.http\.auth\.proxying\.disabledSchemes\s*=' "$GRADLE_PROPS" 2>/dev/null || echo 0)
+    if [ "$have_tunneling" = "0" ] || [ "$have_proxying" = "0" ]; then
+        warn "Proxy credentials present but Basic-over-CONNECT is disabled by default in JDK 17+." \
+            "Corporate proxies that authenticate via Basic / NTLM on the HTTPS CONNECT tunnel will return 407 'Proxy Authentication Required' even with correct creds."
+        info "  To re-enable on this project, add to $GRADLE_PROPS :"
+        info "    systemProp.jdk.http.auth.tunneling.disabledSchemes="
+        info "    systemProp.jdk.http.auth.proxying.disabledSchemes="
+        info "  (empty value = no schemes disabled = Basic/NTLM re-allowed)"
+    else
+        ok "jdk.http.auth.tunneling/proxying disabledSchemes already cleared in $GRADLE_PROPS"
+    fi
+fi
+
+# IPv6 stack preference: corporate egress / proxies are very commonly
+# IPv4-only, while the JVM will pick AAAA first, causing 30s connect
+# timeouts per retry. Symptom: "connect timed out" on the first build
+# attempt; second attempt sometimes works after the AAAA lookup
+# negative-caches. Recommend -Djava.net.preferIPv4Stack=true when
+# problems appear without a configured IPv6 route.
+if [ -f "$GRADLE_PROPS" ] && grep -qE '^\s*systemProp\.java\.net\.preferIPv4Stack\s*=\s*true' "$GRADLE_PROPS"; then
+    ok "systemProp.java.net.preferIPv4Stack=true set in $GRADLE_PROPS"
+elif command -v ip >/dev/null 2>&1 && ip -6 route show 2>/dev/null | grep -qE '^default '; then
+    info "IPv6 default route present on this host; preferIPv4Stack not needed."
+else
+    info "No IPv6 default route detected."
+    info "  If the build hangs on 'Connect timed out' at dependency resolution, add:"
+    info "    systemProp.java.net.preferIPv4Stack=true"
+    info "  to $GRADLE_PROPS. Forces the JVM to skip AAAA DNS lookups entirely."
+fi
+
 # --- Gradle wrapper distribution -------------------------------------
 sect "Gradle wrapper download"
-WRAPPER_PROPS="$(dirname "$0")/../banking-app/gradle/wrapper/gradle-wrapper.properties"
-if [ -f "$WRAPPER_PROPS" ]; then
-    dist_url=$(grep '^distributionUrl=' "$WRAPPER_PROPS" | sed 's/^distributionUrl=//; s|\\:|:|g')
-    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -L -I "$dist_url" 2>&1)
-    case "${code%% *}" in
-        200|301|302|307) ok "Gradle wrapper distribution reachable: $dist_url";;
-        000)             bad "Wrapper distribution NOT downloadable: $dist_url" "Without this, ./gradlew will fail before Gradle starts.";;
-        *)               warn "Wrapper distribution HEAD returned HTTP $code";;
+# Scan every wrapper we ship, not just banking-app. A regression in any
+# one of them (distributionUrl pointing at the wrong version, network
+# timeout too short, corrupted wrapper jar) blocks the whole project.
+# Check the reachability of each distributionUrl PLUS verify the wrapper
+# jar itself matches its distributionSha256Sum (when present) --
+# corporate MITM proxies have been observed corrupting binary downloads
+# during inspection.
+wrapper_errors=0
+wrapper_warnings=0
+for proj in banking-app bench-harness bench-cli bench-webui; do
+    props="$REPO_ROOT/$proj/gradle/wrapper/gradle-wrapper.properties"
+    wrapjar="$REPO_ROOT/$proj/gradle/wrapper/gradle-wrapper.jar"
+    if [ ! -f "$props" ]; then
+        warn "$proj: gradle-wrapper.properties not found at $props; skipping"
+        wrapper_errors=$((wrapper_errors+1))
+        continue
+    fi
+    dist_url=$(grep '^distributionUrl=' "$props" | sed 's/^distributionUrl=//; s|\\:|:|g')
+    net_timeout=$(grep -E '^\s*networkTimeout\s*=' "$props" | sed -E 's/.*=[[:space:]]*//' | head -1)
+    if [ -n "$net_timeout" ] && [ "$net_timeout" -lt 30000 ] 2>/dev/null; then
+        warn "$proj: networkTimeout=$net_timeout ms is short for corporate networks" \
+            "Bump to 60000-120000 in $props to avoid spurious failures under proxy latency."
+        wrapper_warnings=$((wrapper_warnings+1))
+    fi
+    probe_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -L -I \
+        "${gradle_curl_proxy[@]+"${gradle_curl_proxy[@]}"}" "$dist_url" 2>&1)
+    probe_code=${probe_code%% *}
+    case "$probe_code" in
+        200|301|302|307)
+            ok "$proj: distribution reachable ($probe_code): $dist_url"
+            ;;
+        000)
+            bad "$proj: distribution NOT downloadable: $dist_url" \
+                "Without this, ./gradlew in $proj/ will fail before Gradle starts. Check proxy + TLS chain."
+            wrapper_errors=$((wrapper_errors+1))
+            ;;
+        *)
+            warn "$proj: distribution HEAD returned HTTP $probe_code at $dist_url"
+            wrapper_warnings=$((wrapper_warnings+1))
+            ;;
     esac
+
+    # Local gradle-wrapper.jar sanity: size must be ~40-80 KB (current
+    # Gradle 9.x wrappers are ~43 KB). A 0-byte or 1-KB file indicates
+    # a failed/aborted download OR a proxy that returned an HTML error
+    # page that the wrapper silently accepted. A 100+ KB file suggests
+    # the proxy injected an inspection landing page.
+    if [ -f "$wrapjar" ]; then
+        jar_size=$(wc -c < "$wrapjar" | tr -d '[:space:]')
+        if [ "$jar_size" -lt 20000 ] 2>/dev/null; then
+            bad "$proj: gradle-wrapper.jar is only $jar_size bytes — looks truncated or corrupted" \
+                "Expected ~40-80 KB. Delete the file and re-run 'git checkout -- gradle/wrapper/gradle-wrapper.jar' from $proj/, or re-clone. Proxy content inspection sometimes strips bytes."
+            wrapper_errors=$((wrapper_errors+1))
+        elif [ "$jar_size" -gt 200000 ] 2>/dev/null; then
+            warn "$proj: gradle-wrapper.jar is $jar_size bytes (larger than expected ~43 KB)" \
+                "Could indicate the proxy replaced the jar with an HTML 'content inspection' page. Open the file in a hex editor; if it starts with '<!DOCTYPE' or '<html', that's the cause."
+            wrapper_warnings=$((wrapper_warnings+1))
+        elif command -v unzip >/dev/null 2>&1; then
+            if ! unzip -tq "$wrapjar" >/dev/null 2>&1; then
+                bad "$proj: gradle-wrapper.jar is NOT a valid zip" \
+                    "The file is corrupt. Re-checkout with 'git checkout -- $proj/gradle/wrapper/gradle-wrapper.jar'."
+                wrapper_errors=$((wrapper_errors+1))
+            fi
+        fi
+    else
+        bad "$proj: gradle-wrapper.jar missing at $wrapjar" \
+            "Run 'git checkout -- $proj/gradle/wrapper/gradle-wrapper.jar' to restore it."
+        wrapper_errors=$((wrapper_errors+1))
+    fi
+done
+[ "$wrapper_errors" = "0" ] && [ "$wrapper_warnings" = "0" ] && \
+    ok "All four sub-project wrappers look healthy."
+
+# --- End-to-end smoke test: gradlew --version -----------------------
+# Final check, runs the actual wrapper. If EVERY diagnostic above
+# passed but this fails, the problem is specific to the wrapper
+# bootstrap path (distribution download, SHA-256 verification, or
+# JVM startup) rather than repo/network config. Gives the clearest
+# possible signal since all upstream config has been verified.
+sect "End-to-end: gradlew --version"
+if [ "$wrapper_errors" -gt 0 ]; then
+    info "Skipping end-to-end probe — fix the wrapper errors above first."
 else
-    warn "gradle-wrapper.properties not found at $WRAPPER_PROPS; skipping"
+    wrapper="$REPO_ROOT/banking-app/gradlew"
+    if [ ! -x "$wrapper" ]; then
+        warn "banking-app/gradlew missing or not executable; skipping."
+    else
+        info "Running \"$wrapper --version\" (may download ~150 MB Gradle distribution on first run)..."
+        tmplog=$(mktemp)
+        if "$wrapper" -p "$REPO_ROOT/banking-app" --version >"$tmplog" 2>&1; then
+            gradle_ver=$(grep -E '^Gradle\s+[0-9]' "$tmplog" | head -1)
+            jvm_ver=$(grep -E '^JVM:' "$tmplog" | head -1)
+            ok "Wrapper bootstrapped cleanly — $gradle_ver"
+            [ -n "$jvm_ver" ] && info "  $jvm_ver"
+        else
+            bad "Wrapper bootstrap FAILED — this is the same error you see when ./gradlew build runs." \
+                "Inspect $tmplog for the exact cause. Most common: distribution SHA-256 mismatch (MITM proxy), wrapper jar corrupt, or JDK incompatibility."
+            info "  Last 15 lines of the wrapper output:"
+            tail -15 "$tmplog" | while IFS= read -r l; do info "    $l"; done
+            # Surface specific remediation for the common failure signatures.
+            if grep -qE 'Could not find or load main class org\.gradle\.wrapper\.GradleWrapperMain' "$tmplog"; then
+                info "  -> gradle-wrapper.jar is present but unreadable by the JVM. Either the file is"
+                info "     truncated (size check above would catch), or the JVM classpath resolution is broken."
+                info "     Try: rm $wrapjar && git checkout -- banking-app/gradle/wrapper/gradle-wrapper.jar"
+            elif grep -qE 'Verification of Gradle distribution failed' "$tmplog"; then
+                info "  -> The downloaded Gradle zip does not match the SHA-256 in gradle-wrapper.properties."
+                info "     Corporate MITM proxy is rewriting the zip during inspection. Two fixes:"
+                info "        (a) Add proxy/truststore so TLS is not intercepted, OR"
+                info "        (b) Download $dist_url manually through a browser, verify SHA-256,"
+                info "            and place in \$GRADLE_USER_HOME/wrapper/dists/gradle-9.4.1-bin/<hash>/"
+            elif grep -qE 'PKIX|SSLHandshake|unable to find valid certification path' "$tmplog"; then
+                info "  -> JDK truststore missing the corporate root CA. See TLS chain section above."
+            elif grep -qE '407 Proxy Authentication Required' "$tmplog"; then
+                info "  -> Proxy CONNECT auth rejected. See JVM HTTP auth section above."
+            fi
+        fi
+        rm -f "$tmplog"
+    fi
 fi
 
 # --- Summary ---------------------------------------------------------
