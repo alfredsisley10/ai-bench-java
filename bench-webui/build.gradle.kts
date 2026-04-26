@@ -26,6 +26,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Gradle 9 enforces an explicit JUnit Platform launcher on the test
+    // runtime classpath; spring-boot-starter-test only ships the API.
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 appmap {

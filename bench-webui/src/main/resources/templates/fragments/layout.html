@@ -6,7 +6,7 @@
     <title th:text="'ai-bench — ' + ${title}">ai-bench</title>
     <script src="https://unpkg.com/htmx.org@2.0.2"></script>
     <script defer src="/static/sortable-table.js"></script>
-    <link rel="stylesheet" th:href="@{/static/style.css(v=${#dates.createNow().getTime()})}" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
@@ -19,14 +19,16 @@
         <a href="/">Dashboard</a>
         <a href="/demo">Demo</a>
         <a href="/results">Results</a>
+        <a href="/copilot-guide">Copilot guide</a>
+        <a href="/docs/operations-guide">Ops guide</a>
+        <span th:if="${isAdmin}" class="nav-sep">|</span>
+        <span th:if="${isAdmin}" class="nav-group-label">Admin</span>
+        <a th:if="${isAdmin}" href="/run">Run benchmark</a>
         <a th:if="${isAdmin}" href="/github">GitHub</a>
         <a th:if="${isAdmin}" href="/jira">JIRA</a>
         <a th:if="${isAdmin}" href="/llm">LLMs</a>
         <a th:if="${isAdmin}" href="/appmap-navie">AppMap Navie</a>
-        <a th:if="${isAdmin}" href="/run">Run benchmark</a>
         <a th:if="${isAdmin}" href="/proxy">Proxy</a>
-        <a href="/copilot-guide">Copilot guide</a>
-        <a href="/docs/operations-guide">Ops guide</a>
     </nav>
 </header>
 <main th:insert="${content}">

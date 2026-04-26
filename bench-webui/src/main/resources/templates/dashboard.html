@@ -8,26 +8,28 @@
         <div class="cards">
             <div class="card"><span class="label">Runs</span><span class="value" th:text="${totalRuns}">0</span></div>
             <div class="card"><span class="label">Pass rate</span><span class="value" th:text="${#numbers.formatPercent(passRate, 1, 1)}">0%</span></div>
-            <div class="card"><span class="label">Solvers</span><span class="value" th:text="${#strings.listJoin(solvers, ', ')}">corp-openai, copilot</span></div>
-            <div class="card"><span class="label">Repos</span><span class="value" th:text="${connectedRepos}">0</span></div>
-            <div class="card"><span class="label">Bugs</span><span class="value" th:text="${availableBugs}">12</span></div>
+            <div class="card"><span class="label">Solvers</span><span class="value" th:text="${#lists.isEmpty(solvers) ? 'none registered' : #strings.listJoin(solvers, ', ')}">none</span></div>
+            <div class="card"><span class="label">Bugs</span><span class="value" th:text="${availableBugs}">0</span></div>
         </div>
     </section>
     <section>
         <h2>Recent runs</h2>
         <div th:if="${#lists.isEmpty(recentRuns)}">
-            <p class="empty-state">No benchmark runs yet. <a th:if="${isAdmin}" href="/run">Launch one</a></p>
+            <p class="empty-state">No benchmark runs yet.
+                <a th:if="${isAdmin}" href="/run">Launch one</a>
+                <span th:unless="${isAdmin}">A manager can launch a run from <a href="/demo">/demo</a>.</span>
+            </p>
         </div>
         <table th:unless="${#lists.isEmpty(recentRuns)}">
-            <thead><tr><th>ID</th><th>Bug</th><th>Solver</th><th>Result</th><th>Tokens</th><th>Time</th></tr></thead>
+            <thead><tr><th>ID</th><th>Bug</th><th>Model</th><th>Status</th><th>Pass / total</th><th>Duration</th></tr></thead>
             <tbody>
             <tr th:each="r : ${recentRuns}">
                 <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
-                <td th:text="${r.bugId}"></td>
-                <td th:text="${r.solver}"></td>
-                <td th:text="${r.passed ? 'PASS' : 'FAIL'}"></td>
-                <td th:text="${r.totalTokens}"></td>
-                <td th:text="${r.wallClockSec + 's'}"></td>
+                <td th:text="${r.issueId}"></td>
+                <td th:text="${r.modelId}"></td>
+                <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
+                <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
+                <td th:text="${(r.durationMs / 1000) + 's'}"></td>
             </tr>
             </tbody>
         </table>

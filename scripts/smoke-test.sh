@@ -3,33 +3,25 @@
 # ai-bench-java smoke test. Run from repo root:
 #   ./scripts/smoke-test.sh
 #
-# Assumes Java 21 and Gradle 8.10+ on PATH. The banking-app does not yet ship
-# with a wrapper binary (see docs/project-context/BUILD-PLAN.md Phase 1 note)
-# — run `gradle wrapper` once in banking-app/ to populate gradle-wrapper.jar.
+# Compiles the harness/CLI/UI core modules and exercises a small subset
+# of banking-app tests so a broken first checkout fails loudly.
+#
+# Prerequisites: a JDK 17-25 on PATH. Each sub-project ships its own
+# Gradle wrapper (9.4.x) so no separate Gradle install is needed.
 
 set -euo pipefail
 
 die()  { echo "FAIL: $*" 1>&2; exit 1; }
 note() { echo "== $* =="; }
 
-command -v java >/dev/null 2>&1 || die "java not found — install JDK 21"
+command -v java >/dev/null 2>&1 || die "java not found -- install JDK 17-25"
 java -version 2>&1 | head -1
 
-if ! command -v gradle >/dev/null 2>&1; then
-    if [[ -x banking-app/gradlew ]]; then
-        GRADLE_CMD=$(pwd)/banking-app/gradlew
-    else
-        die "gradle not found and banking-app/gradlew missing — install Gradle or generate the wrapper"
-    fi
-else
-    GRADLE_CMD=gradle
-fi
-
-note "Bootstrapping Gradle wrappers (if missing)"
+# Every sub-project must already have a Gradle wrapper checked in.
+# Generating one from a system 'gradle' just to bootstrap is a pre-2024
+# crutch we no longer need.
 for dir in banking-app bench-harness bench-cli bench-webui; do
-    if [[ ! -f "$dir/gradlew" ]]; then
-        ( cd "$dir" && "$GRADLE_CMD" wrapper --gradle-version 8.10.2 )
-    fi
+    [[ -x "$dir/gradlew" ]] || die "missing $dir/gradlew (re-clone or run 'git restore $dir/gradlew')"
 done
 
 note "banking-app :shared-domain:test"

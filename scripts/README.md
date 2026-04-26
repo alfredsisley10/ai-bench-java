@@ -29,9 +29,9 @@ printed at the end of the run.
 Both scripts run the same set of layers (slug-for-slug), so CI or
 onboarding docs can call whichever matches the platform without
 behavioral differences. Run this before the first `gradlew build` on any
-new machine — especially behind a corporate proxy. See the main
-README's "Behind a corporate proxy" section for fixing the failures
-it surfaces.
+new machine — especially behind a corporate proxy. See
+[docs/enterprise-builder.md](../docs/enterprise-builder.md) for fixing
+the failures it surfaces.
 
 ### Layer model
 
@@ -96,23 +96,53 @@ incrementally tested:
 | OS-integrated trust store | `trust-store` — Windows-ROOT on Windows, KeychainStore on macOS, distro CA bundle import on Linux |
 | Gradle wrapper distribution | `wrapper` (download, SHA-256, jar size sanity) |
 
+## start-bench-tools / stop-bench-tools
+
+One-command boot of the pre-built `bench-cli` and `bench-webui`. Copies
+artifacts out of the repo's `dist/` directory (or downloads them from
+the GitHub Releases API if `dist/` is empty), unzips `bench-cli`, and
+launches `bench-webui` in the background on http://localhost:7777.
+
+```bash
+./scripts/start-bench-tools.sh        # macOS / Linux
+.\scripts\start-bench-tools.ps1        # Windows (PowerShell)
+```
+
+`stop-bench-tools.{sh,ps1}` reads the PID file the start script writes,
+sends a graceful shutdown, and escalates to a force-kill after 15 s. A
+missing PID file is reported as "nothing to stop" — re-running is safe.
+
+Override the install root with `INSTALL_DIR=…` (bash) or
+`-InstallDir …` (PowerShell). Default is `~/ai-bench`.
+
+## build-source
+
+Build every sub-project from source in dependency order. Replaces the
+manual `cd X && ./gradlew build` sequence:
+
+```bash
+./scripts/build-source.sh                       # all sub-projects, default `build`
+./scripts/build-source.sh -- clean test         # pass extra args to Gradle
+./scripts/build-source.sh --skip=banking-app    # skip a sub-project
+```
+
+```powershell
+.\scripts\build-source.ps1
+.\scripts\build-source.ps1 -- clean test
+.\scripts\build-source.ps1 -Skip banking-app
+```
+
 ## smoke-test.sh
 
-End-to-end sanity check: compiles key modules and runs a small subset of tests. Intended to fail loudly on first checkout if anything is broken.
+End-to-end sanity check: compiles the key modules and runs a small
+subset of tests. Intended to fail loudly on first checkout when
+anything is broken.
 
 ```bash
 ./scripts/smoke-test.sh
 ```
 
-**Prerequisites on this machine:**
-- Java 21 (the project's toolchain target)
-- Gradle 8.10+ OR a populated Gradle wrapper in each sub-project (run `gradle wrapper --gradle-version 8.10.2` once per subproject)
+Requires a JDK 17–25 on `PATH`. Each sub-project ships its own Gradle
+9.4.x wrapper so no separate Gradle install is needed.
 
-The smoke test intentionally exercises only a few targets. For a full build:
-
-```bash
-cd banking-app && ./gradlew build
-cd ../bench-harness && ./gradlew build
-cd ../bench-cli && ./gradlew build
-cd ../bench-webui && ./gradlew build
-```
+For a full build use `./scripts/build-source.sh`.
