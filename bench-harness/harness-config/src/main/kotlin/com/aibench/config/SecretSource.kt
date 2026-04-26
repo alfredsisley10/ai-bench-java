@@ -2,11 +2,13 @@ package com.aibench.config
 
 sealed interface SecretSource {
 
-    fun resolve(ref: String): String?
+    val scheme: String
+
+    fun resolve(key: String): String?
 
     companion object {
-        fun forEnvironment(env: Environment, vaultCfg: BenchConfig.VaultSection): SecretSource {
-            return ChainedSecretSource(buildList {
+        fun forEnvironment(env: Environment, vaultCfg: BenchConfig.VaultSection): SecretSource =
+            ChainedSecretSource(buildList {
                 add(EnvVarSecretSource)
                 add(SystemPropertySecretSource)
                 when (env) {
@@ -16,7 +18,6 @@ sealed interface SecretSource {
                     }
                 }
             })
-        }
 
         fun parse(ref: String): Pair<String, String> {
             val colonIdx = ref.indexOf(':')
@@ -27,28 +28,22 @@ sealed interface SecretSource {
 }
 
 internal class ChainedSecretSource(private val sources: List<SecretSource>) : SecretSource {
+    override val scheme: String = "chain"
+
     override fun resolve(ref: String): String? {
         val (scheme, key) = SecretSource.parse(ref)
-        for (source in sources) {
-            val value = when (scheme) {
-                "env" -> if (source is EnvVarSecretSource) source.resolve(key) else null
-                "prop" -> if (source is SystemPropertySecretSource) source.resolve(key) else null
-                "keystore" -> if (source is OsKeystoreSecretSource) source.resolve(key) else null
-                "vault" -> if (source is VaultSecretSource) source.resolve(key) else null
-                "literal" -> return key
-                else -> source.resolve(ref)
-            }
-            if (value != null) return value
-        }
-        return null
+        if (scheme == "literal") return key
+        return sources.firstOrNull { it.scheme == scheme }?.resolve(key)
     }
 }
 
 internal object EnvVarSecretSource : SecretSource {
-    override fun resolve(ref: String): String? =
-        System.getenv(ref) ?: System.getProperty("dotenv.$ref")
+    override val scheme: String = "env"
+    override fun resolve(key: String): String? =
+        System.getenv(key) ?: System.getProperty("dotenv.$key")
 }
 
 internal object SystemPropertySecretSource : SecretSource {
-    override fun resolve(ref: String): String? = System.getProperty(ref)
+    override val scheme: String = "prop"
+    override fun resolve(key: String): String? = System.getProperty(key)
 }

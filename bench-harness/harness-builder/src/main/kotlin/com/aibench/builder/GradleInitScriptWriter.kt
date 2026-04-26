@@ -14,38 +14,28 @@ class GradleInitScriptWriter(private val cfg: EnterpriseBuildConfig) {
     fun write(dir: Path): Path {
         Files.createDirectories(dir)
         val path = dir.resolve("ai-bench-enterprise-${UUID.randomUUID()}.init.gradle.kts")
-        val repoBlock = if (cfg.artifactoryUrl != null) """
-            buildscript {
-                repositories {
-                    clear()
-                    maven {
-                        url = uri("${cfg.artifactoryUrl}")
-                        credentials {
-                            username = System.getenv("ARTIFACTORY_USER")
-                            password = System.getenv("ARTIFACTORY_TOKEN")
-                        }
-                    }
-                }
-            }
-            allprojects {
-                repositories {
-                    clear()
-                    maven {
-                        url = uri("${cfg.artifactoryUrl}")
-                        credentials {
-                            username = System.getenv("ARTIFACTORY_USER")
-                            password = System.getenv("ARTIFACTORY_TOKEN")
-                        }
-                    }
-                }
-            }
-        """.trimIndent() else ""
-
-        Files.writeString(path, repoBlock)
+        val script = cfg.artifactoryUrl?.let { url ->
+            """
+            buildscript { repositories { ${corpRepoBlock(url)} } }
+            allprojects { repositories { ${corpRepoBlock(url)} } }
+            """.trimIndent()
+        }.orEmpty()
+        Files.writeString(path, script)
         return path
     }
 
     fun delete(path: Path) {
         Files.deleteIfExists(path)
     }
+
+    private fun corpRepoBlock(url: String) = """
+        clear()
+        maven {
+            url = uri("$url")
+            credentials {
+                username = System.getenv("ARTIFACTORY_USER")
+                password = System.getenv("ARTIFACTORY_TOKEN")
+            }
+        }
+    """.trimIndent()
 }
