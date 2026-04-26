@@ -127,20 +127,32 @@ target), use the source build below.
 ### Pre-build health check (recommended on a fresh machine)
 
 Before the first build — especially on Windows behind a corporate proxy —
-run the bundled health check. It verifies JDK version, proxy
-configuration, reachability to every artifact repo Gradle hits at build
-time, TLS chain (detects corporate-CA interception), and the Gradle
-distribution download. Exits non-zero with a remediation hint per
-failure.
+run the bundled health check. It is organised into named, independently-
+runnable **layers** (JDK → proxy → TLS → trust-store → mirror → wrapper
+→ end-to-end) so every element of enterprise connectivity can be
+incrementally verified. Each layer prints its own per-layer pass/fail
+verdict, and the run ends with a summary table.
 
 ```powershell
-# Windows (PowerShell)
+# Windows (PowerShell) -- run every layer (default)
 .\scripts\build-health-check.ps1
+
+# Run a single layer in isolation
+.\scripts\build-health-check.ps1 -Only tls,trust-store -NonInteractive
+
+# Start partway through (assume earlier layers are healthy)
+.\scripts\build-health-check.ps1 -From wrapper -NonInteractive
+
+# List every layer
+.\scripts\build-health-check.ps1 -ListLayers
 ```
 
 ```bash
 # macOS / Linux
-./scripts/build-health-check.sh
+./scripts/build-health-check.sh                                  # all layers
+./scripts/build-health-check.sh --only tls,trust-store --non-interactive
+./scripts/build-health-check.sh --from wrapper --non-interactive
+./scripts/build-health-check.sh --list-layers
 ```
 
 If everything is green, jump straight to **Build + run** below. If the
@@ -334,6 +346,28 @@ Get the corporate root from your IT team, your browser's certificate
 manager (export the issuer of any internal HTTPS site), or
 `scripts\build-health-check.ps1` will tell you which root the proxy
 is presenting.
+
+**Alternative — point Gradle at the OS-integrated trust store.** Big
+enterprises usually ship the corporate root through GPO/MDM into the
+*operating-system* trust store. Java doesn't read that by default, but
+you can switch the JVM's trust source to the OS store with a single
+property in `gradle.properties` and skip the per-JDK `keytool` import
+entirely:
+
+```properties
+# Windows -- read the Windows Cert Store directly
+systemProp.javax.net.ssl.trustStoreType=Windows-ROOT
+```
+
+```properties
+# macOS -- read System + Login Keychains
+systemProp.javax.net.ssl.trustStoreType=KeychainStore
+```
+
+The `trust-store` layer of `build-health-check` detects what's wired
+already and, on Windows / macOS, offers to write the right line for
+you. CA rotations from IT then propagate automatically without
+re-importing into every JDK.
 
 #### 3. Wrong JDK or `JAVA_HOME` not set
 

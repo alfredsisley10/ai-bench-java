@@ -3,22 +3,59 @@
 # Pre-build environment check for ai-bench-java on macOS / Linux.
 # Mirrors scripts/build-health-check.ps1 — same checks, same exit codes,
 # so CI invocations can be platform-agnostic.
+#
+# The script is organized into NAMED, INDEPENDENTLY-RUNNABLE LAYERS so
+# every element of enterprise connectivity can be incrementally verified.
+# Layers are evaluated in build-time order (foundation → network → TLS →
+# repos → wrapper → end-to-end), each printing its own pass/fail summary.
+#
+# Use --list-layers to print the full layer catalog.
+# Use --only LAYER[,LAYER]   to run a subset (no-match = skip).
+# Use --from LAYER           to start partway through (skip everything before).
+# Use --skip LAYER[,LAYER]   to skip individual layers.
+# Default: every layer runs in order, the same as before.
 
 set -u
 
 NON_INTERACTIVE=0
 MAVEN_CONFIG_PATH=""
+ONLY_LAYERS=""
+FROM_LAYER=""
+SKIP_LAYERS=""
+LIST_LAYERS=0
 prev=""
 for arg in "$@"; do
-    if [ "$prev" = "--maven-config" ]; then
-        MAVEN_CONFIG_PATH="$arg"
-        prev=""
-        continue
-    fi
+    case "$prev" in
+        --maven-config) MAVEN_CONFIG_PATH="$arg"; prev=""; continue ;;
+        --only)         ONLY_LAYERS="$arg";       prev=""; continue ;;
+        --from)         FROM_LAYER="$arg";        prev=""; continue ;;
+        --skip)         SKIP_LAYERS="$arg";       prev=""; continue ;;
+    esac
     case "$arg" in
-        --non-interactive|-q) NON_INTERACTIVE=1 ;;
+        --non-interactive|-q)  NON_INTERACTIVE=1 ;;
         --maven-config)        prev="--maven-config" ;;
         --maven-config=*)      MAVEN_CONFIG_PATH="${arg#--maven-config=}" ;;
+        --only)                prev="--only" ;;
+        --only=*)              ONLY_LAYERS="${arg#--only=}" ;;
+        --from)                prev="--from" ;;
+        --from=*)              FROM_LAYER="${arg#--from=}" ;;
+        --skip)                prev="--skip" ;;
+        --skip=*)              SKIP_LAYERS="${arg#--skip=}" ;;
+        --list-layers|--list)  LIST_LAYERS=1 ;;
+        --help|-h)
+            cat <<EOF
+Usage: build-health-check.sh [OPTIONS]
+  -q, --non-interactive   Skip every prompt; treat would-be prompts as no-op.
+      --maven-config P    Point at a settings.xml / maven-wrapper.properties
+                          file or a directory to recursively scan (depth 3).
+      --list-layers       Print the layer catalog and exit.
+      --only L[,L...]     Run only the listed layers (slug-matched).
+      --from L            Start at layer L; skip everything before.
+      --skip L[,L...]     Skip the listed layers.
+  -h, --help              Show this help and exit.
+EOF
+            exit 0
+            ;;
     esac
 done
 
@@ -53,14 +90,112 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
 PASS=0; FAIL=0; WARN=0
 RED=$'\033[0;31m'; GRN=$'\033[0;32m'; YEL=$'\033[0;33m'; CYN=$'\033[0;36m'; CLR=$'\033[0m'
 
-ok()   { printf "  ${GRN}[PASS]${CLR} %s\n" "$1"; PASS=$((PASS+1)); }
-bad()  { printf "  ${RED}[FAIL]${CLR} %s\n" "$1"; FAIL=$((FAIL+1)); [ -n "${2:-}" ] && printf "         ${YEL}-> %s${CLR}\n" "$2"; }
-warn() { printf "  ${YEL}[WARN]${CLR} %s\n" "$1"; WARN=$((WARN+1)); [ -n "${2:-}" ] && printf "         ${YEL}-> %s${CLR}\n" "$2"; }
+ok()   { printf "  ${GRN}[PASS]${CLR} %s\n" "$1"; PASS=$((PASS+1)); _layer_pass=$((${_layer_pass:-0}+1)); }
+bad()  { printf "  ${RED}[FAIL]${CLR} %s\n" "$1"; FAIL=$((FAIL+1)); _layer_fail=$((${_layer_fail:-0}+1)); [ -n "${2:-}" ] && printf "         ${YEL}-> %s${CLR}\n" "$2"; }
+warn() { printf "  ${YEL}[WARN]${CLR} %s\n" "$1"; WARN=$((WARN+1)); _layer_warn=$((${_layer_warn:-0}+1)); [ -n "${2:-}" ] && printf "         ${YEL}-> %s${CLR}\n" "$2"; }
 info() { printf "  ${CYN}[INFO]${CLR} %s\n" "$1"; }
-sect() { printf "\n== %s ==\n" "$1"; }
+
+# --- Layer framework -------------------------------------------------
+# Each enterprise concern lives behind a layer slug; want_layer tells the
+# orchestrator whether to enter the section, layer prints the header and
+# resets per-layer counters, layer_summary prints a one-line pass/fail
+# verdict the operator can scan. _LAYERS_RUN gathers slugs in the order
+# they fired so the final summary can list them deterministically.
+LAYERS_CATALOG=(
+    "jdk|JDK 17-25 + javac/keytool present"
+    "disk|Free disk for Gradle caches"
+    "ps-policy|PowerShell execution policy (Windows-only; no-op on Linux/macOS)"
+    "proxy|Proxy configuration (env, gradle.properties, VSCode sync)"
+    "gradle-props|gradle.properties consistency"
+    "maven-config|Corporate settings.xml / maven-wrapper.properties discovery"
+    "mirror-setup|Artifactory external-mirror proactive setup"
+    "repo-reach|Artifact repository reachability (Maven Central, Plugin Portal, Foojay, Gradle dist, GitHub)"
+    "mirror-remediation|Maven-Central mirror remediation when direct egress fails"
+    "tls|TLS chain inspection (corporate-CA detection)"
+    "trust-store|OS-integrated trust-store wiring (Windows-ROOT, KeychainStore, /etc/ssl)"
+    "jvm-http-auth|JVM HTTP-tunnel auth schemes (Basic/NTLM over CONNECT)"
+    "wrapper|Gradle wrapper distribution + jar sanity"
+    "e2e|End-to-end: gradlew --version"
+)
+_LAYERS_RUN=()
+_LAYERS_RESULT=()    # parallel: "<slug>|<pass>|<fail>|<warn>"
+_layer_id=""
+
+if [ "$LIST_LAYERS" = "1" ]; then
+    printf "Layers (run in this order; slug | description):\n"
+    for entry in "${LAYERS_CATALOG[@]}"; do
+        slug="${entry%%|*}"; desc="${entry#*|}"
+        printf "  %-22s %s\n" "$slug" "$desc"
+    done
+    exit 0
+fi
+
+_layer_in_list() {
+    # $1 = slug, $2 = comma list. Empty list -> false.
+    local slug="$1" list="$2"
+    [ -z "$list" ] && return 1
+    case ",$list," in *",$slug,"*) return 0 ;; esac
+    return 1
+}
+
+_layer_index_of() {
+    # Print the index of slug in LAYERS_CATALOG, or empty if unknown.
+    local slug="$1" i=0
+    for entry in "${LAYERS_CATALOG[@]}"; do
+        if [ "${entry%%|*}" = "$slug" ]; then printf "%s" "$i"; return 0; fi
+        i=$((i+1))
+    done
+}
+
+want_layer() {
+    # Returns 0 if the named layer should run, 1 if it should be skipped.
+    local slug="$1"
+    if [ -n "$ONLY_LAYERS" ]; then
+        _layer_in_list "$slug" "$ONLY_LAYERS" || return 1
+    fi
+    if _layer_in_list "$slug" "$SKIP_LAYERS"; then return 1; fi
+    if [ -n "$FROM_LAYER" ]; then
+        local from_idx this_idx
+        from_idx=$(_layer_index_of "$FROM_LAYER")
+        this_idx=$(_layer_index_of "$slug")
+        if [ -n "$from_idx" ] && [ -n "$this_idx" ] && [ "$this_idx" -lt "$from_idx" ]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+layer() {
+    # layer <slug> <Title>: prints the section header, resets counters.
+    _layer_id="$1"; local title="$2"
+    _layer_pass=0; _layer_fail=0; _layer_warn=0
+    printf "\n== [%s] %s ==\n" "$_layer_id" "$title"
+}
+
+layer_summary() {
+    # Always called at the end of a layer body to record per-layer stats.
+    [ -z "$_layer_id" ] && return 0
+    _LAYERS_RUN+=("$_layer_id")
+    _LAYERS_RESULT+=("$_layer_id|${_layer_pass:-0}|${_layer_fail:-0}|${_layer_warn:-0}")
+    if [ "${_layer_fail:-0}" -gt 0 ]; then
+        printf "  ${RED}[layer:%s FAIL]${CLR} %s pass / %s fail / %s warn\n" \
+            "$_layer_id" "${_layer_pass:-0}" "${_layer_fail:-0}" "${_layer_warn:-0}"
+    elif [ "${_layer_warn:-0}" -gt 0 ]; then
+        printf "  ${YEL}[layer:%s WARN]${CLR} %s pass / %s warn\n" \
+            "$_layer_id" "${_layer_pass:-0}" "${_layer_warn:-0}"
+    else
+        printf "  ${GRN}[layer:%s OK]${CLR} %s pass\n" "$_layer_id" "${_layer_pass:-0}"
+    fi
+    _layer_id=""
+}
+
+# Wrap a section in: if run_layer "<slug>" "<Title>"; then ... ; layer_summary ; fi
+run_layer() {
+    if want_layer "$1"; then layer "$1" "$2"; return 0; else return 1; fi
+}
 
 # --- JDK -------------------------------------------------------------
-sect "JDK 17-25"
+if run_layer "jdk" "JDK 17-25 + javac / keytool"; then
 if ! command -v java >/dev/null 2>&1; then
     bad "java is not on PATH" "Install JDK 21 (Temurin / OpenJDK / Corretto / Zulu) and add its bin/ to PATH."
 else
@@ -205,8 +340,37 @@ if [ -f "$GRADLE_PROPS" ]; then
     fi
 fi
 
+layer_summary
+fi  # end layer:jdk
+
+# --- Disk space (lifted ahead of network checks: a Gradle build needs
+# room for caches before any of the later layers matter) ------------------
+if run_layer "disk" "Free disk for Gradle caches"; then
+free_gb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
+if [ -n "$free_gb" ]; then
+    if awk "BEGIN{exit !($free_gb < 5)}"; then
+        bad "$HOME has only ${free_gb} GB free; Gradle needs at least 5 GB"
+    elif awk "BEGIN{exit !($free_gb < 10)}"; then
+        warn "$HOME has ${free_gb} GB free; recommend 10 GB+"
+    else
+        ok "$HOME has ${free_gb} GB free"
+    fi
+fi
+info "Gradle user home: $GRADLE_USER_HOME"
+layer_summary
+fi  # end layer:disk
+
+# Layer ps-policy is a Windows-only no-op when sourced on macOS / Linux,
+# but reserve the slot in the catalog so --list-layers parity with the
+# PowerShell sibling script lines up; the body just records "n/a".
+if run_layer "ps-policy" "PowerShell execution policy (Windows-only; no-op here)"; then
+info "Not on Windows -- PowerShell execution policy is irrelevant for the bash flow."
+ok "Skipped (n/a on this platform)."
+layer_summary
+fi  # end layer:ps-policy
+
 # --- Proxy detection -------------------------------------------------
-sect "Proxy configuration"
+if run_layer "proxy" "Proxy configuration (env, gradle.properties, VSCode sync)"; then
 
 # Gradle reads TWO gradle.properties:
 #   (1) USER-LEVEL at ~/.gradle/gradle.properties -- proxy host/port/
@@ -393,8 +557,11 @@ else
     fi
 fi
 
-# --- Artifact repos --------------------------------------------------
-sect "Gradle properties consistency"
+layer_summary
+fi  # end layer:proxy
+
+# --- Gradle properties consistency -----------------------------------
+if run_layer "gradle-props" "gradle.properties consistency"; then
 
 read_prop() {
     [ -f "$GRADLE_PROPS" ] || return 0
@@ -478,7 +645,10 @@ else
     [ "$inconsistent" = "1" ] && warn "Credential pairs in $GRADLE_PROPS DISAGREE across names." "Every pair should share the same username/password."
 fi
 
-sect "Corporate repository configuration"
+layer_summary
+fi  # end layer:gradle-props
+
+if run_layer "maven-config" "Corporate settings.xml / maven-wrapper.properties discovery"; then
 # The project builds with Gradle only; we never invoke mvn. But many
 # enterprises hand out Artifactory URL + credentials via Maven's
 # settings.xml format (e.g. JFrog's "Set Me Up -> Maven" workflow).
@@ -1153,8 +1323,11 @@ fi
 # and ~/.gradle/init.d/corp-repos.gradle.kts. After it runs, the Maven
 # Central reachability check below tests the wired-up mirror end-to-end.
 
+layer_summary
+fi  # end layer:maven-config
+
 # --- Artifactory external-mirror proactive setup ----------------------------
-sect "Artifactory external-mirror setup"
+if run_layer "mirror-setup" "Artifactory external-mirror proactive setup"; then
 
 settings_xml="$HOME/.m2/settings.xml"
 artifactory_mirror_id="artifactory-external-mirror"
@@ -1620,7 +1793,10 @@ elif [ "$NON_INTERACTIVE" != "1" ]; then
     info "No corporate Maven config added to the candidate list. That's fine if Maven Central is directly reachable below."
 fi
 
-sect "Artifact repository reachability"
+layer_summary
+fi  # end layer:mirror-setup
+
+if run_layer "repo-reach" "Artifact repository reachability"; then
 # Note on naming: "Maven Central" refers to the public Java artifact
 # repository at repo.maven.apache.org -- not the Maven build tool.
 # Gradle's mavenCentral() directive resolves to this same URL, so the
@@ -1700,11 +1876,15 @@ if [ "$maven_central_via_proxy" = "1" ]; then
     info "section above only matters if you also publish to or resolve from internal repos."
 fi
 
+layer_summary
+fi  # end layer:repo-reach
+
 # --- Maven Central mirror remediation ---------------------------------
 # Corporate networks usually block direct egress to repo.maven.apache.org
 # and expect Gradle to resolve through an internal Artifactory / Nexus.
 # Detect that case and offer to wire up a Gradle init script.
-if [ "$maven_central_ok" = "0" ]; then
+if run_layer "mirror-remediation" "Maven-Central mirror remediation"; then
+if [ "${maven_central_ok:-1}" = "0" ]; then
     echo
     echo "  ${YEL}Maven Central is unreachable. It IS required for this build (Spring Boot,${CLR}"
     echo "  ${YEL}Kotlin stdlib, JUnit, Jackson all come from there) -- but in a corporate${CLR}"
@@ -1935,10 +2115,14 @@ EOF
             info "Skipped. You can hand-craft ~/.gradle/init.d/corp-repos.gradle.kts later."
         fi
     fi
-fi
+else
+    info "Maven Central reachable in this run -- nothing to remediate."
+fi  # end of: if [ maven_central_ok = 0 ]
+layer_summary
+fi  # end layer:mirror-remediation
 
 # --- TLS chain check -------------------------------------------------
-sect "TLS chain check"
+if run_layer "tls" "TLS chain inspection (corporate-CA detection)"; then
 TLS_HOST="services.gradle.org"
 info "-> https://${TLS_HOST}:443 (TLS chain inspection)"
 corp_root_pem=""
@@ -2048,19 +2232,143 @@ EOF
     fi
 fi
 
-# --- Disk space ------------------------------------------------------
-sect "Disk space"
-free_gb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
-if [ -n "$free_gb" ]; then
-    if awk "BEGIN{exit !($free_gb < 5)}"; then
-        bad "$HOME has only ${free_gb} GB free; Gradle needs at least 5 GB"
-    elif awk "BEGIN{exit !($free_gb < 10)}"; then
-        warn "$HOME has ${free_gb} GB free; recommend 10 GB+"
-    else
-        ok "$HOME has ${free_gb} GB free"
-    fi
+layer_summary
+fi  # end layer:tls
+
+# --- OS-integrated trust-store wiring --------------------------------
+# Big enterprises distribute the corporate root via a single channel —
+# usually GPO/MDM that drops it into the *operating-system* trust store.
+# Java does NOT pick that up by default; it reads its own bundled
+# cacerts. The cleanest fix on each platform is to point the JVM at the
+# OS trust store via systemProp.javax.net.ssl.trustStoreType — no per-
+# JDK keytool import required, and CA rotations from IT propagate
+# automatically.
+#
+#   Windows : trustStoreType=Windows-ROOT   (reads Windows Cert Store)
+#   macOS   : trustStoreType=KeychainStore  (reads System + Login Keychains)
+#   Linux   : import the distro PEM bundle into JDK cacerts (the JVM has
+#             no native Linux trust-store provider).
+#
+# This layer DETECTS what's in place and (interactively) offers to wire
+# the right thing on the host OS. Read-only when --non-interactive.
+if run_layer "trust-store" "OS-integrated trust-store wiring"; then
+ts_store_now=""
+ts_type_now=""
+if [ -f "$GRADLE_PROPS" ]; then
+    ts_store_now=$(grep -E '^\s*systemProp\.javax\.net\.ssl\.trustStore\s*=' "$GRADLE_PROPS" 2>/dev/null | head -1 | sed -E 's/^[^=]+=[[:space:]]*//')
+    ts_type_now=$( grep -E '^\s*systemProp\.javax\.net\.ssl\.trustStoreType\s*=' "$GRADLE_PROPS" 2>/dev/null | head -1 | sed -E 's/^[^=]+=[[:space:]]*//')
 fi
-info "Gradle user home: $HOME/.gradle"
+
+uname_s="$(uname -s 2>/dev/null || echo unknown)"
+case "$uname_s" in
+    *CYGWIN*|*MINGW*|*MSYS*) host_os="windows-shim" ;;
+    Darwin)                  host_os="macos" ;;
+    Linux)                   host_os="linux" ;;
+    *)                       host_os="other" ;;
+esac
+info "Detected host: $uname_s ($host_os)"
+
+case "$host_os" in
+    windows-shim)
+        info "Recommended on Windows: systemProp.javax.net.ssl.trustStoreType=Windows-ROOT"
+        info "  -> Lets Gradle inherit the corporate root distributed via GPO/MDM with no keytool import."
+        if [ "$ts_type_now" = "Windows-ROOT" ]; then
+            ok "Already wired (trustStoreType=Windows-ROOT in $GRADLE_PROPS)."
+        elif [ -n "$ts_type_now" ]; then
+            warn "trustStoreType=$ts_type_now is set but expected Windows-ROOT on Windows." \
+                "Either change it to Windows-ROOT, or confirm the alternate truststore (e.g. JKS path) trusts the corporate root."
+        else
+            if [ "$NON_INTERACTIVE" = "1" ]; then
+                info "Non-interactive: skipping the offer to write trustStoreType=Windows-ROOT."
+            else
+                printf "  Add systemProp.javax.net.ssl.trustStoreType=Windows-ROOT to %s ? [y/N]: " "$GRADLE_PROPS"
+                read -r resp
+                case "$resp" in
+                    [Yy]|[Yy][Ee][Ss])
+                        mkdir -p "$(dirname "$GRADLE_PROPS")"
+                        if [ -f "$GRADLE_PROPS" ]; then
+                            stamp=$(date +%Y%m%d-%H%M%S)
+                            cp "$GRADLE_PROPS" "$GRADLE_PROPS.backup-$stamp"
+                            ok "Backed up $GRADLE_PROPS to $GRADLE_PROPS.backup-$stamp"
+                        fi
+                        printf "\n# Added by build-health-check.sh on %s -- use Windows Cert Store as Java trust source.\nsystemProp.javax.net.ssl.trustStoreType=Windows-ROOT\n" "$(date +%FT%T)" >> "$GRADLE_PROPS"
+                        ok "Wrote trustStoreType=Windows-ROOT to $GRADLE_PROPS"
+                        ;;
+                    *) info "Skipped." ;;
+                esac
+            fi
+        fi
+        ;;
+    macos)
+        info "Recommended on macOS: systemProp.javax.net.ssl.trustStoreType=KeychainStore"
+        info "  -> Lets Gradle inherit the corporate root that mdm-agent / Munki / Jamf etc. dropped"
+        info "     into the System Keychain. No per-JDK keytool import; CA rotations propagate."
+        if [ "$ts_type_now" = "KeychainStore" ]; then
+            ok "Already wired (trustStoreType=KeychainStore in $GRADLE_PROPS)."
+        elif [ -n "$ts_type_now" ]; then
+            warn "trustStoreType=$ts_type_now is set; KeychainStore would integrate macOS keychain instead." \
+                "Switch only if your alternate store is missing the corporate root."
+        else
+            sys_keychain="/Library/Keychains/System.keychain"
+            login_keychain="$HOME/Library/Keychains/login.keychain-db"
+            if [ -r "$sys_keychain" ] || [ -r "$login_keychain" ]; then
+                info "  Found $sys_keychain  (and/or $login_keychain) -- KeychainStore can read these."
+            fi
+            if [ "$NON_INTERACTIVE" = "1" ]; then
+                info "Non-interactive: skipping the offer to write trustStoreType=KeychainStore."
+            else
+                printf "  Add systemProp.javax.net.ssl.trustStoreType=KeychainStore to %s ? [y/N]: " "$GRADLE_PROPS"
+                read -r resp
+                case "$resp" in
+                    [Yy]|[Yy][Ee][Ss])
+                        mkdir -p "$(dirname "$GRADLE_PROPS")"
+                        if [ -f "$GRADLE_PROPS" ]; then
+                            stamp=$(date +%Y%m%d-%H%M%S)
+                            cp "$GRADLE_PROPS" "$GRADLE_PROPS.backup-$stamp"
+                            ok "Backed up $GRADLE_PROPS to $GRADLE_PROPS.backup-$stamp"
+                        fi
+                        printf "\n# Added by build-health-check.sh on %s -- use macOS Keychain as Java trust source.\nsystemProp.javax.net.ssl.trustStoreType=KeychainStore\n" "$(date +%FT%T)" >> "$GRADLE_PROPS"
+                        ok "Wrote trustStoreType=KeychainStore to $GRADLE_PROPS"
+                        ;;
+                    *) info "Skipped." ;;
+                esac
+            fi
+        fi
+        ;;
+    linux)
+        # Linux JDKs have no native OS trust-store provider. The standard
+        # remediation: import the distro CA bundle into the JDK cacerts
+        # (or use update-ca-trust-style tooling that some Adoptium / RHEL
+        # JDKs hook into automatically).
+        bundle=""
+        for cand in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem /etc/ssl/ca-bundle.pem; do
+            [ -f "$cand" ] && { bundle="$cand"; break; }
+        done
+        if [ -n "$bundle" ]; then
+            info "Detected distro CA bundle: $bundle"
+            info "  Linux JDK has no native trust-store provider; import the bundle into JDK cacerts:"
+            info "    keytool -importcert -trustcacerts -alias linux-ca-bundle -file '$bundle' \\"
+            info "        -keystore \"\$JAVA_HOME/lib/security/cacerts\" -storepass changeit -noprompt"
+            info "  (Run once per JDK install; safe to re-run -- alias collisions abort cleanly.)"
+        else
+            info "No standard distro CA bundle path located. If TLS to Maven Central succeeds, no action needed."
+        fi
+        if [ -n "$ts_store_now" ]; then
+            ok "trustStore override already configured: $ts_store_now (type=${ts_type_now:-default})"
+        else
+            info "Gradle is using the JDK default trust store ($JAVA_HOME/lib/security/cacerts)."
+        fi
+        ;;
+    *)
+        info "Unrecognized OS '$uname_s' -- no platform-specific trust-store guidance."
+        ;;
+esac
+layer_summary
+fi  # end layer:trust-store
+
+# (disk-space already ran as the second layer up top -- the original
+# section that lived here has been retired to keep the layer model
+# linear.)
 
 # --- JVM-level HTTP auth / tunneling gotchas -------------------------
 # The JVM disables Basic auth over HTTPS CONNECT tunnels by default
@@ -2070,7 +2378,7 @@ info "Gradle user home: $HOME/.gradle"
 # very hard to diagnose from Gradle's output alone. Surface the flags
 # the user likely needs if we already see proxy creds in
 # gradle.properties.
-sect "JVM HTTP auth settings"
+if run_layer "jvm-http-auth" "JVM HTTP-tunnel auth schemes (Basic / NTLM over CONNECT)"; then
 if [ -f "$GRADLE_PROPS" ] && grep -qE '^\s*systemProp\.(https?)\.proxyPassword\s*=' "$GRADLE_PROPS"; then
     have_tunneling=$(grep -cE '^\s*systemProp\.jdk\.http\.auth\.tunneling\.disabledSchemes\s*=' "$GRADLE_PROPS" 2>/dev/null || echo 0)
     have_proxying=$(grep -cE '^\s*systemProp\.jdk\.http\.auth\.proxying\.disabledSchemes\s*=' "$GRADLE_PROPS" 2>/dev/null || echo 0)
@@ -2103,8 +2411,11 @@ else
     info "  to $GRADLE_PROPS. Forces the JVM to skip AAAA DNS lookups entirely."
 fi
 
+layer_summary
+fi  # end layer:jvm-http-auth
+
 # --- Gradle wrapper distribution -------------------------------------
-sect "Gradle wrapper download"
+if run_layer "wrapper" "Gradle wrapper distribution + jar sanity"; then
 # Scan every wrapper we ship, not just banking-app. A regression in any
 # one of them (distributionUrl pointing at the wrong version, network
 # timeout too short, corrupted wrapper jar) blocks the whole project.
@@ -2184,7 +2495,10 @@ done
 # bootstrap path (distribution download, SHA-256 verification, or
 # JVM startup) rather than repo/network config. Gives the clearest
 # possible signal since all upstream config has been verified.
-sect "End-to-end: gradlew --version"
+layer_summary
+fi  # end layer:wrapper
+
+if run_layer "e2e" "End-to-end: gradlew --version"; then
 if [ "$wrapper_errors" -gt 0 ]; then
     info "Skipping end-to-end probe — fix the wrapper errors above first."
 else
@@ -2224,10 +2538,28 @@ else
         rm -f "$tmplog"
     fi
 fi
+layer_summary
+fi  # end layer:e2e
 
 # --- Summary ---------------------------------------------------------
 echo
 echo "================================================================"
+if [ "${#_LAYERS_RUN[@]}" -gt 0 ]; then
+    echo "Per-layer results (in run order):"
+    for r in "${_LAYERS_RESULT[@]}"; do
+        slug="${r%%|*}"; rest="${r#*|}"
+        p="${rest%%|*}"; rest="${rest#*|}"
+        f="${rest%%|*}"; w="${rest#*|}"
+        if [ "$f" -gt 0 ]; then
+            printf "  ${RED}[%-20s FAIL]${CLR} %s pass / %s fail / %s warn\n" "$slug" "$p" "$f" "$w"
+        elif [ "$w" -gt 0 ]; then
+            printf "  ${YEL}[%-20s WARN]${CLR} %s pass / %s warn\n" "$slug" "$p" "$w"
+        else
+            printf "  ${GRN}[%-20s OK]${CLR} %s pass\n" "$slug" "$p"
+        fi
+    done
+    echo
+fi
 if [ "$FAIL" = 0 ]; then
     echo "${GRN}  Build environment looks healthy.${CLR}"
     [ "$WARN" -gt 0 ] && echo "${YEL}  $WARN warning(s) above are advisory.${CLR}"

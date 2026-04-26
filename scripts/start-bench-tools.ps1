@@ -6,7 +6,9 @@
   Mirror of scripts/start-bench-tools.sh:
     1. Verifies a JDK 17-25 is on PATH.
     2. If $InstallDir (default $HOME\ai-bench) is missing the release
-       artifacts, downloads them via 'gh release download'.
+       artifacts, copies them from the repo's dist/ folder when
+       present, otherwise fetches them from the GitHub Releases API
+       via Invoke-WebRequest (no 'gh' CLI dependency).
     3. Expands bench-cli if it's still in zip form.
     4. Launches bench-webui in the background, captures its PID +
        log path, prints the URL.

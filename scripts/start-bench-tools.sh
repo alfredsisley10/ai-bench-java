@@ -5,7 +5,9 @@
 # What this does, in order:
 #   1. Verifies a JDK 17-25 is on PATH.
 #   2. If $INSTALL_DIR (default ~/ai-bench) is missing the release
-#      artifacts, downloads them via `gh release download`.
+#      artifacts, copies them out of the repo's dist/ when present,
+#      otherwise fetches them from the GitHub Releases API via curl
+#      (no `gh` CLI dependency).
 #   3. Unzips bench-cli if it's still in zip form.
 #   4. Launches bench-webui in the background, captures its PID +
 #      log path, prints the URL.
@@ -32,6 +34,15 @@ ok()   { printf "${GRN}[ok]${CLR}   %s\n" "$1"; }
 warn() { printf "${YEL}[warn]${CLR} %s\n" "$1"; }
 
 # --- 1. JDK precheck --------------------------------------------------
+# Find the first matching artifact in a directory; prints the BASENAME (or
+# nothing when there's no match). Used for both the local INSTALL_DIR and
+# the repo's dist/ scan.
+find_artifact() {
+    local dir="$1" pattern="$2" hit
+    hit=$(find "$dir" -maxdepth 1 -name "$pattern" -print 2>/dev/null | head -1)
+    [ -n "$hit" ] && basename "$hit"
+}
+
 command -v java >/dev/null 2>&1 \
     || err "java is not on PATH. Install JDK 17-25 (Temurin / OpenJDK / Corretto / Zulu) and re-run."
 ver_line=$(java -version 2>&1 | head -1)
@@ -45,8 +56,8 @@ ok "JDK $java_major detected ($ver_line)"
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-cli_zip=$(ls bench-cli-*.zip 2>/dev/null | head -1 || true)
-webui_jar=$(ls bench-webui-*.jar 2>/dev/null | head -1 || true)
+cli_zip=$(find_artifact "$INSTALL_DIR" 'bench-cli-*.zip')
+webui_jar=$(find_artifact "$INSTALL_DIR" 'bench-webui-*.jar')
 if [ -z "$cli_zip" ] || [ -z "$webui_jar" ]; then
     # Cache lookup: if the script lives inside a repo checkout that
     # ships pre-built artifacts under dist/, copy them into INSTALL_DIR
@@ -54,16 +65,14 @@ if [ -z "$cli_zip" ] || [ -z "$webui_jar" ]; then
     # for enterprise users who can reach the git remote but not GitHub
     # Releases.
     repo_dist="$(cd "$(dirname "$0")/.." && pwd)/dist"
-    if [ -d "$repo_dist" ]; then
-        repo_cli=$(ls "$repo_dist"/bench-cli-*.zip 2>/dev/null | head -1 || true)
-        repo_webui=$(ls "$repo_dist"/bench-webui-*.jar 2>/dev/null | head -1 || true)
-        if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
-            info "Found pre-built artifacts in $repo_dist -- copying into $INSTALL_DIR..."
-            cp "$repo_cli" "$repo_webui" "$INSTALL_DIR/"
-            cli_zip=$(basename "$repo_cli")
-            webui_jar=$(basename "$repo_webui")
-            ok "Copied $cli_zip + $webui_jar from repo dist/."
-        fi
+    repo_cli=$(find_artifact "$repo_dist" 'bench-cli-*.zip')
+    repo_webui=$(find_artifact "$repo_dist" 'bench-webui-*.jar')
+    if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
+        info "Found pre-built artifacts in $repo_dist -- copying into $INSTALL_DIR..."
+        cp "$repo_dist/$repo_cli" "$repo_dist/$repo_webui" "$INSTALL_DIR/"
+        cli_zip="$repo_cli"
+        webui_jar="$repo_webui"
+        ok "Copied $cli_zip + $webui_jar from repo dist/."
     fi
 fi
 
@@ -104,8 +113,8 @@ for a in r["assets"]:
         esac
     done <<< "$parsed"
 
-    cli_zip=$(ls bench-cli-*.zip 2>/dev/null | head -1 || true)
-    webui_jar=$(ls bench-webui-*.jar 2>/dev/null | head -1 || true)
+    cli_zip=$(find_artifact "$INSTALL_DIR" 'bench-cli-*.zip')
+    webui_jar=$(find_artifact "$INSTALL_DIR" 'bench-webui-*.jar')
     [ -n "$cli_zip" ]   || err "bench-cli zip still missing after download."
     [ -n "$webui_jar" ] || err "bench-webui jar still missing after download."
     ok "Downloaded $cli_zip + $webui_jar"

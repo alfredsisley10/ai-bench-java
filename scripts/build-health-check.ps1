@@ -25,7 +25,13 @@ param(
     # Point at an existing Maven settings.xml, maven-wrapper.properties,
     # OR a directory to recursively search for those files (up to depth
     # 3). Useful when IT has dropped the file somewhere non-standard.
-    [string]$MavenConfigPath
+    [string]$MavenConfigPath,
+    # Layer-selection flags mirror the bash sibling, so CI / docs can
+    # invoke either platform's script with identical semantics.
+    [string[]]$Only,
+    [string]$From,
+    [string[]]$Skip,
+    [switch]$ListLayers
 )
 
 $ErrorActionPreference = 'Continue'
@@ -62,10 +68,114 @@ function Write-Section([string]$title) {
     Write-Host "== $title ==" -ForegroundColor White
 }
 
+# --- Layer framework -------------------------------------------------
+# Mirror of the bash sibling: each enterprise concern is a named, slug-
+# addressable layer. Run `--list-layers` to print the catalog. Use
+# `-Only foo,bar` to run a subset, `-From bar` to start partway, `-Skip
+# x,y` to omit specific layers. See top-of-file comment for rationale.
+$script:LayersCatalog = @(
+    @{ Slug = 'jdk';                Description = 'JDK 17-25 + javac/keytool present' },
+    @{ Slug = 'disk';               Description = 'Free disk for Gradle caches' },
+    @{ Slug = 'ps-policy';          Description = 'PowerShell execution policy' },
+    @{ Slug = 'proxy';              Description = 'Proxy configuration (env, gradle.properties, VSCode sync)' },
+    @{ Slug = 'gradle-props';       Description = 'gradle.properties consistency' },
+    @{ Slug = 'maven-config';       Description = 'Corporate settings.xml / maven-wrapper.properties discovery' },
+    @{ Slug = 'mirror-setup';       Description = 'Artifactory external-mirror proactive setup' },
+    @{ Slug = 'repo-reach';         Description = 'Artifact repository reachability' },
+    @{ Slug = 'mirror-remediation'; Description = 'Maven-Central mirror remediation when direct egress fails' },
+    @{ Slug = 'tls';                Description = 'TLS chain inspection (corporate-CA detection)' },
+    @{ Slug = 'trust-store';        Description = 'OS-integrated trust-store wiring (Windows-ROOT, KeychainStore)' },
+    @{ Slug = 'jvm-http-auth';      Description = 'JVM HTTP-tunnel auth schemes (Basic/NTLM over CONNECT)' },
+    @{ Slug = 'wrapper';            Description = 'Gradle wrapper distribution + jar sanity' },
+    @{ Slug = 'e2e';                Description = 'End-to-end: gradlew --version' }
+)
+$script:LayersRun = @()       # parallel arrays for the per-layer summary
+$script:CurrentLayer = $null
+$script:LayerPass = 0
+$script:LayerFail = 0
+$script:LayerWarn = 0
+
+if ($ListLayers) {
+    Write-Host "Layers (run in this order; slug | description):"
+    foreach ($l in $script:LayersCatalog) {
+        '{0,-22} {1}' -f $l.Slug, $l.Description | Write-Host
+    }
+    exit 0
+}
+
+function Test-LayerSelected([string]$slug) {
+    if ($Only -and $Only.Count -gt 0) { if (-not ($Only -contains $slug)) { return $false } }
+    if ($Skip -and $Skip.Count -gt 0) { if ($Skip -contains $slug) { return $false } }
+    if ($From) {
+        $fromIdx = ($script:LayersCatalog.Slug).IndexOf($From)
+        $thisIdx = ($script:LayersCatalog.Slug).IndexOf($slug)
+        if ($fromIdx -ge 0 -and $thisIdx -ge 0 -and $thisIdx -lt $fromIdx) { return $false }
+    }
+    return $true
+}
+
+# Wrap Write-Pass / Fail / Warn to also bump per-layer counters. PowerShell
+# can't redefine functions cleanly, so we delegate via Set-Item Function:.
+Set-Item -Path Function:Write-Pass -Value {
+    param([string]$msg)
+    Write-Host "  [PASS] $msg" -ForegroundColor Green
+    $script:LayerPass++
+}
+Set-Item -Path Function:Write-Fail -Value {
+    param([string]$msg, [string]$hint = '')
+    Write-Host "  [FAIL] $msg" -ForegroundColor Red
+    if ($hint) { Write-Host "         -> $hint" -ForegroundColor Yellow }
+    $script:Failures += $msg
+    $script:LayerFail++
+}
+Set-Item -Path Function:Write-Warn -Value {
+    param([string]$msg, [string]$hint = '')
+    Write-Host "  [WARN] $msg" -ForegroundColor Yellow
+    if ($hint) { Write-Host "         -> $hint" -ForegroundColor Yellow }
+    $script:Warnings += $msg
+    $script:LayerWarn++
+}
+
+function Start-Layer([string]$slug, [string]$title) {
+    $script:CurrentLayer = $slug
+    $script:LayerPass = 0; $script:LayerFail = 0; $script:LayerWarn = 0
+    Write-Host ""
+    Write-Host "== [$slug] $title ==" -ForegroundColor White
+}
+
+function Stop-Layer {
+    if (-not $script:CurrentLayer) { return }
+    $entry = [PSCustomObject]@{
+        Slug = $script:CurrentLayer
+        Pass = $script:LayerPass; Fail = $script:LayerFail; Warn = $script:LayerWarn
+    }
+    $script:LayersRun += $entry
+    if ($entry.Fail -gt 0) {
+        Write-Host ("  [layer:{0} FAIL] {1} pass / {2} fail / {3} warn" -f $entry.Slug,$entry.Pass,$entry.Fail,$entry.Warn) -ForegroundColor Red
+    } elseif ($entry.Warn -gt 0) {
+        Write-Host ("  [layer:{0} WARN] {1} pass / {2} warn" -f $entry.Slug,$entry.Pass,$entry.Warn) -ForegroundColor Yellow
+    } else {
+        Write-Host ("  [layer:{0} OK] {1} pass" -f $entry.Slug,$entry.Pass) -ForegroundColor Green
+    }
+    $script:CurrentLayer = $null
+}
+
+# Section pattern: each layer body lives inside an `if` block so the
+# existing inline check code keeps script-level scope (variables defined
+# in one layer remain visible to the next, e.g. $mavHints, $gradleProxy,
+# $mavenCentralOk):
+#
+#   if (Test-LayerSelected 'jdk') {
+#       Start-Layer 'jdk' 'JDK 17-25'
+#       # ... existing checks ...
+#       Stop-Layer
+#   }
+
 # ---------------------------------------------------------------------------
 # JDK
 # ---------------------------------------------------------------------------
-Write-Section "JDK 17-25"
+if (Test-LayerSelected 'jdk') {
+Start-Layer 'jdk' 'JDK 17-25 + javac / keytool present'
 
 $javaCmd = Get-Command java -ErrorAction SilentlyContinue
 if (-not $javaCmd) {
@@ -233,7 +343,29 @@ if (Test-Path $gradleProps) {
 #   scripts is disabled on this system." The fix is to scope the relax
 #   to the CurrentUser. Warn unconditionally but tell the user the fix.
 # ---------------------------------------------------------------------------
-Write-Section "PowerShell execution policy"
+Stop-Layer
+}  # end layer:jdk
+
+# Disk space lifted ahead of network checks; original section near the
+# bottom is reduced to a no-op placeholder.
+if (Test-LayerSelected 'disk') {
+Start-Layer 'disk' 'Free disk for Gradle caches'
+$home = $env:USERPROFILE
+try {
+    $drive = (Get-PSDrive -Name ($home.Substring(0,1)) -ErrorAction Stop)
+    $freeGb = [math]::Round($drive.Free / 1GB, 1)
+    if ($freeGb -lt 5)   { Write-Fail "$home has only $freeGb GB free; Gradle needs at least 5 GB" }
+    elseif ($freeGb -lt 10) { Write-Warn "$home has $freeGb GB free; recommend 10 GB+" }
+    else                 { Write-Pass "$home has $freeGb GB free" }
+} catch {
+    Write-Info "Could not query free space on $home : $($_.Exception.Message)"
+}
+Write-Info "Gradle user home: $gradleUserHome"
+Stop-Layer
+}  # end layer:disk
+
+if (Test-LayerSelected 'ps-policy') {
+Start-Layer 'ps-policy' 'PowerShell execution policy'
 try {
     $currentPolicy = Get-ExecutionPolicy -Scope CurrentUser
     $effectivePolicy = Get-ExecutionPolicy
@@ -267,7 +399,11 @@ try {
 # ---------------------------------------------------------------------------
 # Proxy detection
 # ---------------------------------------------------------------------------
-Write-Section "Proxy configuration"
+Stop-Layer
+}  # end layer:ps-policy
+
+if (Test-LayerSelected 'proxy') {
+Start-Layer 'proxy' 'Proxy configuration (env, gradle.properties, VSCode sync)'
 
 # Gradle reads TWO gradle.properties:
 #   (1) USER-LEVEL at %USERPROFILE%\.gradle\gradle.properties -- proxy
@@ -549,7 +685,11 @@ if ($directReachable) {
 #     Gradle call path (init script, wrapper download, direct Artifactory)
 #     authenticates the same way
 # ---------------------------------------------------------------------------
-Write-Section "Gradle properties consistency"
+Stop-Layer
+}  # end layer:proxy
+
+if (Test-LayerSelected 'gradle-props') {
+Start-Layer 'gradle-props' 'gradle.properties consistency'
 
 if (-not (Test-Path $gradleProps)) {
     Write-Info "$gradleProps does not exist -- skipping consistency check."
@@ -643,7 +783,11 @@ if (-not (Test-Path $gradleProps)) {
     }
 }
 
-Write-Section "Corporate repository configuration"
+Stop-Layer
+}  # end layer:gradle-props
+
+if (Test-LayerSelected 'maven-config') {
+Start-Layer 'maven-config' 'Corporate settings.xml / maven-wrapper.properties discovery'
 
 $mavenHints = New-Object System.Collections.ArrayList
 # Keyed by "$source||$serverId" -> @{ Username=...; Password=... }. Lets us
@@ -1396,7 +1540,11 @@ if ($MavenConfigPath) {
 # Central reachability check below tests the wired-up mirror end-to-end.
 
 # --- Artifactory external-mirror proactive setup ----------------------------
-Write-Section "Artifactory external-mirror setup"
+Stop-Layer
+}  # end layer:maven-config
+
+if (Test-LayerSelected 'mirror-setup') {
+Start-Layer 'mirror-setup' 'Artifactory external-mirror proactive setup'
 
 $settingsXmlAm = Join-Path $env:USERPROFILE '.m2\settings.xml'
 $artifactoryMirrorId = 'artifactory-external-mirror'
@@ -2047,7 +2195,11 @@ if ($mavenHints.Count -gt 0) {
 # from here at build time. If it's unreachable, `./gradlew build` fails
 # regardless of which build tool (Gradle, Maven, sbt...) you use.
 # ---------------------------------------------------------------------------
-Write-Section "Artifact repository reachability"
+Stop-Layer
+}  # end layer:mirror-setup
+
+if (Test-LayerSelected 'repo-reach') {
+Start-Layer 'repo-reach' 'Artifact repository reachability'
 
 $endpoints = @(
     @{ Name='Gradle distributions';              Url='https://services.gradle.org/distributions/' },
@@ -2403,7 +2555,24 @@ allprojects {
 # ---------------------------------------------------------------------------
 # TLS / corporate CA detection
 # ---------------------------------------------------------------------------
-Write-Section "TLS chain check"
+Stop-Layer
+}  # end layer:repo-reach
+
+# Note: in this PowerShell script the Maven-Central remediation logic
+# is interleaved into the repo-reach body above (it fires immediately
+# when $mavenCentralOk is set to $false there). The layer slot here is
+# kept for parity with the bash sibling's catalog and prints a one-line
+# acknowledgement so `--list-layers` and `--only mirror-remediation`
+# both behave predictably.
+if (Test-LayerSelected 'mirror-remediation') {
+Start-Layer 'mirror-remediation' 'Maven-Central mirror remediation'
+Write-Info "Remediation runs inside the repo-reach layer above when Maven Central is unreachable."
+Write-Info "Use '-Only repo-reach' to drive both detection and remediation in one pass."
+Stop-Layer
+}  # end layer:mirror-remediation
+
+if (Test-LayerSelected 'tls') {
+Start-Layer 'tls' 'TLS chain inspection (corporate-CA detection)'
 
 # Use a low-level TcpClient + SslStream so we can inspect the cert without
 # Invoke-WebRequest hiding the chain behind its own validation.
@@ -2546,6 +2715,53 @@ systemProp.javax.net.ssl.trustStoreType=Windows-ROOT
 # ---------------------------------------------------------------------------
 # Disk space
 # ---------------------------------------------------------------------------
+Stop-Layer
+}  # end layer:tls
+
+# OS-integrated trust-store wiring. On Windows this means
+# `trustStoreType=Windows-ROOT`; the JVM then reads CAs distributed via
+# GPO/MDM with no per-JDK keytool import. On any other platform the
+# layer is a documentation-only no-op.
+if (Test-LayerSelected 'trust-store') {
+Start-Layer 'trust-store' 'OS-integrated trust-store wiring'
+$tsTypeNow = $null
+if (Test-Path $gradleProps) {
+    $tsTypeNow = (Select-String -Path $gradleProps -Pattern '^\s*systemProp\.javax\.net\.ssl\.trustStoreType\s*=' -ErrorAction SilentlyContinue |
+        Select-Object -First 1).ToString() -replace '.*=\s*',''
+}
+$onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
+if ($onWindows) {
+    Write-Info "Recommended on Windows: systemProp.javax.net.ssl.trustStoreType=Windows-ROOT"
+    Write-Info "  -> Gradle inherits the corporate root distributed via GPO/MDM with no keytool import."
+    if ($tsTypeNow -eq 'Windows-ROOT') {
+        Write-Pass "Already wired (trustStoreType=Windows-ROOT in $gradleProps)."
+    } elseif ($tsTypeNow) {
+        Write-Warn "trustStoreType=$tsTypeNow is set but expected Windows-ROOT on Windows." `
+            "Either change to Windows-ROOT or confirm the alternate truststore (e.g. JKS path) trusts the corporate root."
+    } elseif (-not $NonInteractive) {
+        $resp = Read-Host "  Add systemProp.javax.net.ssl.trustStoreType=Windows-ROOT to $gradleProps ? [y/N]"
+        if ($resp -match '^[Yy]') {
+            New-Item -ItemType Directory -Force -Path (Split-Path $gradleProps) | Out-Null
+            if (Test-Path $gradleProps) {
+                $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+                Copy-Item $gradleProps "$gradleProps.backup-$stamp"
+                Write-Pass "Backed up $gradleProps to $gradleProps.backup-$stamp"
+            }
+            "`n# Added by build-health-check.ps1 on $(Get-Date -Format 's') -- use Windows Cert Store as Java trust source.`nsystemProp.javax.net.ssl.trustStoreType=Windows-ROOT" | Add-Content -Path $gradleProps
+            Write-Pass "Wrote trustStoreType=Windows-ROOT to $gradleProps"
+        } else {
+            Write-Info "Skipped."
+        }
+    }
+} else {
+    Write-Info "Non-Windows host detected; trust-store wiring is platform-specific (see build-health-check.sh for macOS / Linux guidance)."
+}
+Stop-Layer
+}  # end layer:trust-store
+
+# disk-space already ran near the top; the original section below is a
+# no-op placeholder kept for source-line stability.
+if ($false) {
 Write-Section "Disk space"
 
 $gradleHome = Join-Path $env:USERPROFILE '.gradle'
@@ -2567,7 +2783,10 @@ Write-Info "Gradle user home: $gradleHome"
 # default. Corporate proxies that require Basic/NTLM on CONNECT return
 # 407 even with correct creds. Surface the required flags when we see
 # a proxyPassword in gradle.properties.
-Write-Section "JVM HTTP auth settings"
+}  # end disabled disk-space block
+
+if (Test-LayerSelected 'jvm-http-auth') {
+Start-Layer 'jvm-http-auth' 'JVM HTTP-tunnel auth schemes (Basic / NTLM over CONNECT)'
 if (Test-Path $gradleProps) {
     $gpText = Get-Content $gradleProps -Raw
     if ($gpText -match '(?m)^\s*systemProp\.https?\.proxyPassword\s*=') {
@@ -2600,7 +2819,11 @@ if (Test-Path $gradleProps) {
 # ---------------------------------------------------------------------------
 # Gradle wrapper distribution (all four sub-project wrappers)
 # ---------------------------------------------------------------------------
-Write-Section "Gradle wrapper download"
+Stop-Layer
+}  # end layer:jvm-http-auth
+
+if (Test-LayerSelected 'wrapper') {
+Start-Layer 'wrapper' 'Gradle wrapper distribution + jar sanity'
 
 $wrapperErrors   = 0
 $wrapperWarnings = 0
@@ -2692,7 +2915,11 @@ if ($wrapperErrors -eq 0 -and $wrapperWarnings -eq 0) {
 # the output of this run is the same error the user would see running
 # .\gradlew.bat build directly.
 # ---------------------------------------------------------------------------
-Write-Section "End-to-end: gradlew --version"
+Stop-Layer
+}  # end layer:wrapper
+
+if (Test-LayerSelected 'e2e') {
+Start-Layer 'e2e' 'End-to-end: gradlew --version'
 if ($wrapperErrors -gt 0) {
     Write-Info "Skipping end-to-end probe - fix the wrapper errors above first."
 } else {
@@ -2742,12 +2969,27 @@ if ($wrapperErrors -gt 0) {
         }
     }
 }
+Stop-Layer
+}  # end layer:e2e
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor White
+if ($script:LayersRun.Count -gt 0) {
+    Write-Host "Per-layer results (in run order):"
+    foreach ($l in $script:LayersRun) {
+        if ($l.Fail -gt 0) {
+            Write-Host ('  [{0,-20} FAIL] {1} pass / {2} fail / {3} warn' -f $l.Slug,$l.Pass,$l.Fail,$l.Warn) -ForegroundColor Red
+        } elseif ($l.Warn -gt 0) {
+            Write-Host ('  [{0,-20} WARN] {1} pass / {2} warn' -f $l.Slug,$l.Pass,$l.Warn) -ForegroundColor Yellow
+        } else {
+            Write-Host ('  [{0,-20} OK]   {1} pass' -f $l.Slug,$l.Pass) -ForegroundColor Green
+        }
+    }
+    Write-Host ""
+}
 if ($script:Failures.Count -eq 0) {
     Write-Host "  Build environment looks healthy." -ForegroundColor Green
     if ($script:Warnings.Count -gt 0) {
