@@ -63,16 +63,15 @@ subprojects {
 
     extensions.configure<JavaPluginExtension> {
         toolchain {
-            // JDK 25 — the current LTS as of late 2025. Operators on
-            // older machines without a 25 install will see foojay-resolver
-            // auto-download Temurin 25 into ~/.gradle/jdks on first run.
-            // The WebUI's "Verify Java" panel surfaces the toolchain
-            // requirement so the gap is obvious before kicking off a
-            // multi-minute benchmark. Past floors that drove earlier
-            // bumps (kept here so the rationale doesn't get lost): 17 →
-            // 21 was needed for type patterns in switch (JEP 441,
-            // finalized in 21); 21 → 25 picks up the latest LTS so the
-            // toolchain matches what most enterprise builds will pin to.
+            // JDK 25 — the current LTS. Pinning here also requires the
+            // bench-webui-spawned Gradle daemon to run on JDK 25, since
+            // daemon-internal Spring Boot tasks (resolveMainClassName,
+            // bootRun classpath inspection) load the compiled bytecode
+            // and fail with "Unsupported class file major version 69"
+            // if the daemon is on an older JVM. JdkDiscovery's
+            // bestAvailableHome(matchMajor=25) is responsible for picking
+            // the matching install for the daemon JAVA_HOME so the two
+            // halves agree.
             languageVersion.set(JavaLanguageVersion.of(25))
         }
     }

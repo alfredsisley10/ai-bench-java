@@ -60,16 +60,43 @@ object JdkDiscovery {
      *      to exist since we're running in it.
      */
     fun bestAvailableHome(matchMajor: Int? = null): String {
-        // 1. User's saved default takes top precedence — the whole point
-        //    of "Save as default" is that the operator's pick wins over
-        //    our heuristics.
+        val jdks = discover()
+
+        // matchMajor is a HARD compatibility requirement, not a
+        // preference: when a Gradle build's toolchain is pinned at
+        // JDK N, daemon-internal tasks that load compiled classes
+        // (Spring Boot's resolveMainClassName is the canonical example)
+        // fail with "Unsupported class file major version" if the daemon
+        // JVM is older than N. So if a match exists ANYWHERE in the
+        // discovery list, we MUST use it -- saved default and JAVA_HOME
+        // are checked only IF they happen to match the requested major.
+        if (matchMajor != null && matchMajor > 0) {
+            // Prefer saved default / JAVA_HOME when they match the
+            // requested major, since the operator presumably pinned them
+            // for a reason. Both are in the discovered list already (via
+            // discover()'s JAVA_HOME and savedDefault sources), so this
+            // is just preference ordering inside the matching subset.
+            val matching = jdks.filter { it.major == matchMajor }
+            if (matching.isNotEmpty()) {
+                val saved = readSavedDefaultHome()
+                matching.firstOrNull { it.home == saved }?.let { return it.home }
+                val env = System.getenv("JAVA_HOME")
+                matching.firstOrNull { it.home == env }?.let { return it.home }
+                return matching.first().home
+            }
+            // No JDK matching the requested major. Falling through to
+            // the no-match precedence below will return *some* JDK,
+            // which is wrong but better than returning empty -- the
+            // resulting daemon-vs-toolchain mismatch will surface as
+            // the same "Unsupported class file major version" error,
+            // and bench-webui's "Verify Java" panel flags the gap.
+        }
+
+        // No major requirement (or no matching install). Standard
+        // precedence: saved default > JAVA_HOME > first discovered.
         readSavedDefaultHome()?.let { return it }
         val env = System.getenv("JAVA_HOME")
         if (!env.isNullOrBlank() && File(env, "bin").isDirectory) return env
-        val jdks = discover()
-        if (matchMajor != null && matchMajor > 0) {
-            jdks.firstOrNull { it.major == matchMajor }?.let { return it.home }
-        }
         jdks.firstOrNull()?.let { return it.home }
         return System.getProperty("java.home") ?: ""
     }
