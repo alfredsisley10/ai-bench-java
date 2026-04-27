@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
 <body>
+<!-- DYNAMIC PART: status badge + start/stop/open. htmx swaps THIS
+     fragment via outerHTML while the app is STARTING; the log viewer
+     below lives in its own appLogViewer fragment so the swap doesn't
+     wipe it. -->
 <div th:fragment="appStatus" id="app-status-panel"
      th:attr="hx-get=${appStatus == 'STARTING' ? '/demo/app/status-fragment' : ''},
               hx-trigger=${appStatus == 'STARTING' ? 'every 3s' : 'none'},
@@ -33,50 +37,7 @@
                 <button type="submit">Start banking app</button>
             </form>
         </span>
-        <button type="button" class="btn-sm" style="margin-left:0.5em"
-                onclick="toggleAppLog(this)">View log</button>
     </div>
-    <details id="app-log-details" style="display:none; margin-top:0.5em">
-        <summary>Banking app log <span class="help-text">(last 200 lines of <code>banking-app/tmp/bootRun.log</code>)</span></summary>
-        <div style="margin:0.4em 0">
-            <button type="button" class="btn-sm" onclick="loadAppLog(this)">Refresh</button>
-            <span class="help-text" style="margin-left:0.5em" id="app-log-status"></span>
-        </div>
-        <pre id="app-log-content"
-             style="margin:0.25em 0; padding:0.5em 0.7em; background:#1e1e1e; color:#d4d4d4;
-                    border-radius:4px; overflow:auto; max-height:32em; font-size:0.85em">(click Refresh to load)</pre>
-    </details>
-    <script>
-        function toggleAppLog(btn) {
-            var details = document.getElementById('app-log-details');
-            if (details.style.display === 'none') {
-                details.style.display = '';
-                details.open = true;
-                loadAppLog(btn);
-            } else {
-                details.open = !details.open;
-                if (details.open) loadAppLog(btn);
-            }
-        }
-        function loadAppLog(btn) {
-            var status = document.getElementById('app-log-status');
-            var content = document.getElementById('app-log-content');
-            status.textContent = 'Loading…';
-            fetch('/demo/app/log?lines=200')
-                .then(function (r) {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.text();
-                })
-                .then(function (text) {
-                    content.textContent = text || '(no log yet — start the banking app first)';
-                    status.textContent = 'Loaded ' + new Date().toLocaleTimeString();
-                })
-                .catch(function (e) {
-                    content.textContent = 'Error: ' + (e && e.message ? e.message : e);
-                    status.textContent = '';
-                });
-        }
-    </script>
 
     <div class="help-panel" style="margin-top:0.75em; padding:8px 12px; background:#f8f9fa; border-left:3px solid #6c757d; font-size:0.9em">
         <p style="margin:0 0 6px 0">
@@ -104,6 +65,81 @@
             login flow, full button reference, and troubleshooting recipes.
         </p>
     </div>
+</div>
+
+<!-- LOG VIEWER (separate fragment, NOT inside the htmx-swapped panel).
+     Lives outside appStatus so the 3-second hx-swap during STARTING
+     doesn't wipe its open/closed state or its tailing-poll timer.
+     Same streaming/tailing UX as the tier-3 mirror probe: collapsed
+     by default; expand → polls /demo/app/log every 1.5s; auto-scrolls
+     to the bottom when the user is pinned there, leaves position
+     alone when they've scrolled up to read older output. -->
+<div th:fragment="appLogViewer" id="app-log-viewer" style="margin-top:0.5em">
+    <details id="app-log-details" style="margin-top:0.25em">
+        <summary style="cursor:pointer; user-select:none">
+            <strong>Banking app log</strong>
+            <span class="help-text">— tails <code>banking-app/tmp/bootRun.log</code> while open</span>
+            <span class="help-text" id="app-log-status" style="margin-left:0.5em"></span>
+        </summary>
+        <pre id="app-log-content"
+             style="margin:0.4em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
+                    border-radius:4px; max-height:32em; overflow:auto; font-size:0.85em;
+                    white-space:pre-wrap; word-break:break-word">(expand to start tailing)</pre>
+    </details>
+    <script>
+        (function () {
+            var details = document.getElementById('app-log-details');
+            var content = document.getElementById('app-log-content');
+            var status  = document.getElementById('app-log-status');
+            if (!details || !content || !status) return;
+            var pollTimer = null;
+
+            function fetchOnce() {
+                fetch('/demo/app/log?lines=200')
+                    .then(function (r) {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.text();
+                    })
+                    .then(function (text) {
+                        // Preserve scroll position if the user has
+                        // scrolled up to read older output; auto-scroll
+                        // to the latest line if they're pinned to the
+                        // bottom. 20-px slack covers sub-pixel rounding.
+                        var atBottom = (content.scrollTop + content.clientHeight) >=
+                                        (content.scrollHeight - 20);
+                        content.textContent = text || '(no log yet — start the banking app first)';
+                        if (atBottom) content.scrollTop = content.scrollHeight;
+                        status.textContent = '⟳ ' + new Date().toLocaleTimeString();
+                        status.style.color = '#067647';
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + (e && e.message ? e.message : e);
+                        status.style.color = '#b91c1c';
+                    });
+            }
+
+            function startTailing() {
+                if (pollTimer != null) return;
+                fetchOnce();
+                pollTimer = setInterval(fetchOnce, 1500);
+            }
+            function stopTailing() {
+                if (pollTimer == null) return;
+                clearInterval(pollTimer);
+                pollTimer = null;
+                status.textContent = '(paused — expand to resume tailing)';
+                status.style.color = '';
+            }
+
+            details.addEventListener('toggle', function () {
+                if (details.open) startTailing();
+                else stopTailing();
+            });
+            // Stop polling when the operator navigates away so we don't
+            // hammer the endpoint from a hidden tab.
+            window.addEventListener('beforeunload', stopTailing);
+        })();
+    </script>
 </div>
 </body>
 </html>

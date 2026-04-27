@@ -564,6 +564,7 @@ java -jar $HOME\ai-bench\bench-webui-0.1.0-SNAPSHOT.jar</pre>
 
         <h4 style="margin-top:1em">App controls</h4>
         <div th:replace="~{fragments/app-status :: appStatus}"></div>
+        <div th:replace="~{fragments/app-status :: appLogViewer}"></div>
 
         <p class="help-text" style="margin-top:0.5em">
             The banking app has its own git repository (<span th:text="${bankingAppRepo}"></span>) with separate commit history.

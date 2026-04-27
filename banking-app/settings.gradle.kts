@@ -1,27 +1,46 @@
-// --- enterprise-sim diagnostic probe (read-only on system properties) ---
-// Activated when -Denterprise.sim.mirror=<url> is passed. Swaps upstream
-// repositories with the local mirror so the build verifies behind a corporate
-// Artifactory + auth-proxy. Reads sysprops only; never writes.
+// --- mirror diagnostic probe (read-only on system properties) ---
+// Activated when -Denterprise.sim.mirror=<url> is passed. Reads sysprops
+// only; never writes. The same sysprop name covers two scenarios:
+//   - Local sim (tooling/enterprise-sim/): mirror = http://localhost:8081,
+//     in-process auth-proxy at localhost:3128, requires localhost in
+//     http.nonProxyHosts so mirror traffic isn't routed through the proxy.
+//   - Real corp Artifactory: mirror is a public hostname, proxy is whatever
+//     bench-webui's /proxy form has saved. localhost guidance doesn't apply.
+// The block detects which scenario is active from the mirror URL shape and
+// only emits localhost-specific guidance when it's the local sim.
 run {
     val mirror = System.getProperty("enterprise.sim.mirror") ?: return@run
     val proxyHost = System.getProperty("https.proxyHost") ?: System.getProperty("http.proxyHost")
     val proxyPort = System.getProperty("https.proxyPort") ?: System.getProperty("http.proxyPort")
     val proxyUser = System.getProperty("https.proxyUser") ?: System.getProperty("http.proxyUser")
     val nonProxy  = System.getProperty("http.nonProxyHosts")
-    println("[enterprise-sim] active")
-    println("[enterprise-sim]   mirror:        $mirror")
-    println("[enterprise-sim]   proxy:         ${proxyHost ?: "<unset>"}:${proxyPort ?: "<unset>"}")
-    println("[enterprise-sim]   proxy user:    ${proxyUser ?: "<unset>"}")
-    println("[enterprise-sim]   nonProxyHosts: ${nonProxy ?: "<unset>"}")
+    val isLocalSim = mirror.contains("localhost") || mirror.contains("127.0.0.1")
+    val tag = if (isLocalSim) "[enterprise-sim]" else "[corp-mirror]"
+    println("$tag active")
+    println("$tag   mirror:        $mirror")
+    println("$tag   proxy:         ${proxyHost ?: "<unset>"}:${proxyPort ?: "<unset>"}")
+    println("$tag   proxy user:    ${proxyUser ?: "<unset>"}")
+    println("$tag   nonProxyHosts: ${nonProxy ?: "<unset>"}")
     if (proxyHost == null) {
-        println("[enterprise-sim]   WARN: https.proxyHost is not set.")
-        println("[enterprise-sim]         External HTTPS (e.g. api.foojay.io for JDK toolchain) will attempt direct connect and fail.")
-        println("[enterprise-sim]         Fix: pass -Dhttps.proxyHost=localhost -Dhttps.proxyPort=3128 (or set systemProp.https.proxyHost in gradle.properties)")
+        if (isLocalSim) {
+            println("$tag   WARN: https.proxyHost is not set.")
+            println("$tag         External HTTPS (e.g. api.foojay.io) will attempt direct connect and fail.")
+            println("$tag         Fix: pass -Dhttps.proxyHost=localhost -Dhttps.proxyPort=3128 (or set systemProp.https.proxyHost in gradle.properties)")
+        } else {
+            // Real corp scenario: proxy may legitimately not be needed if
+            // the corp network has direct egress to plugins.gradle.org and
+            // api.foojay.io. Print info, not a warning, so it doesn't read
+            // as a configuration error when it isn't.
+            println("$tag   note: no JVM proxy configured. Plugin Portal lookups and")
+            println("$tag         api.foojay.io (JDK toolchain auto-download) will go direct.")
+            println("$tag         If those fail, fill in 'HTTPS proxy' on bench-webui's /proxy panel,")
+            println("$tag         click Save & apply proxy, and re-run.")
+        }
     }
-    if (nonProxy == null || !nonProxy.contains("localhost")) {
-        println("[enterprise-sim]   WARN: http.nonProxyHosts does not include localhost.")
-        println("[enterprise-sim]         Mirror traffic at http://localhost:8081 may be (incorrectly) routed via the proxy.")
-        println("[enterprise-sim]         Fix: pass -Dhttp.nonProxyHosts='localhost|127.0.0.1' (or set systemProp.http.nonProxyHosts in gradle.properties)")
+    if (isLocalSim && (nonProxy == null || !nonProxy.contains("localhost"))) {
+        println("$tag   WARN: http.nonProxyHosts does not include localhost.")
+        println("$tag         Mirror traffic at $mirror may be (incorrectly) routed via the proxy.")
+        println("$tag         Fix: pass -Dhttp.nonProxyHosts='localhost|127.0.0.1' (or set systemProp.http.nonProxyHosts in gradle.properties)")
     }
 }
 
