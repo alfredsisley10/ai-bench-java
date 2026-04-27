@@ -59,7 +59,16 @@ class ConnectionSettings {
         // dependencies through it.
         val mirrorUrl: String = "",
         val mirrorAuthUser: String = "",
-        val mirrorAuthPassword: String = ""
+        val mirrorAuthPassword: String = "",
+        // When true, the mirror is preserved in settings (still probeable
+        // via the verify panel) but NOT injected into Gradle subprocess
+        // args. banking-app then talks directly to plugins.gradle.org /
+        // Maven Central through whatever httpsProxy is configured.
+        // Useful when the corp Artifactory virtual doesn't proxy
+        // plugins.gradle.org content (e.g. foojay-resolver, which lives
+        // only at plugins.gradle.org and is not on Maven Central) but
+        // the corp proxy DOES allow direct egress to those upstreams.
+        val bypassMirror: Boolean = false
     ) {
         /** Convenience flag — true when proxy auth is fully configured. */
         val hasProxyAuth: Boolean get() = proxyAuthUser.isNotBlank() && proxyAuthPassword.isNotBlank()
@@ -67,6 +76,14 @@ class ConnectionSettings {
         val hasMirror: Boolean get() = mirrorUrl.isNotBlank()
         /** Convenience flag — true when mirror auth is configured. */
         val hasMirrorAuth: Boolean get() = mirrorAuthUser.isNotBlank() && mirrorAuthPassword.isNotBlank()
+        /**
+         * True when Gradle subprocesses should receive the mirror sysprops.
+         * False either because no mirror is configured or because the
+         * operator has explicitly toggled "bypass mirror" so Gradle goes
+         * direct via the proxy. The verify panel still probes the mirror
+         * URL regardless of this flag.
+         */
+        val mirrorActiveForGradle: Boolean get() = hasMirror && !bypassMirror
     }
 
     /**
@@ -500,21 +517,36 @@ class ConnectionSettings {
         val message: String
     )
 
-    fun probeMirrorViaGradle(): GradleProbeResult {
-        val s = current
-        val log = StringBuilder()
-        val started = System.currentTimeMillis()
-        if (!s.hasMirror) {
-            return GradleProbeResult(false, -1, 0, "", "",
-                "[err] No mirror URL configured.\n",
-                "Configure the mirror first.")
+    /**
+     * Live state of one tier-3 mirror probe. Each probe owns a
+     * thread-safe StringBuilder that the reader thread appends to as
+     * the gradle subprocess writes lines, and a {@code result} that
+     * stays null until the subprocess exits. The poll endpoint reads
+     * snapshots so the UI can stream output to the operator instead of
+     * staring at a blank "Spawning gradle…" banner for 30-90s.
+     */
+    class GradleProbeState(
+        val id: String,
+        val started: Long = System.currentTimeMillis()
+    ) {
+        @Volatile var gradleBinary: String = ""
+        @Volatile var tmpDir: String = ""
+        @Volatile var command: List<String> = emptyList()
+        @Volatile var done: Boolean = false
+        @Volatile var result: GradleProbeResult? = null
+        private val log = StringBuilder()
+
+        fun appendLog(line: String) {
+            synchronized(log) { log.appendLine(line) }
         }
-        // Find a usable Gradle invocation. Prefer a sub-project's
-        // gradlew (we ship one with every bench-* project) so we
-        // pick up the same Gradle version + JVM the rest of the
-        // repo uses; fall back to system `gradle` if no wrapper
-        // is reachable. Gradle distribution download will go
-        // through the same proxy/mirror config as everything else.
+        fun snapshotLog(): String = synchronized(log) { log.toString() }
+    }
+
+    private val gradleProbes = java.util.concurrent.ConcurrentHashMap<String, GradleProbeState>()
+
+    fun getMirrorGradleProbe(id: String): GradleProbeState? = gradleProbes[id]
+
+    private fun findGradleBinary(): String? {
         val candidates = listOf(
             "${System.getProperty("user.dir")}/banking-app/gradlew",
             "${System.getProperty("user.dir")}/bench-webui/gradlew",
@@ -522,31 +554,59 @@ class ConnectionSettings {
             "${System.getProperty("user.dir")}/../banking-app/gradlew",
             "${System.getProperty("user.dir")}/../bench-webui/gradlew"
         )
-        var gradleBin = candidates.firstOrNull { java.io.File(it).canExecute() }
-        if (gradleBin == null) {
-            // Fall back to system gradle on PATH.
-            val path = System.getenv("PATH") ?: ""
-            val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
-            gradleBin = path.split(java.io.File.pathSeparator)
-                .map { java.io.File(it, gradleExe) }
-                .firstOrNull { it.canExecute() }
-                ?.absolutePath
-        }
-        if (gradleBin == null) {
-            return GradleProbeResult(false, -1, 0, "", "",
-                "[err] No gradlew found in repo sub-projects and no `gradle` on PATH.\n" +
-                "[err] This test needs a Gradle binary to drive a real plugin-resolution attempt.\n",
-                "Install Gradle or run from a repo checkout (banking-app/, bench-webui/, etc).")
+        candidates.firstOrNull { java.io.File(it).canExecute() }?.let { return it }
+        val path = System.getenv("PATH") ?: ""
+        val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
+        return path.split(java.io.File.pathSeparator)
+            .map { java.io.File(it, gradleExe) }
+            .firstOrNull { it.canExecute() }
+            ?.absolutePath
+    }
+
+    /**
+     * Kick off a tier-3 mirror probe in the background. Returns
+     * immediately with a {@link GradleProbeState} that the caller can
+     * poll via {@link #getMirrorGradleProbe}. The setup phase
+     * (binary discovery, scratch-project generation, log seeding) runs
+     * synchronously so the first response already contains the
+     * planned command + paths the UI shows the operator. The actual
+     * gradle invocation runs on a daemon thread with a reader that
+     * streams stdout into the state's log, so polls during the run
+     * see real progress instead of a frozen "Spawning…" banner.
+     */
+    fun startMirrorGradleProbe(): GradleProbeState {
+        // Garbage-collect old probes before each new run so the map
+        // doesn't grow unbounded. Anything finished + older than 30 min
+        // is unreachable from any reasonable UI session.
+        val cutoff = System.currentTimeMillis() - 30 * 60 * 1000
+        gradleProbes.entries.removeIf { it.value.done && it.value.started < cutoff }
+
+        val id = java.util.UUID.randomUUID().toString().take(8)
+        val state = GradleProbeState(id)
+        gradleProbes[id] = state
+
+        val s = current
+        if (!s.hasMirror) {
+            state.appendLog("[err] No mirror URL configured.")
+            state.result = GradleProbeResult(false, -1, 0, "", "", state.snapshotLog(),
+                "Configure the mirror first.")
+            state.done = true
+            return state
         }
 
-        // Tmp project that triggers a plugin DSL lookup of Spring Boot
-        // 3.3.4 -- the exact plugin id that broke for the operator.
+        val gradleBin = findGradleBinary()
+        if (gradleBin == null) {
+            state.appendLog("[err] No gradlew found in repo sub-projects and no `gradle` on PATH.")
+            state.appendLog("[err] This test needs a Gradle binary to drive a real plugin-resolution attempt.")
+            state.result = GradleProbeResult(false, -1, 0, "", "", state.snapshotLog(),
+                "Install Gradle or run from a repo checkout (banking-app/, bench-webui/, etc).")
+            state.done = true
+            return state
+        }
+        state.gradleBinary = gradleBin
+
         val tmpDir = java.nio.file.Files.createTempDirectory("ai-bench-mirror-gradle-").toFile()
-        log.appendLine("[info] gradle binary: $gradleBin")
-        log.appendLine("[info] scratch project: ${tmpDir.absolutePath}")
-        log.appendLine("[info] mirror URL: ${s.mirrorUrl}")
-        log.appendLine("[info] mirror auth: " +
-            (if (s.hasMirrorAuth) "Basic as ${s.mirrorAuthUser}" else "(none)"))
+        state.tmpDir = tmpDir.absolutePath
 
         val authBlock = if (s.hasMirrorAuth) """
                 credentials {
@@ -575,37 +635,72 @@ class ConnectionSettings {
             }
         """.trimIndent() + "\n")
 
-        // Run with --no-daemon so the process exits cleanly and the
-        // tmp project doesn't get held in a long-lived daemon's
-        // configuration cache. Cap to 180s -- a Gradle distribution
-        // download through a slow proxy can take longer than the
-        // default test timeout, but no plugin probe should ever
+        // --no-daemon so the process exits cleanly and the tmp project
+        // doesn't get held in a long-lived daemon's configuration cache.
+        // 180s cap -- a Gradle distribution download through a slow
+        // proxy can take a while, but no plugin probe should
         // legitimately exceed 3 minutes.
         val cmd = listOf(gradleBin,
             "-p", tmpDir.absolutePath,
             "tasks", "--refresh-dependencies",
             "--console=plain", "--no-daemon", "--stacktrace")
-        log.appendLine("[cmd]  ${cmd.joinToString(" ")}")
-        return runCatching {
+        state.command = cmd
+
+        state.appendLog("[info] gradle binary: $gradleBin")
+        state.appendLog("[info] scratch project: ${tmpDir.absolutePath}")
+        state.appendLog("[info] mirror URL: ${s.mirrorUrl}")
+        state.appendLog("[info] mirror auth: " +
+            (if (s.hasMirrorAuth) "Basic as ${s.mirrorAuthUser}" else "(none)"))
+        state.appendLog("[cmd]  ${cmd.joinToString(" ")}")
+        state.appendLog("[info] launching gradle (output streams below as the process emits it)…")
+
+        val worker = Thread({ runMirrorGradleProbe(state, cmd) }, "mirror-gradle-probe-$id")
+        worker.isDaemon = true
+        worker.start()
+        return state
+    }
+
+    private fun runMirrorGradleProbe(state: GradleProbeState, cmd: List<String>) {
+        try {
             val pb = ProcessBuilder(cmd).redirectErrorStream(true)
             val proc = pb.start()
+            // Reader thread drains the merged stdout/stderr line-by-line
+            // and appends to the shared state.log. Daemon so it never
+            // blocks JVM shutdown.
+            val reader = Thread({
+                try {
+                    proc.inputStream.bufferedReader().use { r ->
+                        var line = r.readLine()
+                        while (line != null) {
+                            state.appendLog(line)
+                            line = r.readLine()
+                        }
+                    }
+                } catch (_: Exception) { /* process killed; reader exits */ }
+            }, "mirror-gradle-reader-${state.id}")
+            reader.isDaemon = true
+            reader.start()
+
             val ok = proc.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)
-            val out = proc.inputStream.bufferedReader().readText()
-            log.append(out)
-            val ms = System.currentTimeMillis() - started
             if (!ok) {
                 proc.destroyForcibly()
-                GradleProbeResult(false, -1, ms, gradleBin, tmpDir.absolutePath,
-                    log.toString(),
+                reader.join(2_000)
+            } else {
+                reader.join(5_000)
+            }
+
+            val ms = System.currentTimeMillis() - state.started
+            val finalLog = state.snapshotLog()
+            state.result = if (!ok) {
+                GradleProbeResult(false, -1, ms, state.gradleBinary, state.tmpDir, finalLog,
                     "Gradle did not finish within 180s. Killed.")
             } else {
                 val exit = proc.exitValue()
-                val resolutionFail = out.contains("could not resolve plugin artifact") ||
-                                     out.contains("Could not find") ||
-                                     out.contains("not found in any of the following sources")
+                val resolutionFail = finalLog.contains("could not resolve plugin artifact") ||
+                                     finalLog.contains("Could not find") ||
+                                     finalLog.contains("not found in any of the following sources")
                 val pass = (exit == 0) && !resolutionFail
-                GradleProbeResult(pass, exit, ms, gradleBin, tmpDir.absolutePath,
-                    log.toString(),
+                GradleProbeResult(pass, exit, ms, state.gradleBinary, state.tmpDir, finalLog,
                     if (pass)
                         "Spring Boot plugin (3.3.4) resolved successfully through the mirror in ${ms}ms."
                     else if (resolutionFail)
@@ -614,11 +709,14 @@ class ConnectionSettings {
                         "Gradle exited $exit. See log."
                 )
             }
-        }.getOrElse { e ->
-            log.appendLine("[err]  ${e.javaClass.simpleName}: ${e.message ?: ""}")
-            GradleProbeResult(false, -1, System.currentTimeMillis() - started,
-                gradleBin, tmpDir.absolutePath, log.toString(),
+        } catch (e: Exception) {
+            val ms = System.currentTimeMillis() - state.started
+            state.appendLog("[err]  ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            state.result = GradleProbeResult(false, -1, ms, state.gradleBinary, state.tmpDir,
+                state.snapshotLog(),
                 "Failed to invoke Gradle: ${e.javaClass.simpleName}: ${e.message ?: ""}")
+        } finally {
+            state.done = true
         }
     }
 
@@ -862,15 +960,22 @@ class ConnectionSettings {
             args += "-Djdk.http.auth.tunneling.disabledSchemes="
             args += "-Djdk.http.auth.proxying.disabledSchemes="
         }
-        // Artifactory mirror — banking-app's settings.gradle.kts already
-        // has an `enterprise.sim.mirror`-conditional block that swaps in
-        // a custom Maven repository. Pipe the value through so a single
+        // Artifactory mirror — banking-app's settings.gradle.kts has an
+        // `enterprise.sim.mirror`-conditional block that swaps in a
+        // custom Maven repository. Pipe the value through so a single
         // /proxy save means the next gradlew run uses the mirror without
         // hand-editing settings.gradle.kts. Mirror-auth is forwarded as
         // separate properties the user can wire into their own repo
         // block; we don't auto-rewrite settings.gradle.kts to consume
         // them since that would require knowing the repo name.
-        if (current.hasMirror) {
+        //
+        // SKIP injection when `bypassMirror` is set — that toggle keeps
+        // the mirror URL visible in the UI (and probeable via the verify
+        // panel) but tells Gradle to talk direct to plugins.gradle.org /
+        // Maven Central through the configured proxy. Required when the
+        // corp Artifactory doesn't carry plugin content that only lives
+        // at plugins.gradle.org (e.g. foojay-resolver).
+        if (current.mirrorActiveForGradle) {
             args += "-Denterprise.sim.mirror=${current.mirrorUrl}"
             if (current.hasMirrorAuth) {
                 args += "-DmirrorUsername=${current.mirrorAuthUser}"

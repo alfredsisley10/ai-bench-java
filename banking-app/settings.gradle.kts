@@ -29,9 +29,49 @@ pluginManagement {
     repositories {
         val mirror = System.getProperty("enterprise.sim.mirror")
         if (mirror != null) {
+            val mirrorUser = System.getProperty("mirrorUsername")
+            val mirrorPass = System.getProperty("mirrorPassword")
+            // Mirror = primary repo for everything that lives on Maven
+            // Central (Spring Boot, Kotlin, Spring deps, etc.). The corp
+            // virtual proxies Maven Central content directly at this
+            // URL. Excluding the org.gradle.toolchains group below tells
+            // Gradle "don't even try the mirror for foojay" — saves a
+            // 404 round-trip on every build.
+            maven {
+                url = uri(mirror)
+                isAllowInsecureProtocol = true
+                if (mirrorUser != null && mirrorPass != null) {
+                    credentials { username = mirrorUser; password = mirrorPass }
+                }
+                content {
+                    // foojay-resolver lives ONLY at plugins.gradle.org's
+                    // own M2 tree (it's not on Maven Central). Skip the
+                    // mirror lookup for this group; the direct repo
+                    // below handles it.
+                    excludeGroup("org.gradle.toolchains")
+                }
+            }
+            // Local enterprise-sim layout fallback: $mirror/gradle-plugins/
+            // proxies plugins.gradle.org. Kept so run-canary.ps1 and the
+            // rest of tooling/enterprise-sim/ keep working in their
+            // existing sub-path layout.
             maven {
                 url = uri("$mirror/gradle-plugins/")
                 isAllowInsecureProtocol = true
+                if (mirrorUser != null && mirrorPass != null) {
+                    credentials { username = mirrorUser; password = mirrorPass }
+                }
+            }
+            // Direct egress for groups the mirror can't carry (foojay).
+            // The JVM honors -Dhttps.proxyHost / -Dhttp.proxyHost the
+            // bench-webui injects, so this request still goes through
+            // the corp proxy when one is configured. includeGroup keeps
+            // every other coord routed to the mirror above.
+            maven {
+                url = uri("https://plugins.gradle.org/m2/")
+                content {
+                    includeGroup("org.gradle.toolchains")
+                }
             }
         } else {
             gradlePluginPortal()

@@ -74,17 +74,40 @@ class GitHubConnectController(
 
     @GetMapping("/github")
     fun connect(model: Model, session: HttpSession): String {
-        val token = session.getAttribute("githubToken") as? String
-            ?: System.getenv("GITHUB_TOKEN")
+        val sessionToken = session.getAttribute("githubToken") as? String
+        val envToken = System.getenv("GITHUB_TOKEN")
+        val token = sessionToken ?: envToken
         val host = resolveHost(session)
         model.addAttribute("connected", token != null)
         model.addAttribute("tokenPreview", token?.take(8)?.plus("...") ?: "")
+        // Surface whether the active token comes from the env var (which
+        // /github/clear-token cannot remove) so the UI can render the
+        // appropriate disconnect hint.
+        model.addAttribute("tokenFromEnv", sessionToken == null && envToken != null)
         model.addAttribute("host", host)
         model.addAttribute("apiBaseUrl", apiBaseUrl(host))
         model.addAttribute("isEnterprise", !host.equals(DEFAULT_HOST, ignoreCase = true))
         model.addAttribute("testResult", session.getAttribute("githubTestResult"))
         session.removeAttribute("githubTestResult")
         return "github-connect"
+    }
+
+    @PostMapping("/github/clear-token")
+    fun clearToken(session: HttpSession): String {
+        session.removeAttribute("githubToken")
+        val envToken = System.getenv("GITHUB_TOKEN")
+        val message = if (envToken != null) {
+            "Session token cleared, but \$GITHUB_TOKEN env var is still set — " +
+                "the WebUI will keep using that env-var token until bench-webui is " +
+                "restarted with the variable unset."
+        } else {
+            "GitHub token cleared."
+        }
+        session.setAttribute(
+            "githubTestResult",
+            mapOf("success" to true, "message" to message)
+        )
+        return "redirect:/github"
     }
 
     @PostMapping("/github/save-host")

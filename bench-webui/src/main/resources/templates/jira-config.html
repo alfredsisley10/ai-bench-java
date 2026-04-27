@@ -42,9 +42,13 @@
                 <em>Cloud</em> is the Atlassian-hosted service at
                 <code>*.atlassian.net</code>; only Cloud uses the
                 email + API token combo. <em>Server / Data Center</em>
-                is self-hosted; PAT (Bearer auth, no email) is the
-                modern path on JIRA 8.14+ and is the supported
-                alternative when admins disable basic auth.
+                is self-hosted; this WebUI defaults that case to
+                <em>Username + Password</em> because most enterprise
+                installs sit behind LDAP / SSO-mapped accounts and have
+                that path enabled. <em>PAT</em> (Bearer auth, no email)
+                is available too — it's the modern path on JIRA Datacenter
+                8.14+ and the supported alternative when admins have
+                disabled basic auth.
             </p>
 
             <!-- Cloud: email + API token. Email is REQUIRED here, not
@@ -103,10 +107,6 @@
                     <code>Authorization: Basic base64(user:pass)</code>.
                 </p>
             </div>
-
-            <label>Default project key:
-                <input name="defaultProject" th:value="${defaultProject}" required pattern="[A-Z][A-Z0-9]*" title="Uppercase project key (e.g. PAY, CORE)" placeholder="PAY">
-            </label>
 
             <fieldset style="margin-top:0.5em; padding:0.5em; border:1px solid #d6d8db; border-radius:4px">
                 <legend class="help-text">Credential storage</legend>
@@ -260,10 +260,12 @@
         }
         // Auto-suggest the auth method from the URL the operator
         // typed: anything ending in atlassian.net is Cloud, everything
-        // else is Server / Data Center (PAT first as the modern path).
-        // Only fires when the current selection is the form default
-        // and the user is still typing the URL — never overrides a
-        // deliberate choice.
+        // else is Server / Data Center — default to Username + Password
+        // because most enterprise JIRA Server / Data Center deployments
+        // still rely on basic auth (LDAP / SSO-mapped accounts), and PATs
+        // require Datacenter 8.14+ which not every install has rolled out.
+        // Operators who want PAT can pick it from the dropdown; this only
+        // fires before the user touches the dropdown.
         function autoSelectAuth() {
             var url = (document.getElementById('baseUrl').value || '').toLowerCase();
             var sel = document.getElementById('authMethod');
@@ -273,7 +275,7 @@
             if (/atlassian\.net\/?$|atlassian\.net\//.test(url)) {
                 if (current !== 'api-token') sel.value = 'api-token';
             } else if (/^https?:\/\/[^/]+/.test(url)) {
-                if (current === 'api-token') sel.value = 'pat';
+                if (current === 'api-token') sel.value = 'basic';
             }
             toggleAuthFields();
         }

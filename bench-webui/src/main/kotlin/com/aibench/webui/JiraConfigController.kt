@@ -44,7 +44,6 @@ class JiraConfigController(
         model.addAttribute("configured", configured)
         model.addAttribute("baseUrl", session.getAttribute("jiraBaseUrl") ?: "")
         model.addAttribute("email", session.getAttribute("jiraEmail") ?: "")
-        model.addAttribute("defaultProject", session.getAttribute("jiraDefaultProject") ?: "")
         model.addAttribute("authMethod", session.getAttribute("jiraAuthMethod") ?: "api-token")
         model.addAttribute("username", session.getAttribute("jiraUsername") ?: "")
         model.addAttribute("secretStorage", storage)
@@ -70,7 +69,6 @@ class JiraConfigController(
         @RequestParam(required = false) apiToken: String?,
         @RequestParam(required = false) username: String?,
         @RequestParam(required = false) password: String?,
-        @RequestParam defaultProject: String,
         @RequestParam(defaultValue = "memory") secretStorage: String,
         session: HttpSession
     ): String {
@@ -85,7 +83,6 @@ class JiraConfigController(
         // PAT and Server basic-auth ignore it. Persist whatever was sent
         // so the field round-trips, but don't require it server-side.
         session.setAttribute("jiraEmail", email ?: "")
-        session.setAttribute("jiraDefaultProject", defaultProject)
         session.setAttribute("jiraAuthMethod", authMethod)
         session.setAttribute("jiraSecretStorage", effectiveStorage)
         if (!username.isNullOrBlank()) session.setAttribute("jiraUsername", username)

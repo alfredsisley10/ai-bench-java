@@ -205,7 +205,7 @@ class BenchmarkRunService(
         phase(run, "prepare", "Checking out break commit for ${run.issueId}…")
         sleep(700)
         entry(run, Category.INFO, "Worktree at /tmp/ai-bench-runs/${run.id}/banking-app/")
-        entry(run, Category.INFO, "Validated build environment (JDK 21, Gradle 8.10)")
+        entry(run, Category.INFO, "Validated build environment (JDK 25, Gradle 9.4)")
 
         // Phase 2: discover failing tests
         phase(run, "discover-tests", "Discovering failing tests…")

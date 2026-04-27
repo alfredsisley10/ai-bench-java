@@ -26,7 +26,6 @@ class JiraConfigControllerTest {
             param("email", "user@example.com")
             param("authMethod", "api-token")
             param("apiToken", "secret")
-            param("defaultProject", "INGEST")
             param("credentialSource", "keystore")
         }.andExpect {
             status { is3xxRedirection() }

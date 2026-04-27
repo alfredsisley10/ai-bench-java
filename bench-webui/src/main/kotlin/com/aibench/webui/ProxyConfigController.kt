@@ -76,6 +76,7 @@ class ProxyConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorUrl: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthUser: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
+        @RequestParam(required = false, defaultValue = "false") bypassMirror: Boolean,
         session: HttpSession
     ): String {
         val existing = connectionSettings.settings
@@ -84,13 +85,18 @@ class ProxyConfigController(
             existing.copy(
                 mirrorUrl = mirrorUrl.trim(),
                 mirrorAuthUser = mirrorAuthUser.trim(),
-                mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword
+                mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword,
+                bypassMirror = bypassMirror
             )
         )
         val parts = mutableListOf<String>()
         parts += if (mirrorUrl.isBlank()) "Artifactory mirror cleared."
                  else "Artifactory mirror saved: $mirrorUrl"
         if (mirrorAuthUser.isNotBlank()) parts += "Mirror auth installed (user '$mirrorAuthUser')."
+        if (bypassMirror) {
+            parts += "Mirror BYPASSED for Gradle subprocesses — banking-app builds " +
+                "will hit plugins.gradle.org / Maven Central direct via the proxy."
+        }
         session.setAttribute("proxySaveResult", parts.joinToString(" "))
         return "redirect:/proxy"
     }
@@ -111,6 +117,7 @@ class ProxyConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorUrl: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthUser: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
+        @RequestParam(required = false) bypassMirror: Boolean?,
         session: HttpSession
     ): String {
         val existing = connectionSettings.settings
@@ -127,7 +134,8 @@ class ProxyConfigController(
                 proxyAuthPassword = if (keepProxyPw) existing.proxyAuthPassword else proxyAuthPassword,
                 mirrorUrl = mirrorUrl.trim(),
                 mirrorAuthUser = mirrorAuthUser.trim(),
-                mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword
+                mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword,
+                bypassMirror = bypassMirror ?: existing.bypassMirror
             )
         )
         session.setAttribute("proxySaveResult", "Proxy + mirror settings saved.")
@@ -230,23 +238,60 @@ class ProxyConfigController(
     }
 
     /**
-     * Tier 3 mirror verification: actually invoke gradle to resolve
-     * a plugin DSL request against the saved mirror. Slowest but
-     * most authoritative -- mirrors what the harness will do at
-     * benchmark time.
+     * Tier 3 mirror verification, kickoff phase. Returns immediately
+     * with the probe id, the gradle binary chosen, the scratch project
+     * path, and the seed log entries -- so the operator sees exactly
+     * what's about to run before the gradle process produces any output.
+     * The actual gradle invocation runs on a background thread; the
+     * client polls /proxy/test-mirror-gradle/status to stream output.
      */
-    @PostMapping("/proxy/test-mirror-gradle")
+    @PostMapping("/proxy/test-mirror-gradle/start")
     @ResponseBody
-    fun testMirrorGradle(): Map<String, Any> {
-        val r = connectionSettings.probeMirrorViaGradle()
+    fun testMirrorGradleStart(): Map<String, Any> {
+        val state = connectionSettings.startMirrorGradleProbe()
         return mapOf(
-            "ok" to r.ok,
-            "exitCode" to r.exitCode,
-            "durationMs" to r.durationMs,
-            "gradleBinary" to r.gradleBinary,
-            "tmpDir" to r.tmpDir,
-            "message" to r.message,
-            "log" to r.log
+            "id" to state.id,
+            "done" to state.done,
+            "gradleBinary" to state.gradleBinary,
+            "tmpDir" to state.tmpDir,
+            "command" to state.command,
+            "log" to state.snapshotLog(),
+            "ok" to (state.result?.ok ?: false),
+            "exitCode" to (state.result?.exitCode ?: -1),
+            "durationMs" to (System.currentTimeMillis() - state.started),
+            "message" to (state.result?.message ?: "Setup complete; gradle process launching.")
+        )
+    }
+
+    /**
+     * Tier 3 mirror verification, polling phase. Returns the current
+     * snapshot of the named probe -- log so far, done flag, and (once
+     * complete) the final result. The UI calls this every ~1s while
+     * a probe runs so the operator sees Gradle output stream in
+     * instead of a frozen "Spawning…" banner for 30-90s.
+     */
+    @GetMapping("/proxy/test-mirror-gradle/status")
+    @ResponseBody
+    fun testMirrorGradleStatus(@RequestParam id: String): Map<String, Any> {
+        val state = connectionSettings.getMirrorGradleProbe(id)
+            ?: return mapOf(
+                "found" to false,
+                "done" to true,
+                "ok" to false,
+                "message" to "No probe with id $id (it may have expired or the WebUI restarted)."
+            )
+        val r = state.result
+        return mapOf(
+            "found" to true,
+            "id" to state.id,
+            "done" to state.done,
+            "gradleBinary" to state.gradleBinary,
+            "tmpDir" to state.tmpDir,
+            "log" to state.snapshotLog(),
+            "ok" to (r?.ok ?: false),
+            "exitCode" to (r?.exitCode ?: -1),
+            "durationMs" to (r?.durationMs ?: (System.currentTimeMillis() - state.started)),
+            "message" to (r?.message ?: "Running…")
         )
     }
 

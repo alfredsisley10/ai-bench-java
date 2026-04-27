@@ -12,7 +12,6 @@ import java.io.File
 @Controller
 class DemoController(
     private val bankingApp: BankingAppManager,
-    private val registeredModelsRegistry: RegisteredModelsRegistry,
     private val benchmarkRuns: BenchmarkRunService
 ) {
 
@@ -281,25 +280,6 @@ class DemoController(
         val runStatus = session.getAttribute("demoRunStatus") as? DemoRunStatus
         model.addAttribute("runStatus", runStatus)
         session.removeAttribute("demoRunStatus")
-
-        // Quick benchmark dropdown sources — pulled from the shared
-        // registry so the auto-derived `copilot-default` and
-        // `corp-openai-default` entries (only present when their
-        // underlying provider is actually reachable) show up here too,
-        // not just on the LLMs page.
-        //
-        // AppMap Navie is filtered out of the LLM provider/model lists
-        // because it is a context provider, not an LLM. It surfaces
-        // under a separate "Context provider" dropdown so the user
-        // still picks an underlying LLM when running a Navie-mediated
-        // benchmark.
-        val allModels = registeredModelsRegistry.availableModels(session)
-        val llmModels = allModels.filter { it.provider != "appmap-navie" }
-        val llmProviders = llmModels.map { it.provider }.distinct().sorted()
-        val navieAvailable = allModels.any { it.provider == "appmap-navie" }
-        model.addAttribute("registeredModels", llmModels)
-        model.addAttribute("registeredProviders", llmProviders)
-        model.addAttribute("navieAvailable", navieAvailable)
 
         // Active benchmark run (if any) — htmx panel polls this id
         // every second until the run reaches a terminal state.
