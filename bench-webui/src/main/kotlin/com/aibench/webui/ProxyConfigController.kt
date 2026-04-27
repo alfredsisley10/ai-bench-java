@@ -27,6 +27,79 @@ class ProxyConfigController(
         return "proxy-config"
     }
 
+    /**
+     * Save the PROXY half only — leaves the mirror config untouched.
+     * The form on /proxy is split so the operator can save proxy
+     * changes without having to re-enter the mirror token (and vice
+     * versa) — separating concerns also makes it clear which test
+     * button verifies which half.
+     */
+    @PostMapping("/proxy/save-proxy")
+    fun saveProxy(
+        @RequestParam httpsProxy: String,
+        @RequestParam httpProxy: String,
+        @RequestParam noProxy: String,
+        @RequestParam(required = false, defaultValue = "false") insecureSsl: Boolean,
+        @RequestParam(required = false, defaultValue = "") proxyAuthUser: String,
+        @RequestParam(required = false, defaultValue = "") proxyAuthPassword: String,
+        session: HttpSession
+    ): String {
+        val existing = connectionSettings.settings
+        val keepProxyPw = proxyAuthPassword.isBlank() && existing.proxyAuthPassword.isNotBlank()
+        connectionSettings.update(
+            existing.copy(
+                httpsProxy = httpsProxy.trim(),
+                httpProxy = httpProxy.trim(),
+                noProxy = noProxy.trim(),
+                insecureSsl = insecureSsl,
+                source = "manual",
+                proxyAuthUser = proxyAuthUser.trim(),
+                proxyAuthPassword = if (keepProxyPw) existing.proxyAuthPassword else proxyAuthPassword
+                // mirrorUrl / mirrorAuthUser / mirrorAuthPassword: NOT
+                // touched -- this endpoint only saves the proxy half.
+            )
+        )
+        val parts = mutableListOf("Proxy settings saved and Gradle properties updated.")
+        if (insecureSsl) parts += "SSL verification is DISABLED for outbound WebUI connections."
+        if (proxyAuthUser.isNotBlank()) parts += "Proxy HTTP-Basic auth installed."
+        session.setAttribute("proxySaveResult", parts.joinToString(" "))
+        return "redirect:/proxy"
+    }
+
+    /**
+     * Save the ARTIFACTORY MIRROR half only -- leaves proxy + TLS
+     * settings untouched. Mirror credentials use the same blank-means-
+     * unchanged convention as the proxy form.
+     */
+    @PostMapping("/proxy/save-mirror")
+    fun saveMirror(
+        @RequestParam(required = false, defaultValue = "") mirrorUrl: String,
+        @RequestParam(required = false, defaultValue = "") mirrorAuthUser: String,
+        @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
+        session: HttpSession
+    ): String {
+        val existing = connectionSettings.settings
+        val keepMirrorPw = mirrorAuthPassword.isBlank() && existing.mirrorAuthPassword.isNotBlank()
+        connectionSettings.update(
+            existing.copy(
+                mirrorUrl = mirrorUrl.trim(),
+                mirrorAuthUser = mirrorAuthUser.trim(),
+                mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword
+            )
+        )
+        val parts = mutableListOf<String>()
+        parts += if (mirrorUrl.isBlank()) "Artifactory mirror cleared."
+                 else "Artifactory mirror saved: $mirrorUrl"
+        if (mirrorAuthUser.isNotBlank()) parts += "Mirror auth installed (user '$mirrorAuthUser')."
+        session.setAttribute("proxySaveResult", parts.joinToString(" "))
+        return "redirect:/proxy"
+    }
+
+    /**
+     * Legacy combined save -- kept for any external caller that posts
+     * both halves at once. The split forms above are the preferred
+     * path; this routes through the same Settings update.
+     */
     @PostMapping("/proxy/save")
     fun save(
         @RequestParam httpsProxy: String,
@@ -40,9 +113,6 @@ class ProxyConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
         session: HttpSession
     ): String {
-        // Empty password fields on the form mean "leave the existing
-        // value alone" — typical practice for password inputs that
-        // shouldn't echo current values back to the page.
         val existing = connectionSettings.settings
         val keepProxyPw = proxyAuthPassword.isBlank() && existing.proxyAuthPassword.isNotBlank()
         val keepMirrorPw = mirrorAuthPassword.isBlank() && existing.mirrorAuthPassword.isNotBlank()
@@ -60,11 +130,7 @@ class ProxyConfigController(
                 mirrorAuthPassword = if (keepMirrorPw) existing.mirrorAuthPassword else mirrorAuthPassword
             )
         )
-        val parts = mutableListOf("Proxy settings saved and Gradle properties updated.")
-        if (insecureSsl) parts += "SSL verification is DISABLED for outbound WebUI connections."
-        if (proxyAuthUser.isNotBlank()) parts += "Proxy HTTP-Basic auth installed."
-        if (mirrorUrl.isNotBlank()) parts += "Mirror URL applied."
-        session.setAttribute("proxySaveResult", parts.joinToString(" "))
+        session.setAttribute("proxySaveResult", "Proxy + mirror settings saved.")
         return "redirect:/proxy"
     }
 
@@ -127,10 +193,69 @@ class ProxyConfigController(
     }
 
     /**
-     * Probe the configured Artifactory mirror specifically — uses
-     * the saved mirror URL and (if set) Basic-auth credentials so
-     * the user can debug a 401/403 separately from a generic
-     * connectivity issue.
+     * Tier 2 mirror verification: probe a handful of known plugin
+     * POMs against the saved mirror to prove it actually serves
+     * the artifacts the harness needs, not just that the root URL
+     * answers a 200. The existing /proxy/test-mirror is tier 1
+     * (root reachability + auth); this endpoint is a stronger
+     * "does plugin resolution have a chance of working?"
+     */
+    @PostMapping("/proxy/test-mirror-resolve")
+    @ResponseBody
+    fun testMirrorResolve(): Map<String, Any> {
+        val results = connectionSettings.probeMirrorArtifacts()
+        if (results.isEmpty()) {
+            return mapOf(
+                "ok" to false,
+                "summary" to "No mirror URL configured. Save one in the form first.",
+                "results" to emptyList<Any>()
+            )
+        }
+        val passed = results.count { it.ok }
+        val total = results.size
+        return mapOf(
+            "ok" to (passed == total),
+            "summary" to "$passed of $total known plugin POMs resolved through the mirror.",
+            "results" to results.map {
+                mapOf(
+                    "coord" to it.coord,
+                    "description" to it.description,
+                    "statusCode" to it.statusCode,
+                    "ok" to it.ok,
+                    "message" to it.message,
+                    "pomUrl" to it.pomUrl
+                )
+            }
+        )
+    }
+
+    /**
+     * Tier 3 mirror verification: actually invoke gradle to resolve
+     * a plugin DSL request against the saved mirror. Slowest but
+     * most authoritative -- mirrors what the harness will do at
+     * benchmark time.
+     */
+    @PostMapping("/proxy/test-mirror-gradle")
+    @ResponseBody
+    fun testMirrorGradle(): Map<String, Any> {
+        val r = connectionSettings.probeMirrorViaGradle()
+        return mapOf(
+            "ok" to r.ok,
+            "exitCode" to r.exitCode,
+            "durationMs" to r.durationMs,
+            "gradleBinary" to r.gradleBinary,
+            "tmpDir" to r.tmpDir,
+            "message" to r.message,
+            "log" to r.log
+        )
+    }
+
+    /**
+     * Tier 1 mirror verification: HTTP-level reachability of the saved
+     * mirror URL -- uses Basic-auth credentials when configured so the
+     * user can debug a 401/403 separately from a generic connectivity
+     * issue. Pairs with the tier-2 (artifact resolve) and tier-3
+     * (Gradle process) tests below.
      */
     @PostMapping("/proxy/test-mirror")
     @ResponseBody

@@ -252,6 +252,35 @@ class ConnectionSettings {
         val log: String
     )
 
+    /**
+     * Mirror probes -- known Maven coordinates we expect a working
+     * Artifactory mirror to serve. Picked for two reasons:
+     *  1. They're plugin POMs that Gradle plugin resolution actually
+     *     looks for (so a mirror that serves them will resolve the
+     *     `plugins {}` DSL when paired with the corp-repos init script's
+     *     useModule() mappings).
+     *  2. They include both a Gradle-Plugin-Portal classic
+     *     (spring-boot-gradle-plugin) and a Maven-Central transitive
+     *     (gson) so we can tell whether the mirror is plugins-only,
+     *     Maven-Central-only, or properly aggregated.
+     */
+    data class ArtifactProbe(
+        val coord: String,        // "group:artifact:version"
+        val pomPath: String,      // path under the mirror root, e.g. org/springframework/.../*.pom
+        val description: String   // short human label
+    )
+    private val mirrorArtifactProbes = listOf(
+        ArtifactProbe("org.springframework.boot:spring-boot-gradle-plugin:3.3.4",
+            "org/springframework/boot/spring-boot-gradle-plugin/3.3.4/spring-boot-gradle-plugin-3.3.4.pom",
+            "Spring Boot Gradle plugin (the plugin jar resolved by useModule)"),
+        ArtifactProbe("com.google.code.gson:gson:2.10.1",
+            "com/google/code/gson/gson/2.10.1/gson-2.10.1.pom",
+            "gson 2.10.1 (transitive Maven Central dep)"),
+        ArtifactProbe("org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.20",
+            "org/jetbrains/kotlin/kotlin-gradle-plugin/2.0.20/kotlin-gradle-plugin-2.0.20.pom",
+            "Kotlin Gradle plugin (one of the corp-repos init script's mapped plugins)")
+    )
+
     fun probeUrlDetailed(rawUrl: String, useMirrorAuth: Boolean = false): DetailedProbe {
         val log = StringBuilder()
         val s = current
@@ -298,12 +327,49 @@ class ConnectionSettings {
                 val trimmed = body.replace("\\s+".toRegex(), " ").take(180)
                 log.appendLine("[body] ${trimmed}${if (body.length > 180) "…" else ""}")
             }
-            // Anything below 500 is "endpoint reachable" for this purpose;
-            // 401/403 still proves the proxy + DNS path works.
-            val ok = code in 200..499
-            DetailedProbe(ok, url, viaProxy, code, ms,
-                if (ok) "HTTP $code (${ms}ms)" else "HTTP $code — server error",
-                log.toString())
+            // OK criterion is context-aware:
+            //   * Mirror probe with auth attached: we BELIEVE the
+            //     credentials should work, so 401/403 IS a failure --
+            //     the operator needs to know their token is rejected.
+            //     Earlier "anything 200..499" mode reported a green
+            //     check despite a 401 with "token failed verification:
+            //     parse" in the body, hiding the real bug behind a
+            //     reachability success.
+            //   * Generic URL probe (no auth, just connectivity): the
+            //     historical "200..499 = reachable" stance still
+            //     applies -- a 401 from Maven Central means we got there
+            //     but the endpoint requires auth, which is still useful
+            //     diagnostic info.
+            val authoritative = useMirrorAuth && s.hasMirrorAuth
+            val ok = if (authoritative) code in 200..299 else code in 200..499
+            // Mine common Artifactory body-error patterns for a more
+            // actionable message. Without this, the operator sees
+            // "HTTP 401 — server error" and has to dig the
+            // detail out of the [body] line in the log.
+            val bodyDiag = when {
+                body.contains("token failed verification: parse") ->
+                    "Artifactory rejected the bearer token (failed parse). Token is malformed or for a different realm."
+                body.contains("Bad credentials") ->
+                    "Artifactory rejected the credentials (Bad credentials)."
+                body.contains("missingValueFor authentication") ->
+                    "Artifactory says no credentials were sent. Check that mirrorAuthUser + password are saved."
+                body.contains("does not have permission") ->
+                    "Authenticated but missing permission on the requested path."
+                else -> null
+            }
+            val message = when {
+                ok -> "HTTP $code (${ms}ms)"
+                authoritative && code == 401 ->
+                    "HTTP 401 -- mirror rejected the saved credentials." +
+                    (bodyDiag?.let { " $it" } ?: "") +
+                    " Re-check the mirror username/password (or token) on the form above."
+                authoritative && code == 403 ->
+                    "HTTP 403 -- credentials are valid but lack permission for this URL." +
+                    (bodyDiag?.let { " $it" } ?: "")
+                code in 400..499 -> "HTTP $code — client error" + (bodyDiag?.let { ". $it" } ?: "")
+                else -> "HTTP $code — server error" + (bodyDiag?.let { ". $it" } ?: "")
+            }
+            DetailedProbe(ok, url, viaProxy, code, ms, message, log.toString())
         }.getOrElse { e ->
             val ms = System.currentTimeMillis() - start
             log.appendLine("[err]  ${e.javaClass.simpleName}: ${e.message ?: "(no detail)"}")
@@ -334,6 +400,221 @@ class ConnectionSettings {
         val foundIn: List<String> = emptyList(),
         val log: String = ""
     )
+
+    /**
+     * Second-tier mirror verification: HEAD/GET each known plugin POM
+     * directly against the mirror URL. Catches the case where the
+     * mirror's root URL is reachable (the existing /proxy/test-mirror
+     * already proves that) but it's NOT actually serving the plugin
+     * artifacts the harness needs -- e.g. a Maven-Central-only mirror
+     * that doesn't proxy plugins.gradle.org and would reject every
+     * plugin lookup with 404.
+     *
+     * One row per probe so the operator can see which artifacts came
+     * back and which didn't, and whether the mirror is plugins-only,
+     * Maven-Central-only, or aggregating both.
+     */
+    data class ArtifactProbeResult(
+        val coord: String,
+        val description: String,
+        val statusCode: Int,
+        val ok: Boolean,
+        val message: String,
+        val pomUrl: String
+    )
+
+    fun probeMirrorArtifacts(): List<ArtifactProbeResult> {
+        val s = current
+        if (!s.hasMirror) return emptyList()
+        val client = httpClient(Duration.ofSeconds(15))
+        val base = s.mirrorUrl.trim().trimEnd('/')
+        return mirrorArtifactProbes.map { p ->
+            val url = "$base/${p.pomPath}"
+            runCatching {
+                val builder = java.net.http.HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(20))
+                    .GET()
+                if (s.hasMirrorAuth) {
+                    val token = java.util.Base64.getEncoder().encodeToString(
+                        "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray())
+                    builder.header("Authorization", "Basic $token")
+                }
+                val resp = client.send(builder.build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString())
+                val code = resp.statusCode()
+                val body = resp.body() ?: ""
+                val ok = code == 200 && body.contains("<artifactId>")
+                val msg = when {
+                    ok -> "POM served (${body.length} bytes)"
+                    code == 401 -> "401 — mirror rejected the saved credentials"
+                    code == 403 -> "403 — authenticated but lacks permission for this path"
+                    code == 404 -> "404 — mirror does NOT serve this artifact (proxy gap)"
+                    code in 200..299 -> "HTTP $code but body is not a POM (${body.take(80)})"
+                    else -> "HTTP $code"
+                }
+                ArtifactProbeResult(p.coord, p.description, code, ok, msg, url)
+            }.getOrElse { e ->
+                ArtifactProbeResult(p.coord, p.description, -1, false,
+                    "${e.javaClass.simpleName}: ${e.message ?: ""}", url)
+            }
+        }
+    }
+
+    /**
+     * Third-tier mirror verification: actually invoke a Gradle process
+     * that exercises plugin resolution against the saved mirror. This
+     * is the most authoritative test -- the same code path the harness
+     * takes at benchmark time -- but is also the slowest (~30-90s
+     * including any Gradle distribution download) and depends on a
+     * usable `gradle` binary (or an existing project's gradlew) being
+     * reachable from the WebUI process.
+     *
+     * Strategy:
+     *  1. Generate a tiny scratch project under /tmp with a
+     *     settings.gradle.kts that points pluginManagement at the
+     *     saved mirror URL (with credentials when configured).
+     *  2. Generate a build.gradle.kts that declares `plugins {
+     *     id("org.springframework.boot") version "3.3.4" apply false }`
+     *     -- exact same plugin id the banking-app build uses.
+     *  3. Invoke gradlew (preferring a local checkout's wrapper, or
+     *     fall back to system `gradle`) with `-p <tmp> tasks
+     *     --refresh-dependencies --console=plain --no-daemon`.
+     *  4. Capture stdout+stderr; success = exit 0 AND the plugin
+     *     resolved (i.e. no "could not resolve" / "could not find
+     *     plugin artifact" lines).
+     */
+    data class GradleProbeResult(
+        val ok: Boolean,
+        val exitCode: Int,
+        val durationMs: Long,
+        val gradleBinary: String,
+        val tmpDir: String,
+        val log: String,
+        val message: String
+    )
+
+    fun probeMirrorViaGradle(): GradleProbeResult {
+        val s = current
+        val log = StringBuilder()
+        val started = System.currentTimeMillis()
+        if (!s.hasMirror) {
+            return GradleProbeResult(false, -1, 0, "", "",
+                "[err] No mirror URL configured.\n",
+                "Configure the mirror first.")
+        }
+        // Find a usable Gradle invocation. Prefer a sub-project's
+        // gradlew (we ship one with every bench-* project) so we
+        // pick up the same Gradle version + JVM the rest of the
+        // repo uses; fall back to system `gradle` if no wrapper
+        // is reachable. Gradle distribution download will go
+        // through the same proxy/mirror config as everything else.
+        val candidates = listOf(
+            "${System.getProperty("user.dir")}/banking-app/gradlew",
+            "${System.getProperty("user.dir")}/bench-webui/gradlew",
+            "${System.getProperty("user.dir")}/bench-cli/gradlew",
+            "${System.getProperty("user.dir")}/../banking-app/gradlew",
+            "${System.getProperty("user.dir")}/../bench-webui/gradlew"
+        )
+        var gradleBin = candidates.firstOrNull { java.io.File(it).canExecute() }
+        if (gradleBin == null) {
+            // Fall back to system gradle on PATH.
+            val path = System.getenv("PATH") ?: ""
+            val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
+            gradleBin = path.split(java.io.File.pathSeparator)
+                .map { java.io.File(it, gradleExe) }
+                .firstOrNull { it.canExecute() }
+                ?.absolutePath
+        }
+        if (gradleBin == null) {
+            return GradleProbeResult(false, -1, 0, "", "",
+                "[err] No gradlew found in repo sub-projects and no `gradle` on PATH.\n" +
+                "[err] This test needs a Gradle binary to drive a real plugin-resolution attempt.\n",
+                "Install Gradle or run from a repo checkout (banking-app/, bench-webui/, etc).")
+        }
+
+        // Tmp project that triggers a plugin DSL lookup of Spring Boot
+        // 3.3.4 -- the exact plugin id that broke for the operator.
+        val tmpDir = java.nio.file.Files.createTempDirectory("ai-bench-mirror-gradle-").toFile()
+        log.appendLine("[info] gradle binary: $gradleBin")
+        log.appendLine("[info] scratch project: ${tmpDir.absolutePath}")
+        log.appendLine("[info] mirror URL: ${s.mirrorUrl}")
+        log.appendLine("[info] mirror auth: " +
+            (if (s.hasMirrorAuth) "Basic as ${s.mirrorAuthUser}" else "(none)"))
+
+        val authBlock = if (s.hasMirrorAuth) """
+                credentials {
+                    username = "${s.mirrorAuthUser.replace("\"","\\\"")}"
+                    password = "${s.mirrorAuthPassword.replace("\"","\\\"")}"
+                }
+""" else ""
+        java.io.File(tmpDir, "settings.gradle.kts").writeText("""
+            pluginManagement {
+                repositories {
+                    maven {
+                        url = uri("${s.mirrorUrl}")$authBlock
+                    }
+                }
+                resolutionStrategy.eachPlugin {
+                    if (requested.id.id == "org.springframework.boot") {
+                        useModule("org.springframework.boot:spring-boot-gradle-plugin:" + requested.version)
+                    }
+                }
+            }
+            rootProject.name = "ai-bench-mirror-gradle-probe"
+        """.trimIndent() + "\n")
+        java.io.File(tmpDir, "build.gradle.kts").writeText("""
+            plugins {
+                id("org.springframework.boot") version "3.3.4" apply false
+            }
+        """.trimIndent() + "\n")
+
+        // Run with --no-daemon so the process exits cleanly and the
+        // tmp project doesn't get held in a long-lived daemon's
+        // configuration cache. Cap to 180s -- a Gradle distribution
+        // download through a slow proxy can take longer than the
+        // default test timeout, but no plugin probe should ever
+        // legitimately exceed 3 minutes.
+        val cmd = listOf(gradleBin,
+            "-p", tmpDir.absolutePath,
+            "tasks", "--refresh-dependencies",
+            "--console=plain", "--no-daemon", "--stacktrace")
+        log.appendLine("[cmd]  ${cmd.joinToString(" ")}")
+        return runCatching {
+            val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+            val proc = pb.start()
+            val ok = proc.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)
+            val out = proc.inputStream.bufferedReader().readText()
+            log.append(out)
+            val ms = System.currentTimeMillis() - started
+            if (!ok) {
+                proc.destroyForcibly()
+                GradleProbeResult(false, -1, ms, gradleBin, tmpDir.absolutePath,
+                    log.toString(),
+                    "Gradle did not finish within 180s. Killed.")
+            } else {
+                val exit = proc.exitValue()
+                val resolutionFail = out.contains("could not resolve plugin artifact") ||
+                                     out.contains("Could not find") ||
+                                     out.contains("not found in any of the following sources")
+                val pass = (exit == 0) && !resolutionFail
+                GradleProbeResult(pass, exit, ms, gradleBin, tmpDir.absolutePath,
+                    log.toString(),
+                    if (pass)
+                        "Spring Boot plugin (3.3.4) resolved successfully through the mirror in ${ms}ms."
+                    else if (resolutionFail)
+                        "Plugin resolution FAILED. Mirror reachable but doesn't serve spring-boot-gradle-plugin."
+                    else
+                        "Gradle exited $exit. See log."
+                )
+            }
+        }.getOrElse { e ->
+            log.appendLine("[err]  ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            GradleProbeResult(false, -1, System.currentTimeMillis() - started,
+                gradleBin, tmpDir.absolutePath, log.toString(),
+                "Failed to invoke Gradle: ${e.javaClass.simpleName}: ${e.message ?: ""}")
+        }
+    }
 
     fun detectFromOs(): DetectedProxy {
         val log = StringBuilder()
