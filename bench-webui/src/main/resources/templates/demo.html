@@ -521,7 +521,13 @@ java -jar $HOME\ai-bench\bench-webui-0.1.0-SNAPSHOT.jar</pre>
             </div>
             <div class="card">
                 <span class="label">Repository</span>
-                <span class="value" style="font-size:0.9em" th:text="${bankingAppRepo}"></span>
+                <!-- Show just the repo name (omnibank-demo), not owner/name.
+                     The owner is environment-specific noise; the project
+                     name is the load-bearing identifier. The full
+                     owner/name string is still available in the source on
+                     line 563 if needed. -->
+                <span class="value" style="font-size:0.9em"
+                      th:text="${#strings.contains(bankingAppRepo, '/') ? #strings.substringAfter(bankingAppRepo, '/') : bankingAppRepo}"></span>
             </div>
             <div class="card">
                 <span class="label">Baseline commit</span>

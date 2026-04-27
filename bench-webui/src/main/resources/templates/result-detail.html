@@ -3,44 +3,306 @@
       th:replace="~{fragments/layout :: page('Run ' + ${runId}, ~{::main})}">
 <body>
 <main>
-    <h2 th:text="'Run: ' + ${runId}">Run detail</h2>
+    <h2 style="margin-bottom:0.2em">
+        <span id="runStatusIcon" style="margin-right:0.3em">○</span>
+        Run <code th:text="${runId}">run-XXXX</code>
+    </h2>
 
-    <div th:if="${run == null}">
-        <p class="empty-state">Run not found or still in progress.</p>
+    <!-- Run not found — still render the page so the URL is bookmarkable
+         (e.g. the operator hit /results/<id> while the WebUI was
+         restarting and the in-memory ring buffer dropped the run). -->
+    <div th:if="${run == null}" class="status-banner error"
+         style="padding:0.6em 0.8em; border-radius:4px;
+                background:#fef2f2; border:1px solid #fecaca; color:#991b1b">
+        <strong>Run not found.</strong>
+        bench-webui keeps run state in memory; an entry can drop out
+        when the service restarts or the ring buffer rotates. If this
+        was a recent run, check the <a href="/">dashboard</a> for the
+        current ID, or rerun from the <a href="/demo">/demo</a> page.
     </div>
 
-    <div th:if="${run != null}">
-        <div class="cards">
-            <div class="card"><span class="label">Result</span><span class="value" th:text="${run.passed ? 'PASS' : 'FAIL'}"></span></div>
-            <div class="card"><span class="label">Solver</span><span class="value" th:text="${run.solver}"></span></div>
-            <div class="card"><span class="label">Model</span><span class="value" th:text="${run.model}"></span></div>
-            <div class="card"><span class="label">AppMap</span><span class="value" th:text="${run.appmapMode}"></span></div>
+    <div th:if="${run != null}" id="runDetail">
+        <!-- Summary banner -- recolors green/red on terminal status -->
+        <div id="runSummary" class="status-banner"
+             style="padding:0.5em 0.7em; border-radius:4px;
+                    background:#f3f4f6; border:1px solid #d4d4d4;
+                    margin:0.4em 0 0.8em 0">
+            <strong>
+                <span id="runStatusBadge">QUEUED</span> ·
+                <code id="runPhase">queued</code>
+            </strong>
+            <span class="help-text" id="runMeta" style="margin-left:0.5em"></span>
+            <div style="height:6px; background:#e5e7eb; border-radius:3px;
+                        margin-top:0.5em; overflow:hidden">
+                <div id="runProgress" style="height:100%; width:0%;
+                                              background:#0ea5e9; transition:width 250ms"></div>
+            </div>
         </div>
 
-        <section>
-            <h3>Token usage</h3>
-            <table>
-                <tr><th>Prompt tokens</th><td th:text="${run.promptTokens}"></td></tr>
-                <tr><th>Completion tokens</th><td th:text="${run.completionTokens}"></td></tr>
-                <tr><th>Estimated cost</th><td th:text="${'$' + run.estimatedCost}"></td></tr>
-            </table>
-        </section>
+        <!-- Identity row -->
+        <div class="cards" style="margin-bottom:0.6em">
+            <div class="card"><span class="label">Issue</span>
+                <span class="value">
+                    <code th:text="${run.issueId}"></code>
+                    <div class="help-text" th:text="${run.issueTitle}" style="margin-top:0.1em"></div>
+                </span>
+            </div>
+            <div class="card"><span class="label">Provider · Model</span>
+                <span class="value">
+                    <code th:text="${run.provider}"></code> ·
+                    <code th:text="${run.modelId}"></code>
+                </span>
+            </div>
+            <div class="card"><span class="label">Context · AppMap</span>
+                <span class="value">
+                    <code th:text="${run.contextProvider}"></code> ·
+                    <code th:text="${run.appmapMode}"></code>
+                </span>
+            </div>
+            <div class="card"><span class="label">Seeds</span>
+                <span class="value">
+                    <span id="runSeedProgress">0 / </span><span th:text="${run.seeds}"></span>
+                </span>
+            </div>
+        </div>
 
-        <section>
-            <h3>Quality metrics</h3>
-            <table>
-                <tr><th>Cyclomatic delta</th><td th:text="${run.cyclomaticDelta}"></td></tr>
-                <tr><th>Patch lines</th><td th:text="${run.patchLines}"></td></tr>
-                <tr><th>Regressions</th><td th:text="${run.regressions}"></td></tr>
-                <tr><th>Wall clock</th><td th:text="${run.wallClockSec + 's'}"></td></tr>
-            </table>
-        </section>
+        <!-- Live stats. Numeric values are filled from the polled
+             /demo/run/{id}/status JSON and update every tick. -->
+        <h3 style="margin-bottom:0.2em">Stats</h3>
+        <div class="cards" style="margin-bottom:0.6em">
+            <div class="card"><span class="label">Prompt tokens</span><span class="value" id="statPrompt">0</span></div>
+            <div class="card"><span class="label">Completion tokens</span><span class="value" id="statCompletion">0</span></div>
+            <div class="card"><span class="label">Est. cost (USD)</span><span class="value" id="statCost">$0.000000</span></div>
+            <div class="card"><span class="label">Traces submitted</span><span class="value" id="statTraces">0</span></div>
+        </div>
 
-        <section>
-            <h3>Generated patch</h3>
-            <pre th:text="${run.patch}"></pre>
-        </section>
+        <!-- Cancel + actions row. Disabled at terminal status. -->
+        <div class="row" style="gap:0.5em; margin-bottom:0.6em; align-items:center">
+            <button id="cancelBtn" class="btn-danger btn-sm" disabled>Cancel run</button>
+            <button id="refreshBtn" class="btn-secondary btn-sm">Refresh now</button>
+            <span class="help-text" style="margin-left:auto">
+                Polling every <span id="pollInterval">1500</span> ms ·
+                <span id="pollState">live</span>
+            </span>
+        </div>
+
+        <!-- Per-seed results -->
+        <details id="seedDetails" style="margin-bottom:0.6em">
+            <summary><strong>Per-seed results</strong>
+                <span class="help-text">— pass/fail + tokens for each seed (filled as seeds finish)</span>
+            </summary>
+            <table id="seedTable" style="margin-top:0.4em; width:100%">
+                <thead>
+                <tr>
+                    <th>Seed</th><th>Result</th><th>Tests</th>
+                    <th class="num">Prompt tok</th><th class="num">Completion tok</th><th>Duration</th>
+                </tr>
+                </thead>
+                <tbody><!-- filled by JS --></tbody>
+            </table>
+        </details>
+
+        <!-- Log tail. Same collapsible-pre pattern as the AppMap CLI
+             test panel. We render the LATEST 80 entries each tick;
+             new entries are appended at the bottom and the panel
+             auto-scrolls if the user is already pinned to the tail. -->
+        <details open style="margin-bottom:0.6em">
+            <summary><strong>Logs</strong>
+                <span class="help-text">— tailing the run's log buffer (last 80 entries)</span>
+            </summary>
+            <div id="logViewer"
+                 style="margin-top:0.4em; max-height:24em; overflow:auto;
+                        background:#0f1729; color:#e5e7eb;
+                        border-radius:4px; padding:0.5em;
+                        font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+                        font-size:0.82em; line-height:1.4em">
+                <div class="help-text" style="color:#9ca3af">Loading…</div>
+            </div>
+        </details>
     </div>
 </main>
+
+<!-- Live-tail polling. Uses the existing /demo/run/{id}/status JSON
+     endpoint; cancel posts to /demo/run/{id}/cancel and ignores the
+     redirect (the next /status tick will reflect the CANCELED state).
+     Stops polling on terminal status (PASSED / FAILED / ERRORED /
+     CANCELED) so we don't hammer the server forever. -->
+<script th:if="${run != null}" th:inline="javascript">
+(function () {
+    var runId = /*[[${runId}]]*/ '';
+    var POLL_MS = 1500;
+
+    var statusBadge   = document.getElementById('runStatusBadge');
+    var statusIcon    = document.getElementById('runStatusIcon');
+    var phaseEl       = document.getElementById('runPhase');
+    var summaryEl     = document.getElementById('runSummary');
+    var metaEl        = document.getElementById('runMeta');
+    var progressEl    = document.getElementById('runProgress');
+    var seedProgress  = document.getElementById('runSeedProgress');
+    var statPrompt    = document.getElementById('statPrompt');
+    var statCompletion = document.getElementById('statCompletion');
+    var statCost      = document.getElementById('statCost');
+    var statTraces    = document.getElementById('statTraces');
+    var cancelBtn     = document.getElementById('cancelBtn');
+    var refreshBtn    = document.getElementById('refreshBtn');
+    var pollState     = document.getElementById('pollState');
+    var pollIntervalEl = document.getElementById('pollInterval');
+    var seedTbody     = document.querySelector('#seedTable tbody');
+    var logViewer     = document.getElementById('logViewer');
+
+    pollIntervalEl.textContent = POLL_MS;
+
+    var TERMINAL = ['PASSED', 'FAILED', 'ERRORED', 'CANCELED'];
+    var STATUS_COLOR = {
+        QUEUED:   { bg:'#f3f4f6', border:'#d4d4d4', icon:'○', iconColor:'#9ca3af' },
+        RUNNING:  { bg:'#eff6ff', border:'#bfdbfe', icon:'⟳', iconColor:'#0ea5e9' },
+        PASSED:   { bg:'#ecfdf5', border:'#bbf7d0', icon:'✓', iconColor:'#16a34a' },
+        FAILED:   { bg:'#fef2f2', border:'#fecaca', icon:'✗', iconColor:'#dc2626' },
+        ERRORED:  { bg:'#fef2f2', border:'#fecaca', icon:'!', iconColor:'#dc2626' },
+        CANCELED: { bg:'#f9fafb', border:'#d4d4d4', icon:'⊘', iconColor:'#6b7280' }
+    };
+    var CATEGORY_COLOR = {
+        PHASE:'#a78bfa', INFO:'#9ca3af', TEST:'#fbbf24',
+        TRACE:'#34d399', CONTEXT:'#60a5fa', LLM:'#f472b6',
+        RESULT:'#10b981', ERROR:'#ef4444'
+    };
+
+    function fmt(n) { return Number(n || 0).toLocaleString(); }
+    function fmtUsd(n) { return '$' + Number(n || 0).toFixed(6); }
+    function fmtMs(ms) {
+        if (ms == null) return '';
+        if (ms < 1000) return ms + 'ms';
+        var s = Math.floor(ms / 1000);
+        if (s < 60) return s + 's';
+        var m = Math.floor(s / 60);
+        return m + 'm' + (s % 60) + 's';
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+        });
+    }
+
+    var pollHandle = null;
+    var lastLogCount = 0;
+    var userScrolledUp = false;
+
+    // Track whether the user has scrolled away from the tail. If they
+    // have, we DON'T auto-scroll on new entries — annoying when reading
+    // older log lines mid-run.
+    logViewer.addEventListener('scroll', function () {
+        var atBottom = (logViewer.scrollTop + logViewer.clientHeight) >=
+                       (logViewer.scrollHeight - 8);
+        userScrolledUp = !atBottom;
+    });
+
+    function render(run) {
+        // Status header --------------------------------------------------
+        var st = run.status || 'QUEUED';
+        var col = STATUS_COLOR[st] || STATUS_COLOR.QUEUED;
+        statusBadge.textContent = st;
+        statusIcon.textContent = col.icon;
+        statusIcon.style.color = col.iconColor;
+        summaryEl.style.background = col.bg;
+        summaryEl.style.borderColor = col.border;
+        phaseEl.textContent = run.phase || '—';
+        metaEl.textContent = '· runtime ' + fmtMs(run.durationMs) +
+            (run.startedAt ? ' · started ' + new Date(run.startedAt).toLocaleString() : '');
+        progressEl.style.width = (run.percent || 0) + '%';
+        progressEl.style.background = (st === 'FAILED' || st === 'ERRORED') ? '#dc2626' :
+                                       st === 'PASSED' ? '#16a34a' :
+                                       st === 'CANCELED' ? '#6b7280' : '#0ea5e9';
+
+        // Seed progress + stats -----------------------------------------
+        seedProgress.textContent = (run.currentSeed || 0) + ' / ';
+        var s = run.stats || {};
+        statPrompt.textContent = fmt(s.totalPromptTokens);
+        statCompletion.textContent = fmt(s.totalCompletionTokens);
+        statCost.textContent = fmtUsd(s.estimatedCostUsd);
+        statTraces.textContent = fmt(s.tracesSubmitted) + ' of ' + fmt(s.tracesRecorded) + ' recorded';
+
+        // Cancel button -------------------------------------------------
+        var canCancel = (st === 'QUEUED' || st === 'RUNNING');
+        cancelBtn.disabled = !canCancel;
+
+        // Per-seed table ------------------------------------------------
+        var seeds = run.seedResults || [];
+        seedTbody.innerHTML = seeds.map(function (sr) {
+            var pass = sr.passed
+                ? '<span style="color:#16a34a">✓ PASS</span>'
+                : '<span style="color:#dc2626">✗ FAIL</span>';
+            return '<tr>' +
+                '<td>' + sr.seed + '</td>' +
+                '<td>' + pass + '</td>' +
+                '<td>' + sr.testsPassed + ' / ' + sr.testsTotal + '</td>' +
+                '<td class="num">' + fmt(sr.promptTokens) + '</td>' +
+                '<td class="num">' + fmt(sr.completionTokens) + '</td>' +
+                '<td>' + fmtMs(sr.durationMs) + '</td>' +
+                '</tr>';
+        }).join('') ||
+            '<tr><td colspan="6" class="help-text">No seeds completed yet.</td></tr>';
+
+        // Log tail ------------------------------------------------------
+        var entries = run.log || [];
+        // Avoid full re-render every tick — only repaint when the count
+        // changed. Saves DOM thrash on long logs (the polling cadence
+        // is 1.5s and a typical run produces 1-3 entries per tick).
+        if (entries.length !== lastLogCount) {
+            lastLogCount = entries.length;
+            logViewer.innerHTML = entries.map(function (e) {
+                var c = CATEGORY_COLOR[e.category] || '#9ca3af';
+                var ts = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+                return '<div style="white-space:pre-wrap; word-break:break-word">' +
+                    '<span style="color:#6b7280">' + escapeHtml(ts) + '</span> ' +
+                    '<span style="color:' + c + '; font-weight:bold">' + escapeHtml(e.category) + '</span> ' +
+                    escapeHtml(e.message) +
+                    '</div>';
+            }).join('');
+            if (!userScrolledUp) logViewer.scrollTop = logViewer.scrollHeight;
+        }
+
+        // Stop polling on terminal status ------------------------------
+        if (TERMINAL.indexOf(st) >= 0) {
+            stopPolling('terminal: ' + st);
+        }
+    }
+
+    function poll() {
+        fetch('/demo/run/' + encodeURIComponent(runId) + '/status', {
+            headers: { 'Accept': 'application/json' }
+        }).then(function (r) {
+            return r.json();
+        }).then(function (j) {
+            if (j && !j.error) render(j);
+        }).catch(function () {
+            // Transient errors (network blip, server restart) — leave
+            // polling armed for the next tick.
+        });
+    }
+
+    function stopPolling(reason) {
+        if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+        pollState.textContent = 'stopped (' + reason + ')';
+    }
+
+    cancelBtn.addEventListener('click', function () {
+        if (cancelBtn.disabled) return;
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Canceling…';
+        // The endpoint returns a 302; we don't follow it because we'd
+        // get the full /demo HTML back which we'd just throw away. The
+        // next status poll will reflect the CANCELED state instead.
+        fetch('/demo/run/' + encodeURIComponent(runId) + '/cancel', {
+            method: 'POST',
+            redirect: 'manual'
+        }).then(function () { poll(); }).catch(function () { poll(); });
+    });
+
+    refreshBtn.addEventListener('click', function () { poll(); });
+
+    poll();                                        // immediate first paint
+    pollHandle = setInterval(poll, POLL_MS);       // and every POLL_MS
+})();
+</script>
 </body>
 </html>
