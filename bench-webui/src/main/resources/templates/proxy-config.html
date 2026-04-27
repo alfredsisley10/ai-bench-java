@@ -54,6 +54,58 @@
     </section>
 
     <section>
+        <h3>Detect from OS &amp; VSCode</h3>
+        <p class="help-text" style="margin-top:0">
+            Reads proxy settings from the OS (macOS
+            <code>networksetup</code> / Windows registry HKCU Internet
+            Settings) and from VSCode user <code>settings.json</code>
+            (<code>http.proxy</code>, <code>http.proxyAuthorization</code>,
+            <code>http.noProxy</code>). Pre-fills the form below — you
+            still have to click <em>Save &amp; apply</em> to commit.
+        </p>
+        <button type="button" class="btn-sm" onclick="detectProxyFromOs(this)">Detect proxy settings</button>
+        <span id="detectStatus" class="help-text" style="margin-left:0.5em"></span>
+        <details id="detectOutput" style="display:none; margin-top:0.4em">
+            <summary>Detection log</summary>
+            <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
+                        border-radius:4px; max-height:18em; overflow:auto; font-size:0.85em"></pre>
+        </details>
+        <script>
+            function detectProxyFromOs(btn) {
+                var status = document.getElementById('detectStatus');
+                var details = document.getElementById('detectOutput');
+                var pre = details.querySelector('pre');
+                btn.disabled = true;
+                status.textContent = 'Probing…';
+                status.style.color = '';
+                details.style.display = '';
+                details.open = true;
+                pre.textContent = '';
+                fetch('/proxy/detect-os', {method:'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        status.textContent = (data.ok ? '✓ ' : '○ ') + (data.message || '');
+                        status.style.color = data.ok ? '#067647' : '';
+                        pre.textContent = data.log || '(no output)';
+                        if (data.ok) {
+                            // Pre-fill the Configure form below.
+                            if (data.httpsProxy) document.querySelector('input[name=httpsProxy]').value = data.httpsProxy;
+                            if (data.httpProxy) document.querySelector('input[name=httpProxy]').value = data.httpProxy;
+                            if (data.noProxy) document.querySelector('input[name=noProxy]').value = data.noProxy;
+                            if (data.proxyAuthUser) document.querySelector('input[name=proxyAuthUser]').value = data.proxyAuthUser;
+                        }
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + ((e && e.message) || e);
+                        status.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+        </script>
+    </section>
+
+    <section>
         <h3>Verify connectivity</h3>
         <p class="help-text" style="margin-top:0">
             Probes the endpoints Gradle needs to bootstrap a build —
@@ -118,58 +170,6 @@
                 var d = document.createElement('div');
                 d.appendChild(document.createTextNode(String(s == null ? '' : s)));
                 return d.innerHTML;
-            }
-        </script>
-    </section>
-
-    <section>
-        <h3>Detect from OS &amp; VSCode</h3>
-        <p class="help-text" style="margin-top:0">
-            Reads proxy settings from the OS (macOS
-            <code>networksetup</code> / Windows registry HKCU Internet
-            Settings) and from VSCode user <code>settings.json</code>
-            (<code>http.proxy</code>, <code>http.proxyAuthorization</code>,
-            <code>http.noProxy</code>). Pre-fills the form below — you
-            still have to click <em>Save &amp; apply</em> to commit.
-        </p>
-        <button type="button" class="btn-sm" onclick="detectProxyFromOs(this)">Detect proxy settings</button>
-        <span id="detectStatus" class="help-text" style="margin-left:0.5em"></span>
-        <details id="detectOutput" style="display:none; margin-top:0.4em">
-            <summary>Detection log</summary>
-            <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
-                        border-radius:4px; max-height:18em; overflow:auto; font-size:0.85em"></pre>
-        </details>
-        <script>
-            function detectProxyFromOs(btn) {
-                var status = document.getElementById('detectStatus');
-                var details = document.getElementById('detectOutput');
-                var pre = details.querySelector('pre');
-                btn.disabled = true;
-                status.textContent = 'Probing…';
-                status.style.color = '';
-                details.style.display = '';
-                details.open = true;
-                pre.textContent = '';
-                fetch('/proxy/detect-os', {method:'POST'})
-                    .then(function (r) { return r.json(); })
-                    .then(function (data) {
-                        status.textContent = (data.ok ? '✓ ' : '○ ') + (data.message || '');
-                        status.style.color = data.ok ? '#067647' : '';
-                        pre.textContent = data.log || '(no output)';
-                        if (data.ok) {
-                            // Pre-fill the Configure form below.
-                            if (data.httpsProxy) document.querySelector('input[name=httpsProxy]').value = data.httpsProxy;
-                            if (data.httpProxy) document.querySelector('input[name=httpProxy]').value = data.httpProxy;
-                            if (data.noProxy) document.querySelector('input[name=noProxy]').value = data.noProxy;
-                            if (data.proxyAuthUser) document.querySelector('input[name=proxyAuthUser]').value = data.proxyAuthUser;
-                        }
-                        btn.disabled = false;
-                    })
-                    .catch(function (e) {
-                        status.textContent = '✗ ' + ((e && e.message) || e);
-                        status.style.color = '#b91c1c';
-                        btn.disabled = false;
-                    });
             }
         </script>
     </section>

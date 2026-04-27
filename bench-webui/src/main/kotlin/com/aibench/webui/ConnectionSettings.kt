@@ -547,35 +547,103 @@ class ConnectionSettings {
     fun getMirrorGradleProbe(id: String): GradleProbeState? = gradleProbes[id]
 
     private fun findGradleBinary(): String? {
-        // Prefer the repo's bundled gradlew (9.4.1) over a system-wide
-        // `gradle` install — operators on enterprise Windows often have
-        // an older Gradle on PATH (e.g. 8.14) whose bundled Kotlin
-        // compiler can't parse newer JDK version strings ("25.0.1"
-        // throws IllegalArgumentException). On Windows we must look
-        // for `gradlew.bat`, not the Unix shell-script `gradlew` —
-        // canExecute() returns false for the latter on Windows so the
-        // old code silently fell through to system gradle.bat.
+        // Search order, ranked by "most likely to be a Gradle the runtime
+        // JDK can run" (i.e. recent enough to know about JDK 22+ version
+        // strings):
+        //
+        //   1. $AI_BENCH_GRADLE_BIN env var — explicit operator override
+        //   2. Repo-checkout gradlew(.bat) — bundled at 9.4.1
+        //   3. Newest gradle-9.* in ~/.gradle/wrapper/dists/ — any wrapper
+        //      Gradle has bootstrapped on this machine before
+        //   4. System-PATH `gradle{.bat}` — last resort; on enterprise
+        //      Windows boxes this is often pinned to 8.14, which can't
+        //      handle JDK 25 (Kotlin's JavaVersion.parse throws on
+        //      "25.0.1"). The pre-flight version check in
+        //      startMirrorGradleProbe rejects pre-9.0 binaries with a
+        //      clear error rather than letting the operator wait for
+        //      the confusing crash.
         val wrapperName = if (Platform.isWindows) "gradlew.bat" else "gradlew"
-        val candidates = listOf(
+        val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
+
+        fun usable(f: java.io.File): Boolean =
+            f.isFile && (Platform.isWindows || f.canExecute())
+
+        // 1. Explicit operator override.
+        System.getenv("AI_BENCH_GRADLE_BIN")?.takeIf { it.isNotBlank() }?.let {
+            val f = java.io.File(it)
+            if (usable(f)) return f.absolutePath
+        }
+
+        // 2. Repo-checkout wrappers.
+        val wrapperCandidates = listOf(
             "${System.getProperty("user.dir")}/banking-app/$wrapperName",
             "${System.getProperty("user.dir")}/bench-webui/$wrapperName",
             "${System.getProperty("user.dir")}/bench-cli/$wrapperName",
             "${System.getProperty("user.dir")}/../banking-app/$wrapperName",
             "${System.getProperty("user.dir")}/../bench-webui/$wrapperName"
         )
-        candidates.firstOrNull {
-            val f = java.io.File(it)
-            // canExecute() is the right check on Unix but unreliable
-            // on Windows (depends on file ACLs, not extension), so
-            // accept any existing .bat file there.
-            f.isFile && (Platform.isWindows || f.canExecute())
-        }?.let { return java.io.File(it).absolutePath }
+        wrapperCandidates.firstOrNull { usable(java.io.File(it)) }
+            ?.let { return java.io.File(it).absolutePath }
+
+        // 3. Newest gradle-9.* in the wrapper-distribution cache. Layout:
+        //    ~/.gradle/wrapper/dists/gradle-9.4.1-bin/<hash>/gradle-9.4.1/bin/gradle{.bat,}
+        // The cache survives across project checkouts, so a one-time
+        // bench-webui dev run on the same machine puts a 9.4.1 here that
+        // the operator's later install-only run can re-use.
+        findCachedGradle9(gradleExe)?.let { return it }
+
+        // 4. System PATH fallback.
         val path = System.getenv("PATH") ?: ""
-        val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
         return path.split(java.io.File.pathSeparator)
             .map { java.io.File(it, gradleExe) }
+            .firstOrNull { usable(it) }
+            ?.absolutePath
+    }
+
+    private fun findCachedGradle9(gradleExe: String): String? {
+        val home = System.getProperty("user.home") ?: return null
+        val distsDir = java.io.File(home, ".gradle/wrapper/dists")
+        if (!distsDir.isDirectory) return null
+        // Each top-level entry is e.g. "gradle-9.4.1-bin"; filter to 9.x
+        // and pick the highest version (string-sort works because the
+        // version segments are zero-padded by the existing 1-2 digit
+        // convention, and we only care about >= 9.0).
+        val ninePlus = distsDir.listFiles { f ->
+            f.isDirectory && Regex("""^gradle-9\.\d+(\.\d+)?(-[a-z]+)?$""").matches(f.name)
+        } ?: return null
+        return ninePlus.sortedByDescending { it.name }
+            .asSequence()
+            .flatMap { topLevel ->
+                // <hash>/gradle-9.x.y/bin/gradle(.bat) — there's exactly
+                // one hash subdir per cached distribution, but iterate
+                // defensively just in case.
+                val hashes = topLevel.listFiles { f -> f.isDirectory } ?: emptyArray()
+                hashes.asSequence().mapNotNull { hash ->
+                    val inner = hash.listFiles { f -> f.isDirectory && f.name.startsWith("gradle-9.") }?.firstOrNull()
+                    inner?.let { java.io.File(it, "bin/$gradleExe") }
+                }
+            }
             .firstOrNull { it.isFile && (Platform.isWindows || it.canExecute()) }
             ?.absolutePath
+    }
+
+    /**
+     * Run `<gradleBin> --version` once to determine the major version.
+     * Used by the tier-3 probe to refuse old-Gradle binaries that will
+     * deterministically crash on a JDK 22+ runtime. Returns null when
+     * the version line can't be parsed (treat as "unknown, try anyway").
+     */
+    private fun gradleMajorVersion(gradleBin: String): Int? {
+        return try {
+            val proc = ProcessBuilder(gradleBin, "--version").redirectErrorStream(true).start()
+            val ok = proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            if (!ok) { proc.destroyForcibly(); return null }
+            val out = proc.inputStream.bufferedReader().readText()
+            // Match e.g. "Gradle 8.14" or "Gradle 9.4.1"
+            Regex("""Gradle\s+(\d+)""").find(out)?.groupValues?.get(1)?.toIntOrNull()
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -619,6 +687,34 @@ class ConnectionSettings {
             return state
         }
         state.gradleBinary = gradleBin
+
+        // Pre-flight version check. Gradle 8.x bundles a Kotlin compiler
+        // whose JavaVersion.parse() doesn't recognize JDK 22+ version
+        // strings — `IllegalArgumentException: 25.0.1` blows up the
+        // build long before plugin resolution starts. Refuse the run
+        // up front with an actionable message instead of leaving the
+        // operator to decode a Kotlin stack trace.
+        val gradleMajor = gradleMajorVersion(gradleBin)
+        val runtimeJavaMajor = runCatching {
+            System.getProperty("java.specification.version")?.toIntOrNull()
+        }.getOrNull()
+        state.appendLog("[info] gradle version: " + (gradleMajor?.let { "$it.x" } ?: "(could not parse)"))
+        state.appendLog("[info] webui jdk: " + (runtimeJavaMajor?.toString() ?: "(unknown)"))
+        if (gradleMajor != null && gradleMajor < 9 &&
+            runtimeJavaMajor != null && runtimeJavaMajor >= 22) {
+            state.appendLog("[err] Gradle $gradleMajor.x can't run under JDK $runtimeJavaMajor — its bundled")
+            state.appendLog("[err] Kotlin compiler crashes on the version string '$runtimeJavaMajor.0.x'.")
+            state.appendLog("[err] Fix one of:")
+            state.appendLog("[err]   - install Gradle 9.0+ and put it on PATH, OR")
+            state.appendLog("[err]   - set the AI_BENCH_GRADLE_BIN env var to a newer wrapper, OR")
+            state.appendLog("[err]   - run bench-webui under JDK 17-21 (the test still drives plugin")
+            state.appendLog("[err]     resolution against the configured mirror; only the *bench-webui's*")
+            state.appendLog("[err]     own JDK matters here, not the banking-app toolchain).")
+            state.result = GradleProbeResult(false, -1, 0, gradleBin, "", state.snapshotLog(),
+                "Found Gradle $gradleMajor.x at $gradleBin; needs Gradle 9.0+ to run under JDK $runtimeJavaMajor.")
+            state.done = true
+            return state
+        }
 
         val tmpDir = java.nio.file.Files.createTempDirectory("ai-bench-mirror-gradle-").toFile()
         state.tmpDir = tmpDir.absolutePath
