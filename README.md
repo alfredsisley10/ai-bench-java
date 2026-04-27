@@ -89,11 +89,32 @@ to compile and test it locally.
 The script verifies a JDK 17–25 is on `PATH`, copies pre-built artifacts
 from `dist/` (or downloads from GitHub Releases if `dist/` is empty),
 unzips `bench-cli`, launches `bench-webui` in the background on
-http://localhost:7777, and prints the `bench-cli` launcher path. It
-defaults to `~/ai-bench` for the install root — override with
-`INSTALL_DIR=…` (bash) or `-InstallDir …` (PowerShell). Re-running is
-safe: an already-running `bench-webui` is detected via PID file and the
-script exits without launching a duplicate.
+http://localhost:7777, and prints the `bench-cli` launcher path.
+Re-running is safe: an already-running `bench-webui` is detected via
+PID file and the script exits without launching a duplicate.
+
+> **Install location.** The script creates a fresh subdirectory at
+> `~/ai-bench` (macOS / Linux) or `%USERPROFILE%\ai-bench` (Windows)
+> and unpacks everything there. **Nothing else on your machine is
+> touched.** Override with `INSTALL_DIR=/some/path` (bash) or
+> `-InstallDir D:\some\path` (PowerShell) if `~/ai-bench` collides
+> with something you already have. The script announces the path
+> before it creates anything so a fresh-install operator can confirm
+> first.
+>
+> What lands in the install dir:
+>
+> | File / directory | Purpose |
+> |---|---|
+> | `bench-cli-*.zip` | The downloaded distribution |
+> | `bench-cli-*/bin/bench-cli` (or `.bat`) | CLI launcher — add `bin/` to `PATH` to use it |
+> | `bench-webui-*.jar` | Spring Boot fat jar |
+> | `bench-webui.log`, `bench-webui.err` | bench-webui's stdout / stderr |
+> | `bench-webui.pid` | PID file consumed by `stop-bench-tools` |
+>
+> The repo itself is untouched; the install dir is fully disposable —
+> `rm -rf ~/ai-bench` (after stopping the service) is the clean
+> uninstall.
 
 Stop the web UI with the matching companion script:
 

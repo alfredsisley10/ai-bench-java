@@ -68,9 +68,21 @@ if ($verLine -match '"(\d+)') {
 Write-Ok "JDK $javaMajor detected ($verLine)"
 
 # --- 2. Locate / download artifacts -----------------------------------
-if (-not (Test-Path $InstallDir)) {
+# Announce the install location BEFORE creating it so the operator
+# isn't surprised by a new $HOME\ai-bench\ directory appearing in their
+# profile. Override with -InstallDir on the command line.
+if (Test-Path $InstallDir) {
+    Write-Info "Install dir: $InstallDir (already exists, will reuse)"
+} else {
+    Write-Info "Install dir: $InstallDir (will be created)"
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
+Write-Info "  Contents that will land here:"
+Write-Info "    bench-cli-*.zip + bench-cli-*\         <- CLI distribution + unzipped launcher"
+Write-Info "    bench-webui-*.jar                       <- Spring Boot fat jar (the web UI)"
+Write-Info "    bench-webui.log + bench-webui.err      <- bench-webui stdout/stderr"
+Write-Info "    bench-webui.pid                         <- PID file used by stop-bench-tools"
+Write-Info "  Override with -InstallDir D:\some\path on the command line."
 Set-Location $InstallDir
 
 $cliZip   = Get-ChildItem -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1

@@ -61,6 +61,20 @@ fi
 ok "JDK $java_major detected ($ver_line)"
 
 # --- 2. Locate / download artifacts -----------------------------------
+# Announce the install location BEFORE creating it so the operator
+# isn't surprised by a new ~/ai-bench/ directory appearing in their
+# home folder. Override with INSTALL_DIR=/some/other/path.
+if [ -d "$INSTALL_DIR" ]; then
+    info "Install dir: $INSTALL_DIR (already exists, will reuse)"
+else
+    info "Install dir: $INSTALL_DIR (will be created)"
+fi
+info "  Contents that will land here:"
+info "    bench-cli-*.zip + bench-cli-*/         <- CLI distribution + unzipped launcher"
+info "    bench-webui-*.jar                       <- Spring Boot fat jar (the web UI)"
+info "    bench-webui.log + bench-webui.err      <- bench-webui stdout/stderr"
+info "    bench-webui.pid                         <- PID file used by stop-bench-tools"
+info "  Override with INSTALL_DIR=/some/path on the command line."
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
