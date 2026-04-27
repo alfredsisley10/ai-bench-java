@@ -13,6 +13,23 @@ interface RawRecord {
     completionTokens: number;
     estimatedCostUsd: number;
     via: 'socket' | 'openai-http';
+    /**
+     * Truncated preview of the request prompt + the model's completion,
+     * for the webview's click-to-expand "inspect this call" panel.
+     * Capped at PREVIEW_CHARS each so a single bursty conversation
+     * can't blow out globalState — for full traffic capture, the
+     * harness already saves AppMap traces / Navie transcripts.
+     */
+    promptPreview?: string;
+    completionPreview?: string;
+}
+
+/** Max chars retained per side for the click-to-expand preview. */
+const PREVIEW_CHARS = 1500;
+function truncatePreview(s: string): string {
+    if (!s) return '';
+    if (s.length <= PREVIEW_CHARS) return s;
+    return s.slice(0, PREVIEW_CHARS) + `\n… [truncated; ${s.length - PREVIEW_CHARS} more chars]`;
 }
 
 export interface ModelTotals {
@@ -33,6 +50,20 @@ export interface ClientTotals {
     lastSeenIso: string;
 }
 
+export interface RecentEntry {
+    whenIso: string;
+    modelId: string;
+    client: string;
+    promptTokens: number;
+    completionTokens: number;
+    estimatedCostUsd: number;
+    via: string;
+    /** Truncated request prompt for the click-to-expand panel. */
+    promptPreview?: string;
+    /** Truncated model response for the click-to-expand panel. */
+    completionPreview?: string;
+}
+
 export interface StatsSnapshot {
     sinceIso: string;
     totalRequests: number;
@@ -41,19 +72,24 @@ export interface StatsSnapshot {
     totalEstimatedCostUsd: number;
     perModel: ModelTotals[];
     perClient: ClientTotals[];
-    recent: Array<{
-        whenIso: string;
-        modelId: string;
-        client: string;
-        promptTokens: number;
-        completionTokens: number;
-        estimatedCostUsd: number;
-        via: string;
-    }>;
+    /**
+     * Last RECENT_LIMIT entries. The webview paginates this client-side
+     * (10 / 25 / 50). We send the full RECENT_LIMIT so a switch to a
+     * larger page size doesn't have to round-trip back here.
+     */
+    recent: RecentEntry[];
 }
 
 const STATE_KEY = 'aiBenchCopilotBridge.usage.records';
-const MAX_RECORDS = 5000;   // ring-buffer cap to keep globalState bounded
+/**
+ * Ring-buffer cap. Keeping this modest (1000) caps globalState size:
+ * with PREVIEW_CHARS per side, a record is ~3.5 KB worst-case, so
+ * MAX_RECORDS=1000 -> ~3.5 MB persisted. Stats roll up over the full
+ * buffer; the recent-activity view only ever needs the tail.
+ */
+const MAX_RECORDS = 1000;
+/** Number of recent entries the snapshot returns to the webview. */
+const RECENT_LIMIT = 50;
 
 export class UsageTracker {
     private records: RawRecord[];
@@ -87,6 +123,8 @@ export class UsageTracker {
             client: args.client || 'anonymous',
             promptTokens, completionTokens, estimatedCostUsd,
             via: args.via,
+            promptPreview: truncatePreview(args.promptText),
+            completionPreview: truncatePreview(args.completionText),
         };
         this.records.push(rec);
         if (this.records.length > MAX_RECORDS) {
@@ -166,7 +204,7 @@ export class UsageTracker {
             .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
         const perClient = [...perClientMap.values()]
             .sort((a, b) => b.requests - a.requests);
-        const recent = this.records.slice(-25).reverse().map(r => ({
+        const recent: RecentEntry[] = this.records.slice(-RECENT_LIMIT).reverse().map(r => ({
             whenIso: new Date(r.ts).toISOString(),
             modelId: r.modelId,
             client: r.client,
@@ -174,6 +212,8 @@ export class UsageTracker {
             completionTokens: r.completionTokens,
             estimatedCostUsd: r.estimatedCostUsd,
             via: r.via,
+            promptPreview: r.promptPreview ?? '',
+            completionPreview: r.completionPreview ?? '',
         }));
 
         return {

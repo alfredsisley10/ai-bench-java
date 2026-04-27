@@ -242,8 +242,19 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 </tr></thead><tbody></tbody></table>
 
 <h2>Recent activity</h2>
+<div class="row" style="margin:0.3em 0; gap:0.5em; align-items:center">
+    <span class="help">Show</span>
+    <select id="recentPageSize" style="padding:0.15em 0.3em">
+        <option value="10" selected>10</option>
+        <option value="25">25</option>
+        <option value="50">50</option>
+    </select>
+    <span class="help">most recent requests · click a row to inspect the full prompt + response.</span>
+</div>
 <table id="recent"><thead><tr>
-    <th>When</th><th>Model</th><th>Client</th><th>Via</th><th class="num">Prompt</th><th class="num">Compl.</th><th class="num">Cost</th>
+    <th></th><!-- expand chevron column -->
+    <th>When</th><th>Model</th><th>Client</th><th>Via</th>
+    <th class="num">Prompt</th><th class="num">Compl.</th><th class="num">Cost</th>
 </tr></thead><tbody></tbody></table>
 
 <div class="toolbar">
@@ -366,6 +377,16 @@ function renderControls() {
     }
 }
 
+// Page size for recent activity. Persisted via vscode.setState so it
+// survives extension reloads. Falls back to 10.
+var recentPageSize = (function(){
+    try { var s = (vscode.getState && vscode.getState()) || {}; return s.recentPageSize || 10; }
+    catch (_e) { return 10; }
+})();
+// Set of recent-activity row indexes currently expanded; lets us preserve
+// the user's drill-in across snapshot pushes.
+var expandedRecentIdx = {};
+
 function renderStats() {
     var snap = state.snapshot || { totalRequests:0, totalPromptTokens:0, totalCompletionTokens:0, totalEstimatedCostUsd:0, perModel:[], perClient:[], recent:[] };
     document.getElementById('totals').innerHTML =
@@ -373,27 +394,105 @@ function renderStats() {
       card('Prompt tokens', fmt(snap.totalPromptTokens)) +
       card('Completion tokens', fmt(snap.totalCompletionTokens)) +
       card('Est. cost (USD)', fmtUsd(snap.totalEstimatedCostUsd));
+    // perModel/perClient: pass the explicit set of numeric column indexes
+    // so the body cells get class="num" only on numeric columns. The
+    // previous fillTable hard-coded "everything but column 0 is num",
+    // which right-aligned the Model/Client/Via cells in Recent activity
+    // even though their <th> headers are left-aligned -- the user-visible
+    // alignment bug.
     fillTable('perModel', snap.perModel.map(function(m){ return [
       m.label || m.modelId, fmt(m.requests), fmt(m.promptTokens), fmt(m.completionTokens), fmtUsd(m.estimatedCostUsd)
-    ]; }));
+    ]; }), [1,2,3,4]);
     fillTable('perClient', snap.perClient.map(function(c){ return [
       c.client, fmt(c.requests), fmt(c.promptTokens), fmt(c.completionTokens), fmtUsd(c.estimatedCostUsd), c.lastSeenIso ? new Date(c.lastSeenIso).toLocaleString() : ''
-    ]; }));
-    fillTable('recent', snap.recent.map(function(r){ return [
-      fmtTime(r.whenIso), r.modelId, r.client, r.via, fmt(r.promptTokens), fmt(r.completionTokens), fmtUsd(r.estimatedCostUsd)
-    ]; }));
+    ]; }), [1,2,3,4]);
+    renderRecent(snap.recent);
 }
 
 function card(label, value){
     return '<div class="card"><div class="label">'+label+'</div><div class="value">'+value+'</div></div>';
 }
-function fillTable(id, rows){
+
+/**
+ * Generic table fill. numericCols is an array of 0-based column indexes
+ * that should get class="num" (right-aligned, monospace numerals). Pass
+ * [] for tables where every cell is left-aligned text.
+ */
+function fillTable(id, rows, numericCols){
+    var nums = numericCols || [];
     var tbody = document.querySelector('#'+id+' tbody');
     tbody.innerHTML = rows.map(function(r){
         return '<tr>' + r.map(function(c, i){
-            return '<td' + (i > 0 ? ' class="num"' : '') + '>' + (c == null ? '' : c) + '</td>';
+            var cls = nums.indexOf(i) >= 0 ? ' class="num"' : '';
+            return '<td' + cls + '>' + (c == null ? '' : c) + '</td>';
         }).join('') + '</tr>';
     }).join('');
+}
+
+function escapeHtml(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+        return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+    });
+}
+
+/**
+ * Custom renderer for the recent-activity table:
+ *   - paginated client-side to recentPageSize (default 10, also 25/50)
+ *   - left-aligned text columns (Model/Client/Via), right-aligned
+ *     numeric columns (Prompt/Compl./Cost) — matches the <th> headers
+ *   - first column is a chevron toggle; clicking the row inserts an
+ *     inline detail tr with promptPreview + completionPreview, useful
+ *     for diagnosing prompts the harness sent through the bridge
+ */
+function renderRecent(rows){
+    var tbody = document.querySelector('#recent tbody');
+    var slice = (rows || []).slice(0, recentPageSize);
+    tbody.innerHTML = slice.map(function(r, i){
+        var open = !!expandedRecentIdx[i];
+        var chevron = open ? '▼' : '▶';
+        var summary =
+            '<tr class="recent-row" data-idx="' + i + '" style="cursor:pointer">' +
+              '<td style="width:1.4em;color:#9ca3af">' + chevron + '</td>' +
+              '<td>' + escapeHtml(fmtTime(r.whenIso)) + '</td>' +
+              '<td>' + escapeHtml(r.modelId) + '</td>' +
+              '<td>' + escapeHtml(r.client) + '</td>' +
+              '<td>' + escapeHtml(r.via) + '</td>' +
+              '<td class="num">' + fmt(r.promptTokens) + '</td>' +
+              '<td class="num">' + fmt(r.completionTokens) + '</td>' +
+              '<td class="num">' + fmtUsd(r.estimatedCostUsd) + '</td>' +
+            '</tr>';
+        if (!open) return summary;
+        // Detail row spans the full width. Show prompt/completion side-
+        // by-side with a small <pre> for readability. If the bridge
+        // didn't capture text (older record from before the upgrade),
+        // surface that explicitly so the user knows why the box is empty.
+        var hasText = (r.promptPreview && r.promptPreview.length) || (r.completionPreview && r.completionPreview.length);
+        var body = hasText
+            ? '<div style="display:flex;gap:0.6em;flex-wrap:wrap">' +
+                '<div style="flex:1 1 24em;min-width:18em">' +
+                  '<div class="help" style="margin-bottom:0.2em">Prompt</div>' +
+                  '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.promptPreview || '(empty)') + '</pre>' +
+                '</div>' +
+                '<div style="flex:1 1 24em;min-width:18em">' +
+                  '<div class="help" style="margin-bottom:0.2em">Completion</div>' +
+                  '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.completionPreview || '(empty)') + '</pre>' +
+                '</div>' +
+              '</div>'
+            : '<div class="help">No prompt/completion text captured for this record. Records logged before the upgrade only retained summary stats; new requests after upgrading will include the click-to-expand preview.</div>';
+        return summary +
+          '<tr class="recent-detail" data-idx="' + i + '">' +
+            '<td colspan="8" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
+          '</tr>';
+    }).join('');
+    // Wire row clicks. Single delegated listener is replaced each render;
+    // simpler than per-row inline handlers and survives the snapshot push.
+    tbody.querySelectorAll('.recent-row').forEach(function(tr){
+        tr.addEventListener('click', function(){
+            var idx = tr.getAttribute('data-idx');
+            expandedRecentIdx[idx] = !expandedRecentIdx[idx];
+            renderRecent(rows);
+        });
+    });
 }
 
 window.addEventListener('message', function(ev){
@@ -423,6 +522,25 @@ window.addEventListener('message', function(ev){
     }
 });
 document.getElementById('clearBtn').onclick = function(){ vscode.postMessage({ type: 'clear' }); };
+
+// Page-size selector for recent activity. Persist via vscode.setState
+// so the user's choice survives webview reloads (panel hide/show, F5).
+(function(){
+    var sel = document.getElementById('recentPageSize');
+    if (!sel) return;
+    sel.value = String(recentPageSize);
+    sel.addEventListener('change', function(){
+        recentPageSize = parseInt(sel.value, 10) || 10;
+        try {
+            var prev = (vscode.getState && vscode.getState()) || {};
+            vscode.setState(Object.assign({}, prev, { recentPageSize: recentPageSize }));
+        } catch (_e) { /* state API unavailable in some contexts */ }
+        // Drop any expand-state on rows that paginate out so the next
+        // tick starts clean. Indexes are positional, not stable.
+        expandedRecentIdx = {};
+        renderStats();
+    });
+})();
 // Copy-URL button for the OpenAI endpoint.
 var copyUrlBtn = document.getElementById('openAiCopyUrlBtn');
 if (copyUrlBtn) copyUrlBtn.onclick = function(){
