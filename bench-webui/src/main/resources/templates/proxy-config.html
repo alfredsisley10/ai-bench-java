@@ -3,6 +3,34 @@
       th:replace="~{fragments/layout :: page('Proxy', ~{::main})}">
 <body>
 <main>
+    <!-- Scroll-position preservation across form submits.
+         Save buttons (Save proxy, Save mirror, Reset) POST + redirect,
+         which would normally bounce the operator back to the top of
+         the page. We snapshot window.scrollY into sessionStorage right
+         before the submit and restore it on the next /proxy load, so
+         hitting Save in the mirror section leaves the operator looking
+         at the mirror section -- not scrolled all the way back to the
+         "Active settings" header. The fetch-based test buttons already
+         preserve position; this only covers the form-submit path. -->
+    <script>
+        (function () {
+            if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+            document.addEventListener('submit', function () {
+                try { sessionStorage.setItem('proxyScrollY', String(window.scrollY)); }
+                catch (_) {}
+            });
+            window.addEventListener('load', function () {
+                try {
+                    var y = sessionStorage.getItem('proxyScrollY');
+                    if (y !== null) {
+                        window.scrollTo(0, parseInt(y, 10) || 0);
+                        sessionStorage.removeItem('proxyScrollY');
+                    }
+                } catch (_) {}
+            });
+        })();
+    </script>
+
     <h2>Proxy &amp; TLS settings</h2>
     <p class="subtitle">
         Outbound connections from the WebUI (GitHub, JIRA, AppMap agent,

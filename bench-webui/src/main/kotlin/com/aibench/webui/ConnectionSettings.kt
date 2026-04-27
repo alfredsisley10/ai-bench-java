@@ -124,11 +124,12 @@ class ConnectionSettings {
     fun update(new: Settings) {
         current = new
         writeGradleProxyProperties(new)
+        writeCorpInitScript(new)
         applyProxyAuthenticator(new)
         log.info(
-            "Connection settings updated to: httpsProxy='{}', httpProxy='{}', noProxy='{}', insecureSsl={}, proxyAuth={}, mirror='{}'",
+            "Connection settings updated to: httpsProxy='{}', httpProxy='{}', noProxy='{}', insecureSsl={}, proxyAuth={}, mirror='{}', bypassMirror={}",
             new.httpsProxy, new.httpProxy, new.noProxy, new.insecureSsl,
-            if (new.hasProxyAuth) "set" else "none", new.mirrorUrl
+            if (new.hasProxyAuth) "set" else "none", new.mirrorUrl, new.bypassMirror
         )
     }
 
@@ -173,7 +174,6 @@ class ConnectionSettings {
      *  - https://repo.maven.apache.org/maven2/ — Maven Central
      *  - https://api.foojay.io/disco/v3.0/distributions — JDK toolchain provisioning
      *  - {@code mirrorUrl} (if configured) — operator's Artifactory mirror
-     *  - {@code httpsProxy} (if configured) — does the proxy itself answer?
      */
     fun probeConnectivity(): List<ProbeResult> {
         val s = current
@@ -264,31 +264,6 @@ class ConnectionSettings {
         probe("https://api.foojay.io/disco/v3.0/distributions", "Foojay (JDK toolchain auto-provisioning)")
         if (s.hasMirror) {
             probe(s.mirrorUrl, "Configured Artifactory mirror", useMirrorAuth = true)
-        }
-        // Probing the proxy itself is informational — many corporate
-        // proxies refuse direct GET without a target URL, so we don't
-        // mark a non-2xx as failure. We just record what comes back.
-        parseHostPort(s.httpsProxy)?.let { (h, p) ->
-            val proxyUrl = "http://$h:$p/"
-            val start = System.currentTimeMillis()
-            results += try {
-                // Explicitly bypass the proxy when probing the proxy itself
-                // — otherwise the request just loops back to it.
-                val direct = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()
-                val resp = direct.send(
-                    java.net.http.HttpRequest.newBuilder().uri(URI.create(proxyUrl))
-                        .timeout(Duration.ofSeconds(5)).GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.discarding()
-                )
-                val ms = System.currentTimeMillis() - start
-                ProbeResult(proxyUrl, "Corporate proxy (host reachable)", false,
-                    resp.statusCode(), ms, true,
-                    "HTTP ${resp.statusCode()} — proxy host responds")
-            } catch (e: Exception) {
-                val ms = System.currentTimeMillis() - start
-                ProbeResult(proxyUrl, "Corporate proxy (host reachable)", false, -1, ms, false,
-                    "${e.javaClass.simpleName}: ${e.message ?: "unreachable"}")
-            }
         }
         return results
     }
@@ -1292,7 +1267,12 @@ class ConnectionSettings {
     }
 
     private fun writeGradleProxyProperties(s: Settings) {
-        if (s.httpsProxy.isEmpty() && s.httpProxy.isEmpty()) return
+        // Skip entirely only when there's truly nothing to manage --
+        // proxies, mirror auth, and the noProxy list are all rewritten
+        // here so a save in /proxy keeps gradle.properties in sync.
+        val hasAnything = s.httpsProxy.isNotEmpty() || s.httpProxy.isNotEmpty() ||
+                          s.noProxy.isNotEmpty() || s.hasMirrorAuth
+        if (!hasAnything) return
         val gradleDir = java.io.File(System.getProperty("user.home"), ".gradle")
         gradleDir.mkdirs()
         val propsFile = java.io.File(gradleDir, "gradle.properties")
@@ -1302,7 +1282,14 @@ class ConnectionSettings {
                 !line.startsWith("systemProp.http.proxyPort") &&
                 !line.startsWith("systemProp.https.proxyHost") &&
                 !line.startsWith("systemProp.https.proxyPort") &&
-                !line.startsWith("systemProp.http.nonProxyHosts")
+                !line.startsWith("systemProp.http.nonProxyHosts") &&
+                // Mirror-auth keys consumed by the corp init script's
+                // providers.gradleProperty(...) calls. Wiped here on
+                // every save and re-emitted below if still applicable,
+                // so toggling off mirror auth in /proxy actually clears
+                // the password from disk.
+                !line.startsWith("orgInternalMavenUser") &&
+                !line.startsWith("orgInternalMavenPassword")
             }
         } else emptyList()
 
@@ -1320,6 +1307,62 @@ class ConnectionSettings {
             val gradleNoProxy = s.noProxy.split(",").joinToString("|") { it.trim() }
             newLines.add("systemProp.http.nonProxyHosts=$gradleNoProxy")
         }
+        if (s.hasMirrorAuth) {
+            newLines.add("orgInternalMavenUser=${s.mirrorAuthUser}")
+            newLines.add("orgInternalMavenPassword=${s.mirrorAuthPassword}")
+        }
         propsFile.writeText(newLines.joinToString("\n") + "\n")
+    }
+
+    /**
+     * Regenerate ~/.gradle/init.d/corp-repos.gradle.kts to match the
+     * current bench-webui mirror config. The init script controls every
+     * Gradle invocation on the user's account (it rewrites repo URLs to
+     * the corp Artifactory and substitutes plugin ids → real Maven
+     * coords), so a stale mirror URL baked in from an earlier
+     * build-health-check run will silently route every build to a
+     * non-existent virtual.
+     *
+     * Behaviour:
+     *  - mirror configured AND not bypassed → write the script with
+     *    the current mirror URL substituted for the template's
+     *    `__CORP_MAVEN_URL__` placeholder.
+     *  - mirror cleared OR bypass-mirror toggle on → DELETE the script
+     *    so `gradlePluginPortal()` / `mavenCentral()` resolve direct
+     *    via the proxy instead of through a (possibly stale) mirror.
+     *
+     * The template is bundled into the fat jar from
+     * scripts/corp-repos.gradle.kts.template via processResources, so
+     * the source-of-truth is the same file build-health-check reads.
+     */
+    private fun writeCorpInitScript(s: Settings) {
+        val initDir = java.io.File(System.getProperty("user.home"), ".gradle/init.d")
+        val target = java.io.File(initDir, "corp-repos.gradle.kts")
+
+        if (!s.hasMirror || s.bypassMirror) {
+            if (target.exists()) {
+                runCatching { target.delete() }
+                    .onSuccess { log.info("Removed ~/.gradle/init.d/corp-repos.gradle.kts (mirror cleared/bypassed).") }
+                    .onFailure { log.warn("Could not remove $target: ${it.message}") }
+            }
+            return
+        }
+
+        val templateBytes = this::class.java.getResourceAsStream("/init-scripts/corp-repos.gradle.kts.template")
+            ?.use { it.readBytes() }
+        if (templateBytes == null) {
+            log.warn("corp-repos.gradle.kts.template missing from classpath; init script not regenerated.")
+            return
+        }
+        val template = String(templateBytes, Charsets.UTF_8)
+        val rendered = template.replace("__CORP_MAVEN_URL__", s.mirrorUrl)
+        runCatching {
+            initDir.mkdirs()
+            target.writeText(rendered, Charsets.UTF_8)
+        }.onSuccess {
+            log.info("Regenerated ${target.absolutePath} with mirrorUrl='${s.mirrorUrl}'.")
+        }.onFailure {
+            log.warn("Could not write ${target.absolutePath}: ${it.message}")
+        }
     }
 }

@@ -57,6 +57,17 @@ tasks.test {
     useJUnitPlatform()
 }
 
+// Bundle the corp init-script template into the fat jar so
+// ConnectionSettings can regenerate ~/.gradle/init.d/corp-repos.gradle.kts
+// directly from a /proxy save (no build-health-check round trip needed).
+// Source of truth stays in scripts/ where build-health-check also reads
+// from -- the copy below stays in sync via processResources.
+tasks.processResources {
+    from("../scripts/corp-repos.gradle.kts.template") {
+        into("init-scripts")
+    }
+}
+
 // Generate META-INF/build-info.properties at compile time so the app
 // can surface its own version + git commit + build timestamp in the
 // layout footer. Spring Boot's BuildProperties bean auto-loads from
