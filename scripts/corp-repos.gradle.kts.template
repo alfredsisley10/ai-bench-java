@@ -63,8 +63,15 @@ val corpPass: String? = providers.gradleProperty("orgInternalMavenPassword").orN
 fun maybeRewrite(repo: ArtifactRepository) {
     if (repo is MavenArtifactRepository) {
         val u = repo.url.toString()
+        // ONLY rewrite Maven Central upstreams to the corp mirror.
+        // plugins.gradle.org is left alone on purpose: enterprise
+        // operators report their corp Artifactory proxies Maven Central
+        // content but NOT the Gradle Plugin Portal, while the corp HTTP
+        // proxy itself can reach plugins.gradle.org direct. Forcing
+        // plugins.gradle.org → corp mirror produces 404s on plugin
+        // markers and on plugin-portal-only artifacts (foojay-resolver
+        // is the canonical example) that the mirror can't serve.
         if (u.contains("repo.maven.apache.org") ||
-            u.contains("plugins.gradle.org") ||
             u.contains("repo1.maven.org")) {
             repo.setUrl(corpMavenUrl)
             if (corpUser != null && corpPass != null) {
