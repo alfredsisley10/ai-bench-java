@@ -4,23 +4,99 @@
 <body>
 <main>
     <h2>Ranked benchmark candidates</h2>
-    <p class="subtitle">Repositories are scored by language match, CI presence, test coverage, and size.</p>
+    <p class="subtitle">
+        Scan the GitHub repositories visible to your token, scored by
+        language match, size, recency, and activity. Operator-paced —
+        each "Fetch next batch" is one GitHub API call (≤ 100 repos),
+        so this stays well within rate limits even on Enterprise
+        installs with thousands of accessible repos.
+    </p>
 
+    <!-- Scan controls + progress ----------------------------------- -->
+    <section style="border:1px solid #d4d4d4;border-radius:4px;padding:0.75em;margin-bottom:0.8em">
+        <div class="row" style="gap:0.5em;align-items:center;flex-wrap:wrap">
+            <form method="post" action="/github/repos/scan-next" style="display:inline-flex;gap:0.4em;align-items:center;margin:0">
+                <span class="help-text">Batch size:</span>
+                <select name="batchSize">
+                    <option value="10">10</option>
+                    <option value="30" selected>30</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+                <button type="submit"
+                        th:disabled="${!scanHasMore}"
+                        th:text="${scanNextPage == 1 ? 'Start scan (page 1)' : 'Fetch next batch (page ' + scanNextPage + ')'}">
+                </button>
+            </form>
+            <form method="post" action="/github/repos/reset-scan" style="display:inline">
+                <button type="submit" class="btn-secondary"
+                        th:disabled="${scanNextPage == 1 and #lists.isEmpty(candidates)}">
+                    Reset scan
+                </button>
+            </form>
+            <span class="help-text" style="margin-left:auto">
+                <strong th:text="${scanTotalSeen}">0</strong> repos seen ·
+                next page = <strong th:text="${scanNextPage}">1</strong>
+                <span th:if="${!scanHasMore}"> · <em>scan complete</em></span>
+            </span>
+        </div>
+        <p class="help-text" th:if="${scanLastBatchAt != ''}" style="margin:0.4em 0 0 0">
+            Last batch added <strong th:text="${scanLastBatchAdded}"></strong> repo(s)
+            at <span th:text="${scanLastBatchAt}"></span>.
+        </p>
+        <div th:if="${scanError != ''}" class="status-banner error"
+             style="margin-top:0.4em;padding:0.4em 0.6em;border-radius:3px;
+                    background:#fef2f2;border:1px solid #fecaca;color:#991b1b">
+            <strong>Scan error:</strong> <span th:text="${scanError}"></span>
+        </div>
+    </section>
+
+    <!-- Empty state ------------------------------------------------- -->
     <div th:if="${#lists.isEmpty(candidates)}">
-        <p class="empty-state">No repositories scanned yet. <a href="/github">Connect GitHub</a> first, then scan.</p>
+        <p class="empty-state" th:if="${scanNextPage == 1}">
+            No repositories scanned yet.
+            <a href="/github">Connect GitHub</a> first if you haven't,
+            then click <em>Start scan</em> above.
+        </p>
+        <p class="empty-state" th:unless="${scanNextPage == 1}">
+            Scan ran but returned no repositories. Either the connected
+            token has no accessible repos, or the API call hit an error
+            (see banner above).
+        </p>
     </div>
 
+    <!-- Ranked candidates table ------------------------------------- -->
     <form th:unless="${#lists.isEmpty(candidates)}" method="post" action="/github/repos/select">
         <table>
-            <thead><tr><th></th><th>Repository</th><th>Language</th><th>Score</th><th>CI</th><th>Tests</th><th>JIRA project</th></tr></thead>
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>Repository</th>
+                    <th>Language</th>
+                    <th class="num">Score</th>
+                    <th>Last push</th>
+                    <th>JIRA project</th>
+                </tr>
+            </thead>
             <tbody>
             <tr th:each="c : ${candidates}">
                 <td><input type="checkbox" name="repos" th:value="${c.fullName}" th:checked="${c.selected}"></td>
-                <td th:text="${c.fullName}"></td>
+                <td>
+                    <a th:href="'https://github.com/' + ${c.fullName}" target="_blank" th:text="${c.fullName}"></a>
+                    <div th:if="${c.description != ''}" class="help-text"
+                         th:text="${#strings.abbreviate(c.description, 90)}"
+                         style="margin-top:0.1em"></div>
+                </td>
                 <td th:text="${c.primaryLanguage}"></td>
-                <td th:text="${#numbers.formatDecimal(c.score, 1, 1)}"></td>
-                <td th:text="${c.hasCi ? 'Yes' : 'No'}"></td>
-                <td th:text="${c.hasTests ? 'Yes' : 'No'}"></td>
+                <td class="num" th:text="${#numbers.formatDecimal(c.score, 1, 1)}"></td>
+                <td>
+                    <!-- We don't surface pushed_at on RepoCandidate (yet);
+                         placeholder so the column doesn't render empty.
+                         GitHub already sorts by pushed desc, so position
+                         is a reasonable proxy for recency on the head of
+                         the list. -->
+                    <span class="help-text">— ranked by recency</span>
+                </td>
                 <td>
                     <span th:if="${jiraLinks.containsKey(c.fullName)}">
                         <code th:text="${jiraLinks[__${c.fullName}__].jiraProjectKey}"></code>
@@ -33,8 +109,11 @@
             </tr>
             </tbody>
         </table>
-        <button type="submit">Select for benchmarking</button>
+        <div class="button-row" style="margin-top:0.5em">
+            <button type="submit">Select for benchmarking</button>
+        </div>
     </form>
+
     <p class="help-text" style="margin-top:0.5em">
         Some repos use JIRA (not GitHub Issues) as their bug source.
         Click <em>link to JIRA</em> for any row whose problem
