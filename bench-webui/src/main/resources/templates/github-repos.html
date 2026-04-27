@@ -7,9 +7,10 @@
     <p class="subtitle">
         Scan the GitHub repositories visible to your token, scored by
         language match, size, recency, and activity. Operator-paced —
-        each "Fetch next batch" is one GitHub API call (≤ 100 repos),
-        so this stays well within rate limits even on Enterprise
-        installs with thousands of accessible repos.
+        each "Fetch next batch" is one GitHub API call (≤ 100 repos)
+        plus three follow-up calls per repo for commit / contributor /
+        LOC enrichment, so this stays well within rate limits even on
+        Enterprise installs with thousands of accessible repos.
     </p>
 
     <!-- Scan controls + progress ----------------------------------- -->
@@ -18,8 +19,8 @@
             <form method="post" action="/github/repos/scan-next" style="display:inline-flex;gap:0.4em;align-items:center;margin:0">
                 <span class="help-text">Batch size:</span>
                 <select name="batchSize">
-                    <option value="10">10</option>
-                    <option value="30" selected>30</option>
+                    <option value="10" selected>10</option>
+                    <option value="30">30</option>
                     <option value="50">50</option>
                     <option value="100">100</option>
                 </select>
@@ -65,61 +66,110 @@
         </p>
     </div>
 
+    <!-- Search + export bar ---------------------------------------- -->
+    <div th:unless="${#lists.isEmpty(candidates)}"
+         style="display:flex;gap:0.6em;align-items:center;flex-wrap:wrap;margin-bottom:0.4em">
+        <label style="display:inline-flex;align-items:center;gap:0.4em;margin:0">
+            <span class="help-text">Search all columns:</span>
+            <input id="repoGlobalSearch" type="search" placeholder="filter…"
+                   oninput="ghReposApplyFilters()" style="width:18em">
+        </label>
+        <span class="help-text" id="repoFilterCount" style="margin-left:0.3em"></span>
+        <span style="margin-left:auto;display:inline-flex;gap:0.4em">
+            <a href="/github/repos/export.csv" class="btn-sm" download
+               style="display:inline-block;padding:0.3em 0.8em">Export CSV</a>
+            <a href="/github/repos/export.xlsx" class="btn-sm" download
+               style="display:inline-block;padding:0.3em 0.8em">Export XLSX</a>
+        </span>
+    </div>
+
     <!-- Ranked candidates table ------------------------------------- -->
     <form th:unless="${#lists.isEmpty(candidates)}" method="post" action="/github/repos/select">
-        <table>
+        <table id="repoTable" class="sortable-table">
             <thead>
+                <!-- Column headers — click to sort. data-type controls
+                     numeric vs string compare. data-key is the canonical
+                     column id used by the per-column filter inputs. -->
                 <tr>
                     <th></th>
-                    <th>Repository</th>
-                    <th>Language</th>
-                    <th class="num">Score</th>
-                    <th>Last push</th>
-                    <th>JIRA project</th>
+                    <th data-type="string" data-key="repo" onclick="ghReposSortBy(this)" style="cursor:pointer">Repository ▾</th>
+                    <th data-type="string" data-key="language" onclick="ghReposSortBy(this)" style="cursor:pointer">Language ▾</th>
+                    <th data-type="number" data-key="score" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Score ▾</th>
+                    <th data-type="number" data-key="stars" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Stars ▾</th>
+                    <th data-type="number" data-key="issues" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Open issues ▾</th>
+                    <th data-type="number" data-key="size" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Size (KB) ▾</th>
+                    <th data-type="number" data-key="loc" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Est. LOC ▾</th>
+                    <th data-type="number" data-key="commits" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Commits ▾</th>
+                    <th data-type="number" data-key="contribs" onclick="ghReposSortBy(this)" style="cursor:pointer" class="num">Contributors ▾</th>
+                    <th data-type="string" data-key="visibility" onclick="ghReposSortBy(this)" style="cursor:pointer">Vis ▾</th>
+                    <th data-type="string" data-key="pushed" onclick="ghReposSortBy(this)" style="cursor:pointer">Last push ▾</th>
+                    <th data-key="jira">JIRA project</th>
+                </tr>
+                <!-- Per-column filters. Each input filters its own column
+                     by substring match (case-insensitive). For numeric
+                     columns the operator can type either a substring or
+                     a comparator like ">100" / "<=50". -->
+                <tr class="filter-row">
+                    <th></th>
+                    <th><input type="search" data-filter="repo" oninput="ghReposApplyFilters()" placeholder="repo…" style="width:96%"></th>
+                    <th><input type="search" data-filter="language" oninput="ghReposApplyFilters()" placeholder="lang…" style="width:96%"></th>
+                    <th><input type="search" data-filter="score" oninput="ghReposApplyFilters()" placeholder="&gt;0" style="width:96%"></th>
+                    <th><input type="search" data-filter="stars" oninput="ghReposApplyFilters()" placeholder="&gt;10" style="width:96%"></th>
+                    <th><input type="search" data-filter="issues" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="size" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="loc" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="commits" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="contribs" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="visibility" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
+                    <th><input type="search" data-filter="pushed" oninput="ghReposApplyFilters()" placeholder="2025…" style="width:96%"></th>
+                    <th><input type="search" data-filter="jira" oninput="ghReposApplyFilters()" placeholder="" style="width:96%"></th>
                 </tr>
             </thead>
             <tbody>
-            <tr th:each="c : ${candidates}">
+            <tr th:each="c : ${candidates}"
+                th:attr="data-repo=${c.fullName},
+                         data-language=${c.primaryLanguage},
+                         data-score=${c.score},
+                         data-stars=${c.stars},
+                         data-issues=${c.openIssues},
+                         data-size=${c.sizeKb},
+                         data-loc=${c.estimatedLoc},
+                         data-commits=${c.commitCount},
+                         data-contribs=${c.contributorCount},
+                         data-visibility=${c.visibility},
+                         data-pushed=${c.pushedAt},
+                         data-jira=${jiraLinks.get(c.fullName) != null ? jiraLinks.get(c.fullName).jiraProjectKey : ''}">
                 <td><input type="checkbox" name="repos" th:value="${c.fullName}" th:checked="${c.selected}"></td>
                 <td>
                     <a th:href="'https://github.com/' + ${c.fullName}" target="_blank" th:text="${c.fullName}"></a>
                     <div th:if="${c.description != ''}" class="help-text"
                          th:text="${#strings.abbreviate(c.description, 90)}"
                          style="margin-top:0.1em"></div>
+                    <div class="help-text" style="margin-top:0.1em"
+                         th:if="${c.isFork or c.isArchived}">
+                        <span th:if="${c.isFork}" class="badge"
+                              style="background:#e5e7eb;color:#374151;margin-right:0.3em">fork</span>
+                        <span th:if="${c.isArchived}" class="badge"
+                              style="background:#fef3c7;color:#92400e">archived</span>
+                    </div>
                 </td>
                 <td th:text="${c.primaryLanguage}"></td>
                 <td class="num" th:text="${#numbers.formatDecimal(c.score, 1, 1)}"></td>
+                <td class="num" th:text="${c.stars}"></td>
+                <td class="num" th:text="${c.openIssues}"></td>
+                <td class="num" th:text="${#numbers.formatInteger(c.sizeKb, 0, 'COMMA')}"></td>
+                <td class="num" th:text="${c.estimatedLoc &lt; 0 ? '—' : #numbers.formatInteger(c.estimatedLoc, 0, 'COMMA')}"></td>
+                <td class="num" th:text="${c.commitCount &lt; 0 ? '—' : #numbers.formatInteger(c.commitCount, 0, 'COMMA')}"></td>
+                <td class="num" th:text="${c.contributorCount &lt; 0 ? '—' : #numbers.formatInteger(c.contributorCount, 0, 'COMMA')}"></td>
+                <td th:text="${c.visibility}"></td>
+                <td th:text="${c.pushedAt != '' ? #strings.substring(c.pushedAt, 0, 10) : '—'}"></td>
                 <td>
-                    <!-- We don't surface pushed_at on RepoCandidate (yet);
-                         placeholder so the column doesn't render empty.
-                         GitHub already sorts by pushed desc, so position
-                         is a reasonable proxy for recency on the head of
-                         the list. -->
-                    <span class="help-text">— ranked by recency</span>
-                </td>
-                <td>
-                    <!-- Use Thymeleaf null-safe Map.get() instead of the
-                         legacy __${c.fullName}__ preprocessing dance.
-                         Preprocessing inlines the raw key value with no
-                         quoting; once c.fullName contains a slash (any
-                         real repo: owner/name) the resulting OL
-                         expression becomes unparseable and Thymeleaf
-                         fires a TemplateInputException for the whole
-                         /github/repos render. The safe-call form below
-                         resolves to null when the key isn't present
-                         and `<th:block th:with>` short-circuits the
-                         link emission. -->
                     <th:block th:with="link=${jiraLinks.get(c.fullName)}">
                         <span th:if="${link != null}">
                             <code th:text="${link.jiraProjectKey}"></code>
                             <a href="/jira#repo-jira-associations" class="help-text" style="margin-left:0.3em">edit</a>
                         </span>
                         <span th:unless="${link != null}">
-                            <!-- Plain href + literal #-fragment. The
-                                 `@{path(name=value)}` URL-builder syntax
-                                 is for query parameters; `#` is not a
-                                 legal parameter name, and Thymeleaf 3.1
-                                 rejects the expression at parse time. -->
                             <a href="/jira#repo-jira-associations" class="help-text">link to JIRA</a>
                         </span>
                     </th:block>
@@ -133,12 +183,131 @@
     </form>
 
     <p class="help-text" style="margin-top:0.5em">
+        <strong>Filters &amp; sort:</strong> click any column header to
+        sort (toggle asc/desc). Each header has a per-column filter
+        below it — substring for text columns, or comparator
+        expressions like <code>&gt;100</code>, <code>&lt;=50</code>,
+        <code>=java</code> for numeric/text columns. The global
+        <em>Search all columns</em> input matches across every visible
+        cell. <strong>Export</strong> sends the entire dataset (not
+        just the filtered view) to CSV or XLSX.
+    </p>
+    <p class="help-text">
         Some repos use JIRA (not GitHub Issues) as their bug source.
         Click <em>link to JIRA</em> for any row whose problem
         statements live in a JIRA project — the benchmark harness will
         fetch tickets from the linked project at run time. Manage the
         full list on the <a href="/jira#repo-jira-associations">JIRA configuration page</a>.
     </p>
+
+    <script>
+        // Sort + filter for the ranked-candidates table. Vanilla JS so
+        // we don't pull in a table library for two interactions.
+        // Numeric columns sort by parsed Number; string columns sort
+        // by localeCompare. Filter inputs accept substring or simple
+        // comparator expressions like ">100" / "<=50" / "=java".
+        (function () {
+            var table = document.getElementById('repoTable');
+            if (!table) return;
+            var tbody = table.querySelector('tbody');
+            var sortDir = {};
+            window.ghReposSortBy = function (th) {
+                var key = th.getAttribute('data-key');
+                var type = th.getAttribute('data-type') || 'string';
+                if (!key) return;
+                sortDir[key] = (sortDir[key] === 'asc') ? 'desc' : 'asc';
+                var dir = sortDir[key];
+                var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+                rows.sort(function (a, b) {
+                    var av = a.getAttribute('data-' + key) || '';
+                    var bv = b.getAttribute('data-' + key) || '';
+                    if (type === 'number') {
+                        var an = parseFloat(av);
+                        var bn = parseFloat(bv);
+                        if (isNaN(an)) an = -Infinity;
+                        if (isNaN(bn)) bn = -Infinity;
+                        return dir === 'asc' ? an - bn : bn - an;
+                    }
+                    return dir === 'asc'
+                        ? av.localeCompare(bv)
+                        : bv.localeCompare(av);
+                });
+                rows.forEach(function (r) { tbody.appendChild(r); });
+                // Update arrow indicators on every header
+                table.querySelectorAll('thead tr:first-child th').forEach(function (h) {
+                    var t = h.textContent.replace(/[▾▴]/g, '').trim();
+                    if (h === th) t += dir === 'asc' ? ' ▴' : ' ▾';
+                    else if (h.getAttribute('data-key')) t += ' ▾';
+                    h.textContent = t;
+                });
+            };
+
+            // Apply both per-column filters and the global search
+            // simultaneously. Each row stays visible only if it matches
+            // every active filter.
+            window.ghReposApplyFilters = function () {
+                var globalQ = (document.getElementById('repoGlobalSearch').value || '')
+                    .trim().toLowerCase();
+                var perCol = {};
+                table.querySelectorAll('thead .filter-row input').forEach(function (i) {
+                    var v = (i.value || '').trim();
+                    if (v.length > 0) perCol[i.getAttribute('data-filter')] = v;
+                });
+                var matchedAny = 0;
+                tbody.querySelectorAll('tr').forEach(function (row) {
+                    var visible = true;
+                    // Per-column predicates
+                    for (var key in perCol) {
+                        if (!perCol.hasOwnProperty(key)) continue;
+                        var raw = row.getAttribute('data-' + key) || '';
+                        if (!matchesPredicate(raw, perCol[key])) {
+                            visible = false; break;
+                        }
+                    }
+                    // Global search across all visible cell text
+                    if (visible && globalQ.length > 0) {
+                        var combined = (row.textContent || '').toLowerCase();
+                        if (combined.indexOf(globalQ) === -1) visible = false;
+                    }
+                    row.style.display = visible ? '' : 'none';
+                    if (visible) matchedAny++;
+                });
+                document.getElementById('repoFilterCount').textContent =
+                    matchedAny + ' / ' + tbody.querySelectorAll('tr').length + ' shown';
+            };
+
+            // Predicate parser. "<=50" / ">100" / ">=10" / "=java" all
+            // recognized; anything else is a substring match. Numeric
+            // comparators are tried first when the cell parses as a
+            // number, otherwise it falls through to substring so e.g.
+            // ">java" against the language column degrades gracefully.
+            function matchesPredicate(raw, expr) {
+                var m = expr.match(/^\s*(<=|>=|<|>|=)\s*(.+?)\s*$/);
+                if (m) {
+                    var op = m[1];
+                    var arg = m[2];
+                    var rawNum = parseFloat(raw);
+                    var argNum = parseFloat(arg);
+                    if (!isNaN(rawNum) && !isNaN(argNum)) {
+                        switch (op) {
+                            case '<':  return rawNum <  argNum;
+                            case '<=': return rawNum <= argNum;
+                            case '>':  return rawNum >  argNum;
+                            case '>=': return rawNum >= argNum;
+                            case '=':  return rawNum === argNum;
+                        }
+                    }
+                    if (op === '=') return raw.toLowerCase() === arg.toLowerCase();
+                    // Comparator on non-numeric → fall through to substring
+                    return raw.toLowerCase().indexOf(arg.toLowerCase()) !== -1;
+                }
+                return raw.toLowerCase().indexOf(expr.toLowerCase()) !== -1;
+            }
+
+            // Initial paint of the count summary.
+            ghReposApplyFilters();
+        })();
+    </script>
 </main>
 </body>
 </html>

@@ -24,6 +24,15 @@
 
 set -eu
 
+# Snapshot the caller's working directory and arrange to restore it
+# on script exit -- whether normal, error (set -e), or the user
+# sourcing the script (`. ./start-bench-tools.sh`). Without this, a
+# sourced run would leave the operator's shell in $INSTALL_DIR after
+# the script returns, and they'd have to manually `cd` back to
+# scripts/ before invoking stop-bench-tools.sh.
+ORIG_PWD="$PWD"
+trap 'cd "$ORIG_PWD" 2>/dev/null || true' EXIT
+
 # Resolve the script's repo location BEFORE the cd "$INSTALL_DIR"
 # below; otherwise relative-$0 invocations like
 # `./scripts/start-bench-tools.sh` fail to locate ../dist/ from the

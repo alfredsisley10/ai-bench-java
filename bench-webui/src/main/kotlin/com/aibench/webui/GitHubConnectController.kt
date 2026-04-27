@@ -54,8 +54,35 @@ class GitHubConnectController(
         val hasCi: Boolean,
         val hasTests: Boolean,
         val selected: Boolean = false,
-        val description: String = ""
-    )
+        val description: String = "",
+        // Size + activity metrics surfaced in the ranked table and the
+        // CSV / XLSX export. -1 on the count fields means "not yet
+        // enriched" — the per-repo follow-up API call hasn't run or
+        // failed (rate-limit, 409 on empty repo, etc.). The template
+        // renders -1 as an em-dash so a missing enrichment doesn't read
+        // as "0 commits".
+        val stars: Int = 0,
+        val sizeKb: Int = 0,
+        val openIssues: Int = 0,
+        val pushedAt: String = "",
+        val createdAt: String = "",
+        val defaultBranch: String = "main",
+        val visibility: String = "",
+        val isFork: Boolean = false,
+        val isArchived: Boolean = false,
+        val commitCount: Int = -1,
+        val contributorCount: Int = -1,
+        val totalCodeBytes: Long = -1L
+    ) {
+        /**
+         * Rough lines-of-code estimate from `/repos/.../languages` byte
+         * counts. ~30 bytes/line is the convention for Java-ish source;
+         * fine for ranking but don't quote it as ground truth.
+         */
+        val estimatedLoc: Int
+            get() = if (totalCodeBytes < 0) -1
+                    else (totalCodeBytes / 30L).toInt().coerceAtLeast(0)
+    }
 
     data class RepoBuildStatus(
         val repoName: String,
@@ -232,7 +259,7 @@ class GitHubConnectController(
      */
     @PostMapping("/github/repos/scan-next")
     fun scanNext(
-        @RequestParam(defaultValue = "30") batchSize: Int,
+        @RequestParam(defaultValue = "10") batchSize: Int,
         session: HttpSession
     ): String {
         val state = scanState(session)
@@ -265,7 +292,12 @@ class GitHubConnectController(
             }
             val parsed = Json { ignoreUnknownKeys = true }
                 .decodeFromString<List<GhRepo>>(resp.body())
-            val scored = parsed.map(::scoreRepo)
+            // Score first (free, in-memory), then enrich with extra
+            // per-repo API calls for commit/contributor totals + LOC
+            // estimate. Sequential to keep traffic predictable; with
+            // batchSize=10 the enrichment adds ~30 extra calls and
+            // ~2-3s wall time, still trivially within rate limits.
+            val scored = parsed.map(::scoreRepo).map { enrichCandidate(it, token, apiBase) }
             // Merge by full_name (in case of overlap from a re-fetch)
             // and re-sort by score desc — the head of the list reflects
             // the best candidate seen across ALL pages so far, not just
@@ -290,6 +322,87 @@ class GitHubConnectController(
             state.lastError = "Scan failed: ${e.javaClass.simpleName}: ${e.message ?: ""}"
         }
         return "redirect:/github/repos"
+    }
+
+    /**
+     * CSV export of every candidate currently in the session's scan
+     * state. Headers match the on-screen table 1:1 plus a few raw
+     * fields (description, created_at, visibility) the table truncates
+     * or omits but a downstream spreadsheet may want.
+     */
+    @GetMapping("/github/repos/export.csv", produces = ["text/csv;charset=UTF-8"])
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun exportCsv(session: HttpSession): org.springframework.http.ResponseEntity<ByteArray> {
+        val rows = scanState(session).candidates
+        val sb = StringBuilder()
+        sb.append(EXPORT_HEADERS.joinToString(",")).append('\n')
+        rows.forEach { c ->
+            sb.append(toExportRow(c).joinToString(",") { csvEscape(it) }).append('\n')
+        }
+        return org.springframework.http.ResponseEntity.ok()
+            .header("Content-Disposition", "attachment; filename=\"github-repos.csv\"")
+            .body(sb.toString().toByteArray(Charsets.UTF_8))
+    }
+
+    /**
+     * XLSX export. Apache POI streaming workbook -- writes directly to
+     * the response body without buffering the whole sheet first.
+     */
+    @GetMapping(
+        "/github/repos/export.xlsx",
+        produces = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+    )
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun exportXlsx(session: HttpSession): org.springframework.http.ResponseEntity<ByteArray> {
+        val rows = scanState(session).candidates
+        val out = java.io.ByteArrayOutputStream()
+        org.apache.poi.xssf.streaming.SXSSFWorkbook().use { wb ->
+            val sheet = wb.createSheet("repos")
+            val header = sheet.createRow(0)
+            EXPORT_HEADERS.forEachIndexed { i, h -> header.createCell(i).setCellValue(h) }
+            rows.forEachIndexed { rowIdx, c ->
+                val r = sheet.createRow(rowIdx + 1)
+                toExportRow(c).forEachIndexed { i, v -> r.createCell(i).setCellValue(v) }
+            }
+            wb.write(out)
+        }
+        return org.springframework.http.ResponseEntity.ok()
+            .header("Content-Disposition", "attachment; filename=\"github-repos.xlsx\"")
+            .body(out.toByteArray())
+    }
+
+    // Single source of truth for column order — the on-screen table,
+    // CSV, and XLSX all use this list so they stay in lockstep.
+    private val EXPORT_HEADERS = listOf(
+        "Repository", "Description", "Language", "Score",
+        "Stars", "Open issues", "Size (KB)", "Est. LOC",
+        "Commits", "Contributors", "Total bytes",
+        "Default branch", "Visibility", "Fork", "Archived",
+        "Created at", "Last push"
+    )
+
+    private fun toExportRow(c: RepoCandidate): List<String> = listOf(
+        c.fullName, c.description, c.primaryLanguage,
+        "%.1f".format(c.score),
+        c.stars.toString(),
+        c.openIssues.toString(),
+        c.sizeKb.toString(),
+        if (c.estimatedLoc < 0) "" else c.estimatedLoc.toString(),
+        if (c.commitCount < 0) "" else c.commitCount.toString(),
+        if (c.contributorCount < 0) "" else c.contributorCount.toString(),
+        if (c.totalCodeBytes < 0) "" else c.totalCodeBytes.toString(),
+        c.defaultBranch, c.visibility,
+        if (c.isFork) "yes" else "no",
+        if (c.isArchived) "yes" else "no",
+        c.createdAt, c.pushedAt
+    )
+
+    private fun csvEscape(s: String): String {
+        if (s.isEmpty()) return ""
+        if (s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')) {
+            return "\"" + s.replace("\"", "\"\"") + "\""
+        }
+        return s
     }
 
     /** Reset the running scan so the next "Fetch next batch" starts at page 1. */
@@ -323,9 +436,11 @@ class GitHubConnectController(
         val language: String? = null,
         val size: Int = 0,
         val stargazers_count: Int = 0,
+        val open_issues_count: Int = 0,
         val fork: Boolean = false,
         val archived: Boolean = false,
         val pushed_at: String? = null,
+        val created_at: String? = null,
         val default_branch: String = "main",
         val visibility: String = ""
     )
@@ -383,7 +498,108 @@ class GitHubConnectController(
             // determine these at run time.
             hasCi = false,
             hasTests = false,
-            description = r.description.orEmpty()
+            description = r.description.orEmpty(),
+            stars = r.stargazers_count,
+            sizeKb = r.size,
+            openIssues = r.open_issues_count,
+            pushedAt = r.pushed_at.orEmpty(),
+            createdAt = r.created_at.orEmpty(),
+            defaultBranch = r.default_branch,
+            visibility = r.visibility,
+            isFork = r.fork,
+            isArchived = r.archived
         )
+    }
+
+    /**
+     * Enrich one candidate with three follow-up API calls:
+     *  - {@code /commits?per_page=1} — Link header's <code>rel="last"</code>
+     *    page number is the commit total on the default branch
+     *  - {@code /contributors?per_page=1&anon=true} — same Link-header trick
+     *    yields the contributor total (incl. anonymous email-only authors)
+     *  - {@code /languages} — bytes-per-language map; we sum it for
+     *    the LOC estimate column
+     *
+     * Each call is wrapped in its own try/catch so a single failed
+     * enrichment (rate-limit hit on a forked-from-massive-repo, 409 on
+     * an empty repo, etc.) doesn't blow up the whole scan. Fields keep
+     * their default of -1 when enrichment fails so the UI renders them
+     * as em-dashes rather than misleading 0s.
+     */
+    private fun enrichCandidate(
+        c: RepoCandidate,
+        token: String,
+        apiBase: String
+    ): RepoCandidate {
+        val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(15))
+        val baseRepo = "$apiBase/repos/${c.fullName}"
+
+        fun head(url: String): java.net.http.HttpResponse<String>? = try {
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(url))
+                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .timeout(java.time.Duration.ofSeconds(15))
+                .GET().build()
+            client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+        } catch (_: Exception) { null }
+
+        var commits = -1
+        head("$baseRepo/commits?per_page=1&sha=${c.defaultBranch}")?.let { resp ->
+            if (resp.statusCode() == 200) {
+                val link = resp.headers().firstValue("Link").orElse("")
+                commits = lastPageFromLinkHeader(link)
+                    // No Link header but body is non-empty -> exactly 1 commit
+                    ?: if (resp.body().contains("\"sha\"")) 1 else 0
+            } else if (resp.statusCode() == 409) {
+                // Empty repo -- GitHub's documented response for this
+                // case. Recording 0 here lets the column sort cleanly.
+                commits = 0
+            }
+        }
+
+        var contributors = -1
+        head("$baseRepo/contributors?per_page=1&anon=true")?.let { resp ->
+            if (resp.statusCode() == 200) {
+                val link = resp.headers().firstValue("Link").orElse("")
+                contributors = lastPageFromLinkHeader(link)
+                    ?: if (resp.body().trim().startsWith("[") && resp.body().contains("\"login\"")) 1 else 0
+            } else if (resp.statusCode() == 204) {
+                // No content = no contributors recorded. Empty repo.
+                contributors = 0
+            }
+        }
+
+        var totalBytes = -1L
+        head("$baseRepo/languages")?.let { resp ->
+            if (resp.statusCode() == 200) {
+                // Body shape: {"Java":1234,"Kotlin":567}. A regex sum is
+                // good enough; full JSON parse would be overkill.
+                totalBytes = Regex(""":\s*(\d+)""").findAll(resp.body())
+                    .sumOf { it.groupValues[1].toLong() }
+            }
+        }
+
+        return c.copy(
+            commitCount = commits,
+            contributorCount = contributors,
+            totalCodeBytes = totalBytes
+        )
+    }
+
+    /**
+     * Parse <code>rel="last"</code> URL out of a GitHub Link header and
+     * return the {@code page=} query value. That number is the total
+     * count when the per_page is 1, which is the trick we use to get a
+     * commit/contributor total in O(1) requests instead of paging.
+     * Returns null when the header is missing or unparseable, in which
+     * case the caller falls back to body-shape inference.
+     */
+    private fun lastPageFromLinkHeader(linkHeader: String?): Int? {
+        if (linkHeader.isNullOrEmpty()) return null
+        val rel = Regex("""<([^>]+)>;\s*rel="last"""").find(linkHeader) ?: return null
+        val page = Regex("""[?&]page=(\d+)""").find(rel.groupValues[1]) ?: return null
+        return page.groupValues[1].toIntOrNull()
     }
 }

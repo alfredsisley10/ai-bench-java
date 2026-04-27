@@ -547,19 +547,34 @@ class ConnectionSettings {
     fun getMirrorGradleProbe(id: String): GradleProbeState? = gradleProbes[id]
 
     private fun findGradleBinary(): String? {
+        // Prefer the repo's bundled gradlew (9.4.1) over a system-wide
+        // `gradle` install — operators on enterprise Windows often have
+        // an older Gradle on PATH (e.g. 8.14) whose bundled Kotlin
+        // compiler can't parse newer JDK version strings ("25.0.1"
+        // throws IllegalArgumentException). On Windows we must look
+        // for `gradlew.bat`, not the Unix shell-script `gradlew` —
+        // canExecute() returns false for the latter on Windows so the
+        // old code silently fell through to system gradle.bat.
+        val wrapperName = if (Platform.isWindows) "gradlew.bat" else "gradlew"
         val candidates = listOf(
-            "${System.getProperty("user.dir")}/banking-app/gradlew",
-            "${System.getProperty("user.dir")}/bench-webui/gradlew",
-            "${System.getProperty("user.dir")}/bench-cli/gradlew",
-            "${System.getProperty("user.dir")}/../banking-app/gradlew",
-            "${System.getProperty("user.dir")}/../bench-webui/gradlew"
+            "${System.getProperty("user.dir")}/banking-app/$wrapperName",
+            "${System.getProperty("user.dir")}/bench-webui/$wrapperName",
+            "${System.getProperty("user.dir")}/bench-cli/$wrapperName",
+            "${System.getProperty("user.dir")}/../banking-app/$wrapperName",
+            "${System.getProperty("user.dir")}/../bench-webui/$wrapperName"
         )
-        candidates.firstOrNull { java.io.File(it).canExecute() }?.let { return it }
+        candidates.firstOrNull {
+            val f = java.io.File(it)
+            // canExecute() is the right check on Unix but unreliable
+            // on Windows (depends on file ACLs, not extension), so
+            // accept any existing .bat file there.
+            f.isFile && (Platform.isWindows || f.canExecute())
+        }?.let { return java.io.File(it).absolutePath }
         val path = System.getenv("PATH") ?: ""
         val gradleExe = if (Platform.isWindows) "gradle.bat" else "gradle"
         return path.split(java.io.File.pathSeparator)
             .map { java.io.File(it, gradleExe) }
-            .firstOrNull { it.canExecute() }
+            .firstOrNull { it.isFile && (Platform.isWindows || it.canExecute()) }
             ?.absolutePath
     }
 
@@ -608,30 +623,46 @@ class ConnectionSettings {
         val tmpDir = java.nio.file.Files.createTempDirectory("ai-bench-mirror-gradle-").toFile()
         state.tmpDir = tmpDir.absolutePath
 
+        // Groovy DSL (settings.gradle, not .kts) on purpose: Gradle has
+        // to evaluate this scratch project under the operator's `gradle`
+        // binary, which on enterprise Windows boxes is often an older
+        // version (8.14 in field reports) whose bundled Kotlin compiler
+        // cannot parse newer JDK version strings. JDK 25 + Gradle 8.14
+        // throws `IllegalArgumentException: 25.0.1` from the Kotlin
+        // script compiler before plugin resolution even starts. Groovy
+        // scripts skip the Kotlin compiler path entirely, so we still
+        // exercise plugin DSL resolution against the mirror without
+        // tripping that pre-condition. Single-quoted Groovy strings
+        // are literal (no interpolation); we escape any embedded '\''
+        // so a corp token containing apostrophes still parses.
+        fun groovyEscape(v: String) = v.replace("\\", "\\\\").replace("'", "\\'")
         val authBlock = if (s.hasMirrorAuth) """
+                allowInsecureProtocol = true
                 credentials {
-                    username = "${s.mirrorAuthUser.replace("\"","\\\"")}"
-                    password = "${s.mirrorAuthPassword.replace("\"","\\\"")}"
+                    username = '${groovyEscape(s.mirrorAuthUser)}'
+                    password = '${groovyEscape(s.mirrorAuthPassword)}'
                 }
-""" else ""
-        java.io.File(tmpDir, "settings.gradle.kts").writeText("""
+""" else "\n                allowInsecureProtocol = true"
+        java.io.File(tmpDir, "settings.gradle").writeText("""
             pluginManagement {
                 repositories {
                     maven {
-                        url = uri("${s.mirrorUrl}")$authBlock
+                        url = '${groovyEscape(s.mirrorUrl)}'$authBlock
                     }
                 }
-                resolutionStrategy.eachPlugin {
-                    if (requested.id.id == "org.springframework.boot") {
-                        useModule("org.springframework.boot:spring-boot-gradle-plugin:" + requested.version)
+                resolutionStrategy {
+                    eachPlugin {
+                        if (requested.id.id == 'org.springframework.boot') {
+                            useModule("org.springframework.boot:spring-boot-gradle-plugin:" + requested.version)
+                        }
                     }
                 }
             }
-            rootProject.name = "ai-bench-mirror-gradle-probe"
+            rootProject.name = 'ai-bench-mirror-gradle-probe'
         """.trimIndent() + "\n")
-        java.io.File(tmpDir, "build.gradle.kts").writeText("""
+        java.io.File(tmpDir, "build.gradle").writeText("""
             plugins {
-                id("org.springframework.boot") version "3.3.4" apply false
+                id 'org.springframework.boot' version '3.3.4' apply false
             }
         """.trimIndent() + "\n")
 

@@ -36,6 +36,11 @@ dependencies {
     // The "Demo API" page embeds that UI in an iframe; no separate
     // hand-maintained API listing to drift from the code.
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0")
+    // Apache POI for /github/repos/export.xlsx — writes a real Excel
+    // workbook that opens cleanly in Excel/LibreOffice/Numbers without
+    // the "this file is in CSV format despite the extension" dialog
+    // some tools throw when handed a renamed CSV.
+    implementation("org.apache.poi:poi-ooxml:5.3.0")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Gradle 9 enforces an explicit JUnit Platform launcher on the test
@@ -50,4 +55,36 @@ appmap {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// Generate META-INF/build-info.properties at compile time so the app
+// can surface its own version + git commit + build timestamp in the
+// layout footer. Spring Boot's BuildProperties bean auto-loads from
+// this file. The git fields are best-effort — if the build runs in a
+// tarball without a .git/ tree they default to "unknown" and the
+// footer just shows the version + build time.
+springBoot {
+    buildInfo {
+        properties {
+            additional.set(mapOf(
+                "git.commit"     to gitOutput("rev-parse --short HEAD"),
+                "git.commit.full" to gitOutput("rev-parse HEAD"),
+                "git.commitDate" to gitOutput("log -1 --format=%cI"),
+                "git.branch"     to gitOutput("rev-parse --abbrev-ref HEAD")
+            ))
+        }
+    }
+}
+
+fun gitOutput(args: String): String = try {
+    val cmd = listOf("git") + args.split(" ")
+    val proc = ProcessBuilder(cmd)
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    proc.waitFor()
+    val out = proc.inputStream.bufferedReader().readText().trim()
+    if (proc.exitValue() == 0 && out.isNotBlank()) out else "unknown"
+} catch (_: Exception) {
+    "unknown"
 }

@@ -19,6 +19,15 @@ management:
     web:
       exposure:
         include: health,info
+  info:
+    # Spring Boot 3 ships these contributors disabled by default;
+    # enable them so /actuator/info exposes the build version + git
+    # commit metadata the layout footer also reads.
+    build:
+      enabled: true
+    git:
+      enabled: true
+      mode: full
 
 logging:
   level:

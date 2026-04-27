@@ -32,5 +32,25 @@
 </header>
 <main th:insert="${content}">
 </main>
+<footer style="margin-top:2em; padding:0.5em 0.75em; border-top:1px solid #e5e7eb;
+               color:#6b7280; font-size:0.8em; display:flex; gap:0.6em; flex-wrap:wrap; align-items:center">
+    <span>
+        bench-webui <strong th:text="${buildInfo.version}">dev</strong>
+    </span>
+    <span>·</span>
+    <span th:title="'Full SHA: ' + ${buildInfo.gitCommitFull} + ' · branch: ' + ${buildInfo.gitBranch}">
+        <code th:text="${buildInfo.gitCommit}">unknown</code>
+        <span th:if="${buildInfo.gitBranch != 'unknown'}"
+              th:text="' (' + ${buildInfo.gitBranch} + ')'"></span>
+    </span>
+    <span th:if="${buildInfo.gitCommitDate != ''}">·</span>
+    <span th:if="${buildInfo.gitCommitDate != ''}"
+          th:text="'commit ' + ${#strings.substring(buildInfo.gitCommitDate, 0, 10)}"></span>
+    <span>·</span>
+    <span th:text="'built ' + ${buildInfo.buildTime}"></span>
+    <span style="margin-left:auto">
+        <a href="/actuator/info" class="help-text">/actuator/info</a>
+    </span>
+</footer>
 </body>
 </html>

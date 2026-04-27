@@ -32,6 +32,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Snapshot the caller's working directory and arrange to restore it
+# on script exit -- including when an error fires (trap below). The
+# Set-Location to $InstallDir farther down would otherwise leak into
+# the calling shell's runspace, leaving the operator parked in
+# $InstallDir and forcing a manual `cd` back to the repo's scripts\
+# directory before they could invoke stop-bench-tools.ps1.
+$script:OriginalLocation = (Get-Location).Path
+trap {
+    Set-Location -LiteralPath $script:OriginalLocation -ErrorAction SilentlyContinue
+    # Re-throw -- default trap behavior when no break/continue.
+}
+
 function Write-Info([string]$msg) { Write-Host "[info] $msg" -ForegroundColor Cyan }
 function Write-Ok  ([string]$msg) { Write-Host "[ok]   $msg" -ForegroundColor Green }
 function Write-WarnLine([string]$msg) { Write-Host "[warn] $msg" -ForegroundColor Yellow }
@@ -263,3 +275,9 @@ Write-Host ""
 Write-Info "bench-cli launcher: $cliBat"
 Write-Info "Add to PATH for this session:  `$env:Path += ';$($cliDir.FullName)\bin'"
 Write-Info "Run:                            bench-cli --help"
+
+# Restore the caller's working directory on a clean exit. The trap at
+# the top handles the error path; this handles the success path. Pair
+# matters because PowerShell's Set-Location changes the runspace's
+# location, which the parent shell shares.
+Set-Location -LiteralPath $script:OriginalLocation -ErrorAction SilentlyContinue
