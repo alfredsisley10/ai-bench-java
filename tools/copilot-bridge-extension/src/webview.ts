@@ -70,11 +70,38 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
         'aiBenchCopilotStats',
         'Copilot Bridge — usage',
         vscode.ViewColumn.Active,
-        { enableScripts: true, retainContextWhenHidden: false }
+        // retainContextWhenHidden: keep the webview's JS state alive
+        // across tab switches. The previous default (false) destroyed
+        // the JS context every time the user changed editor tabs, and
+        // any state push that arrived between hide and re-show was lost
+        // -- the symptom: bridge tray says "started" but the panel
+        // still shows "stopped" because the snapshot push went to a
+        // disposed webview. The slight memory cost is worth losing
+        // that class of stale-state surprise.
+        { enableScripts: true, retainContextWhenHidden: true }
     );
     panel.webview.html = renderHtml(hooks.tracker.snapshot(), hooks.getRuntimeState());
 
     const sub = hooks.tracker.onChange(() => pushUpdate(hooks));
+
+    // Push a fresh snapshot whenever the panel becomes visible. Belt-
+    // and-suspenders: even if a state push was missed for any reason
+    // (transient VSCode message-buffer glitch, async race during
+    // bridge consent flow, etc.), the next time the user looks at the
+    // tab the runtime state is correct.
+    const viewSub = panel.onDidChangeViewState(ev => {
+        if (ev.webviewPanel.visible) pushUpdate(hooks);
+    });
+
+    // Periodic refresh while the panel is visible. Anchors the
+    // displayed state to the truth every 3s — covers any class of
+    // missed-update bug we haven't yet diagnosed. 3s is fast enough
+    // that a "is the bridge actually running?" question resolves in
+    // a perceptible blink, and the snapshot is cheap (in-memory ring
+    // buffer + one runtime-state struct, no I/O).
+    const refreshTimer: NodeJS.Timeout = setInterval(() => {
+        if (panel && panel.visible) pushUpdate(hooks);
+    }, 3000);
     panel.webview.onDidReceiveMessage(async msg => {
         try {
             switch (msg?.type) {
@@ -125,7 +152,12 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
         // reflect the real current state.
         pushUpdate(hooks);
     });
-    panel.onDidDispose(() => { sub.dispose(); panel = undefined; });
+    panel.onDidDispose(() => {
+        sub.dispose();
+        viewSub.dispose();
+        clearInterval(refreshTimer);
+        panel = undefined;
+    });
     context.subscriptions.push(sub);
 }
 
