@@ -196,13 +196,26 @@ class ConnectionSettings {
                 val resp = client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.discarding())
                 val ms = System.currentTimeMillis() - start
                 val code = resp.statusCode()
-                // Many CDNs return 200/204/301/302/401 for HEAD/GET on a
-                // base URL. Treat anything below 500 as "the endpoint is
-                // reachable" — the auth/path may be wrong but the network
-                // path works, which is what we're testing.
-                val ok = code in 200..499
-                ProbeResult(url, purpose, viaProxy, code, ms, ok,
-                    if (ok) "HTTP $code" else "HTTP $code (server error)")
+                // OK criterion is intentionally tight:
+                //   2xx                — success
+                //   3xx                — redirect; URL is reachable
+                //   401                — auth challenge from upstream
+                //                        (URL reachable, just needs a token)
+                // Everything else is a fail. The previous 200..499 check
+                // green-lit a 403 from the corp proxy (the proxy refusing
+                // the request, which is exactly what verify should catch),
+                // and a 404 from a typo'd URL.
+                val ok = code in 200..399 || code == 401
+                val msg = when {
+                    code in 200..299 -> "HTTP $code"
+                    code in 300..399 -> "HTTP $code (redirect — endpoint reachable)"
+                    code == 401      -> "HTTP 401 (auth challenge — endpoint reachable, supply credentials)"
+                    code == 403      -> "HTTP 403 (forbidden — proxy or upstream refused)"
+                    code == 404      -> "HTTP 404 (not found — URL or path is wrong)"
+                    code in 400..499 -> "HTTP $code (client error)"
+                    else             -> "HTTP $code (server error)"
+                }
+                ProbeResult(url, purpose, viaProxy, code, ms, ok, msg)
             } catch (e: Exception) {
                 val ms = System.currentTimeMillis() - start
                 ProbeResult(url, purpose, viaProxy, -1, ms, false,
