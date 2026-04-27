@@ -26,12 +26,147 @@
             <tr><th>HTTPS proxy</th><td><code th:text="${settings.httpsProxy != '' ? settings.httpsProxy : '(none)'}"></code></td></tr>
             <tr><th>HTTP proxy</th><td><code th:text="${settings.httpProxy != '' ? settings.httpProxy : '(none)'}"></code></td></tr>
             <tr><th>No proxy</th><td><code th:text="${settings.noProxy != '' ? settings.noProxy : '(none)'}"></code></td></tr>
+            <tr><th>Proxy auth</th>
+                <td>
+                    <span th:if="${settings.hasProxyAuth}" class="badge available"
+                          th:text="'HTTP Basic as ' + ${settings.proxyAuthUser}"></span>
+                    <span th:unless="${settings.hasProxyAuth}" class="badge">none</span>
+                </td></tr>
+            <tr><th>Artifactory mirror</th>
+                <td>
+                    <code th:if="${settings.hasMirror}" th:text="${settings.mirrorUrl}"></code>
+                    <span th:unless="${settings.hasMirror}" class="badge">none</span>
+                    <span th:if="${settings.hasMirrorAuth}" class="badge available"
+                          style="margin-left:0.5em"
+                          th:text="'auth as ' + ${settings.mirrorAuthUser}"></span>
+                </td></tr>
             <tr><th>TLS verification</th>
                 <td>
                     <span th:if="${settings.insecureSsl}" class="badge" style="background:#b91c1c; color:white">DISABLED (insecure)</span>
                     <span th:unless="${settings.insecureSsl}" class="badge available">Enabled (default)</span>
                 </td></tr>
         </table>
+    </section>
+
+    <section>
+        <h3>Verify connectivity</h3>
+        <p class="help-text" style="margin-top:0">
+            Probes the endpoints Gradle needs to bootstrap a build —
+            <code>services.gradle.org</code> (wrapper distribution),
+            <code>repo.maven.apache.org</code> (Maven Central),
+            <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
+            your configured Artifactory mirror, and the corporate proxy
+            itself. Each probe runs through whatever proxy + auth +
+            mirror settings you've saved above, so a green sweep here
+            means the live config will work the next time you click
+            <em>Run gradlew --version</em> on the demo page.
+        </p>
+        <button type="button" class="btn-sm" onclick="runProxyVerify(this)">Verify connectivity</button>
+        <span class="help-text" style="margin-left:0.5em">~5–15 seconds for the full sweep.</span>
+        <details id="proxy-verify-output" style="display:none; margin-top:0.5em">
+            <summary>Probe results</summary>
+            <div id="proxy-verify-summary" style="margin:0.4em 0; padding:0.4em 0.6em;
+                                                 background:#f4f6fa; border-radius:4px"></div>
+            <table id="proxy-verify-table" style="width:100%; margin-top:0.3em">
+                <thead><tr>
+                    <th>Target</th><th>Purpose</th><th>Via proxy</th>
+                    <th>Status</th><th>ms</th><th>Result</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </details>
+        <script>
+            function runProxyVerify(btn) {
+                var details = document.getElementById('proxy-verify-output');
+                var summary = document.getElementById('proxy-verify-summary');
+                var tbody = document.querySelector('#proxy-verify-table tbody');
+                details.style.display = '';
+                details.open = true;
+                summary.textContent = 'Running…';
+                tbody.innerHTML = '';
+                btn.disabled = true;
+                fetch('/proxy/verify', {method: 'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        summary.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
+                        summary.style.background = data.ok ? '#dcfce7' : '#fee2e2';
+                        (data.results || []).forEach(function (row) {
+                            var tr = document.createElement('tr');
+                            tr.innerHTML =
+                                '<td><code style="font-size:0.85em">' + escapeHtmlProxy(row.target) + '</code></td>' +
+                                '<td>' + escapeHtmlProxy(row.purpose) + '</td>' +
+                                '<td>' + (row.viaProxy ? 'yes' : 'no') + '</td>' +
+                                '<td>' + (row.statusCode > 0 ? row.statusCode : '—') + '</td>' +
+                                '<td>' + row.durationMs + '</td>' +
+                                '<td style="color:' + (row.ok ? '#067647' : '#b91c1c') + '">' +
+                                    (row.ok ? '✓ ' : '✗ ') + escapeHtmlProxy(row.message) + '</td>';
+                            tbody.appendChild(tr);
+                        });
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        summary.textContent = '✗ Request failed: ' + (e && e.message ? e.message : e);
+                        btn.disabled = false;
+                    });
+            }
+            function escapeHtmlProxy(s) {
+                var d = document.createElement('div');
+                d.appendChild(document.createTextNode(String(s == null ? '' : s)));
+                return d.innerHTML;
+            }
+        </script>
+    </section>
+
+    <section>
+        <h3>Detect from OS &amp; VSCode</h3>
+        <p class="help-text" style="margin-top:0">
+            Reads proxy settings from the OS (macOS
+            <code>networksetup</code> / Windows registry HKCU Internet
+            Settings) and from VSCode user <code>settings.json</code>
+            (<code>http.proxy</code>, <code>http.proxyAuthorization</code>,
+            <code>http.noProxy</code>). Pre-fills the form below — you
+            still have to click <em>Save &amp; apply</em> to commit.
+        </p>
+        <button type="button" class="btn-sm" onclick="detectProxyFromOs(this)">Detect proxy settings</button>
+        <span id="detectStatus" class="help-text" style="margin-left:0.5em"></span>
+        <details id="detectOutput" style="display:none; margin-top:0.4em">
+            <summary>Detection log</summary>
+            <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
+                        border-radius:4px; max-height:18em; overflow:auto; font-size:0.85em"></pre>
+        </details>
+        <script>
+            function detectProxyFromOs(btn) {
+                var status = document.getElementById('detectStatus');
+                var details = document.getElementById('detectOutput');
+                var pre = details.querySelector('pre');
+                btn.disabled = true;
+                status.textContent = 'Probing…';
+                status.style.color = '';
+                details.style.display = '';
+                details.open = true;
+                pre.textContent = '';
+                fetch('/proxy/detect-os', {method:'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        status.textContent = (data.ok ? '✓ ' : '○ ') + (data.message || '');
+                        status.style.color = data.ok ? '#067647' : '';
+                        pre.textContent = data.log || '(no output)';
+                        if (data.ok) {
+                            // Pre-fill the Configure form below.
+                            if (data.httpsProxy) document.querySelector('input[name=httpsProxy]').value = data.httpsProxy;
+                            if (data.httpProxy) document.querySelector('input[name=httpProxy]').value = data.httpProxy;
+                            if (data.noProxy) document.querySelector('input[name=noProxy]').value = data.noProxy;
+                            if (data.proxyAuthUser) document.querySelector('input[name=proxyAuthUser]').value = data.proxyAuthUser;
+                        }
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + ((e && e.message) || e);
+                        status.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+        </script>
     </section>
 
     <section>
@@ -49,6 +184,72 @@
                 <input name="noProxy" th:value="${settings.noProxy}"
                        placeholder="localhost,127.0.0.1,*.corp.example.com" style="width:350px">
             </label>
+
+            <fieldset style="margin-top:0.75em; padding:0.5em 0.75em; border:1px solid #d1d5db; border-radius:4px">
+                <legend style="padding:0 0.4em">Proxy authentication (optional)</legend>
+                <p class="help-text" style="margin-top:0">
+                    HTTP Basic credentials for the corporate proxy. Held
+                    in the WebUI process memory only — never written to
+                    disk — and applied to all JVM-default HTTP clients
+                    (so Gradle subprocesses inherit them via
+                    <code>-Dhttp.proxyUser</code> /
+                    <code>-Dhttp.proxyPassword</code>).
+                </p>
+                <label>Username:
+                    <input name="proxyAuthUser" type="text"
+                           th:value="${settings.proxyAuthUser}"
+                           autocomplete="off" style="width:280px">
+                </label>
+                <label>Password:
+                    <input name="proxyAuthPassword" type="password"
+                           th:placeholder="${settings.proxyAuthPassword != '' ? '(unchanged — leave blank to keep)' : ''}"
+                           autocomplete="new-password" style="width:280px">
+                </label>
+            </fieldset>
+
+            <fieldset style="margin-top:0.75em; padding:0.5em 0.75em; border:1px solid #d1d5db; border-radius:4px">
+                <legend style="padding:0 0.4em">Artifactory mirror (optional)</legend>
+                <p class="help-text" style="margin-top:0">
+                    A Maven-compatible mirror to use for plugin and
+                    dependency resolution instead of the public default
+                    repos. The URL is forwarded to Gradle subprocesses
+                    via <code>-Denterprise.sim.mirror</code> — banking-app's
+                    <code>settings.gradle.kts</code> already has a
+                    conditional repo block that picks it up. Mirror
+                    credentials are forwarded as
+                    <code>-DmirrorUsername</code> /
+                    <code>-DmirrorPassword</code> for any custom repo
+                    block to consume.
+                </p>
+                <label>Mirror URL:
+                    <input name="mirrorUrl" type="url"
+                           th:value="${settings.mirrorUrl}"
+                           placeholder="https://artifactory.corp.example.com/artifactory/maven-virtual"
+                           style="width:480px">
+                </label>
+                <label>Mirror username:
+                    <input name="mirrorAuthUser" type="text"
+                           th:value="${settings.mirrorAuthUser}"
+                           autocomplete="off" style="width:280px">
+                </label>
+                <label>Mirror password / token:
+                    <input name="mirrorAuthPassword" type="password"
+                           th:placeholder="${settings.mirrorAuthPassword != '' ? '(unchanged — leave blank to keep)' : ''}"
+                           autocomplete="new-password" style="width:280px">
+                </label>
+                <div style="margin-top:0.4em">
+                    <button type="button" class="btn-sm" onclick="testMirror(this)">Test mirror connectivity</button>
+                    <span id="mirrorTestStatus" class="help-text" style="margin-left:0.5em">
+                        — uses the saved mirror URL + auth (save first, then test).
+                    </span>
+                </div>
+                <details id="mirrorTestOutput" style="display:none; margin-top:0.3em">
+                    <summary>Mirror probe log</summary>
+                    <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
+                                border-radius:4px; max-height:18em; overflow:auto; font-size:0.85em"></pre>
+                </details>
+            </fieldset>
+
             <label style="margin-top:0.75em">
                 <input name="insecureSsl" type="checkbox" value="true"
                        th:checked="${settings.insecureSsl}">
@@ -74,6 +275,70 @@
             Gradle plugins that bring their own HTTP client may still
             require a CA cert installed in the JVM truststore.
         </p>
+    </section>
+
+    <section>
+        <h3>Test custom URL</h3>
+        <p class="help-text" style="margin-top:0">
+            Single-URL probe through the saved proxy + auth + TLS
+            settings. Useful for ad-hoc checks (does my proxy let me
+            reach X?) without having to wait for the full Gradle/Maven
+            sweep above. Defaults to <code>https://www.github.com</code>.
+        </p>
+        <div>
+            <input type="url" id="customTestUrl" value="https://www.github.com"
+                   style="width:32em; max-width:100%;
+                          font-family:ui-monospace, Menlo, Consolas, monospace">
+            <button type="button" class="btn-sm" onclick="testCustomUrl(this)">Test</button>
+            <span id="customTestStatus" class="help-text" style="margin-left:0.5em"></span>
+        </div>
+        <details id="customTestOutput" style="display:none; margin-top:0.4em">
+            <summary>Probe log</summary>
+            <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
+                        border-radius:4px; max-height:18em; overflow:auto; font-size:0.85em"></pre>
+        </details>
+        <script>
+            function testCustomUrl(btn) {
+                var url = (document.getElementById('customTestUrl').value || '').trim();
+                if (!url) {
+                    document.getElementById('customTestStatus').textContent = '(enter a URL)';
+                    return;
+                }
+                runProxyTest(btn, '/proxy/test-url?url=' + encodeURIComponent(url),
+                    'customTestStatus', 'customTestOutput');
+            }
+            function testMirror(btn) {
+                runProxyTest(btn, '/proxy/test-mirror',
+                    'mirrorTestStatus', 'mirrorTestOutput');
+            }
+            function runProxyTest(btn, url, statusId, detailsId) {
+                var status = document.getElementById(statusId);
+                var details = document.getElementById(detailsId);
+                var pre = details.querySelector('pre');
+                btn.disabled = true;
+                status.textContent = 'Probing…';
+                status.style.color = '';
+                details.style.display = '';
+                details.open = true;
+                pre.textContent = '';
+                fetch(url, {method:'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        status.textContent = (data.ok ? '✓ ' : '✗ ') +
+                            (data.message || '') +
+                            (data.viaProxy ? ' (via proxy)' : '') +
+                            (data.durationMs ? ' — ' + data.durationMs + 'ms' : '');
+                        status.style.color = data.ok ? '#067647' : '#b91c1c';
+                        pre.textContent = data.log || '(no log)';
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + ((e && e.message) || e);
+                        status.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+        </script>
     </section>
 
     <section th:if="${gradleSystemProps != null and !gradleSystemProps.isEmpty()}">

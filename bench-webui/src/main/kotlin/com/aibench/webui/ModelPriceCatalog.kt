@@ -122,6 +122,60 @@ class ModelPriceCatalog {
                    0.0, 0.0, "chat",
                    notes = "\$39/seat/mo — Business + GitHub.com integration, org-aware chat, fine-tuning add-on"),
 
+        // --- Copilot-served LLMs (seat-priced, reference rates only) ----
+        // GitHub Copilot doesn't bill per-token; the operator's seat is
+        // already paid. Listing these with the *underlying* model's
+        // public per-token rate gives the run-cost estimator something
+        // realistic to chargeback an internal cost center against —
+        // "what would this run cost if billed at OpenAI/Anthropic's
+        // direct rate?". The notes field marks the entry as estimative.
+        // Source rates match the OpenAI / Anthropic / Google entries
+        // above as of `lastUpdated`. Update both halves together when
+        // a vendor moves a price.
+        //
+        // Copilot model routing per
+        // https://docs.github.com/en/copilot/using-github-copilot/ai-models/changing-the-ai-model-for-copilot-chat
+        // (catalog last cross-checked at lastUpdated above).
+        ModelPrice("copilot-gpt-4o", "GPT-4o (via Copilot)", "copilot", "gpt-4o",
+                   0.0025, 0.010, "chat",
+                   notes = "billed via Copilot seat — \$0.0025/\$0.010 per 1K is the OpenAI direct rate, shown here for chargeback estimation"),
+        ModelPrice("copilot-gpt-4o-mini", "GPT-4o mini (via Copilot)", "copilot", "gpt-4o-mini",
+                   0.00015, 0.0006, "chat",
+                   notes = "Copilot seat-priced; rates mirror OpenAI direct"),
+        ModelPrice("copilot-gpt-4-1", "GPT-4.1 (via Copilot)", "copilot", "gpt-4.1",
+                   0.002, 0.008, "chat",
+                   notes = "Copilot seat-priced; rates mirror OpenAI direct (2024-04 pricing)"),
+        ModelPrice("copilot-gpt-4", "GPT-4 (via Copilot)", "copilot", "gpt-4",
+                   0.030, 0.060, "chat",
+                   notes = "Copilot seat-priced; rates mirror OpenAI direct"),
+        ModelPrice("copilot-gpt-3-5-turbo", "GPT-3.5 Turbo (via Copilot)", "copilot", "gpt-3.5-turbo",
+                   0.0005, 0.0015, "chat",
+                   notes = "Copilot seat-priced; rates mirror OpenAI direct"),
+        ModelPrice("copilot-o1", "o1 (via Copilot)", "copilot", "o1",
+                   0.015, 0.060, "chat",
+                   notes = "reasoning — high output cost. Pro+ / Enterprise tier on Copilot"),
+        ModelPrice("copilot-o1-mini", "o1-mini (via Copilot)", "copilot", "o1-mini",
+                   0.003, 0.012, "chat",
+                   notes = "reasoning. Pro+ / Enterprise tier"),
+        ModelPrice("copilot-o3-mini", "o3-mini (via Copilot)", "copilot", "o3-mini",
+                   0.0011, 0.0044, "chat",
+                   notes = "reasoning, smaller. Pro+ / Enterprise tier"),
+        ModelPrice("copilot-claude-3-5-sonnet", "Claude 3.5 Sonnet (via Copilot)", "copilot", "claude-3-5-sonnet",
+                   0.003, 0.015, "chat",
+                   notes = "Copilot seat-priced; rates mirror Anthropic direct"),
+        ModelPrice("copilot-claude-3-7-sonnet", "Claude 3.7 Sonnet (via Copilot)", "copilot", "claude-3-7-sonnet",
+                   0.003, 0.015, "chat",
+                   notes = "Copilot seat-priced; rates mirror Anthropic direct"),
+        ModelPrice("copilot-claude-3-5-haiku", "Claude 3.5 Haiku (via Copilot)", "copilot", "claude-3-5-haiku",
+                   0.0008, 0.004, "chat",
+                   notes = "Copilot seat-priced; rates mirror Anthropic direct"),
+        ModelPrice("copilot-gemini-1-5-pro", "Gemini 1.5 Pro (via Copilot)", "copilot", "gemini-1.5-pro",
+                   0.00125, 0.005, "chat",
+                   notes = "Copilot seat-priced; rates mirror Google direct (≤128K ctx; 2x above)"),
+        ModelPrice("copilot-gemini-2-0-flash", "Gemini 2.0 Flash (via Copilot)", "copilot", "gemini-2.0-flash",
+                   0.00010, 0.00040, "chat",
+                   notes = "Copilot seat-priced; rates mirror Google direct"),
+
         // --- AppMap Navie (rides on top of Copilot via the bridge) ----
         // No incremental per-token charge above what Copilot already
         // costs the seat. Listed here so cost-per-run computations

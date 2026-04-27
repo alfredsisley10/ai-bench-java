@@ -49,19 +49,23 @@ object Platform {
         else listOf("./gradlew")
 
     /**
-     * Default socket / named-pipe path for the Copilot bridge. Unix
-     * platforms use a well-known location under <code>/tmp</code>;
-     * Windows Unix-domain sockets (supported since Windows 10 1803)
-     * require a regular file path, so we use the user's temp dir.
+     * Path to the sidecar file the VSCode bridge writes after a successful
+     * TCP bind. Single line of UTF-8 text containing the decimal port.
+     * Bench-webui and the harness read this to discover the bridge.
+     *
+     * The bridge originally used AF_UNIX, but Node's libuv on some Windows
+     * machines returns EACCES on AF_UNIX bind regardless of path/ACLs.
+     * Switching to TCP localhost sidesteps the issue without admin rights.
      */
-    fun defaultCopilotSocket(): String {
-        val override = System.getenv("AI_BENCH_COPILOT_SOCK")
-        if (!override.isNullOrBlank()) return override
-        return if (isWindows) {
-            val tmp = System.getenv("TEMP") ?: System.getProperty("java.io.tmpdir", "C:\\Temp")
-            File(tmp, "ai-bench-copilot.sock").absolutePath
-        } else {
-            "/tmp/ai-bench-copilot.sock"
-        }
+    fun copilotPortFile(): String =
+        File(System.getProperty("user.home"), ".ai-bench-copilot.port").absolutePath
+
+    /** Read the bridge's bound port. Returns null if the bridge isn't
+     *  running (file absent) or the file is unparseable. */
+    fun readCopilotPort(): Int? {
+        val f = File(copilotPortFile())
+        if (!f.isFile) return null
+        return f.readText(Charsets.UTF_8).trim().toIntOrNull()?.takeIf { it in 1..65535 }
     }
+
 }

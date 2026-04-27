@@ -163,10 +163,18 @@ class DemoController(
         var jpaEntities = 0
         var restEndpoints = 0
 
-        dir.walkTopDown().filter { it.isFile && !it.path.contains("/build/") && !it.path.contains("/.git/") }.forEach { f ->
+        // Use invariantSeparatorsPath so the contains() checks work
+        // identically on Windows ("\") and Unix ("/"). f.path returns
+        // the platform-native form, which silently zero'd every count
+        // on Windows because paths look like "src\main\..." there.
+        dir.walkTopDown().filter {
+            val ip = it.invariantSeparatorsPath
+            it.isFile && !ip.contains("/build/") && !ip.contains("/.git/")
+        }.forEach { f ->
             totalBytes += f.length()
+            val ip = f.invariantSeparatorsPath
             when {
-                f.extension == "java" && f.path.contains("src/main") -> {
+                f.extension == "java" && ip.contains("src/main") -> {
                     javaFiles++
                     val content = f.readText()
                     loc += content.lines().size
@@ -182,8 +190,8 @@ class DemoController(
                     if (content.contains("CircuitBreaker") && content.contains("class ")) circuitBreakers++
                     if (content.contains("SagaOrchestrator") && content.contains("class ")) sagaOrchestrators++
                 }
-                f.extension == "java" && f.path.contains("src/test") -> { testFiles++; loc += f.readLines().size }
-                f.extension == "sql" && f.path.contains("migration") -> migrations++
+                f.extension == "java" && ip.contains("src/test") -> { testFiles++; loc += f.readLines().size }
+                f.extension == "sql" && ip.contains("migration") -> migrations++
             }
         }
         val sizeMb = totalBytes / (1024.0 * 1024.0)
@@ -223,16 +231,52 @@ class DemoController(
 
     @GetMapping("/demo")
     fun demo(model: Model, session: HttpSession): String {
-        val dir = bankingAppDir()
+        val location = bankingApp.location
+        val dir = location.resolved
         val issues = issuesWithCommits()
         model.addAttribute("issues", issues)
         model.addAttribute("bankingAppPath", dir.absolutePath)
         model.addAttribute("bankingAppRepo", "alfredsisley10/omnibank-demo")
-        model.addAttribute("baselineCommit", resolveCommit(dir, "main"))
+        // Diagnostic surfaces — populated whether the location resolved or not.
+        model.addAttribute("bankingAppLocation", location)
+        model.addAttribute("bankingAppFound", location.hasGradle)
+        model.addAttribute("javaVersion", System.getProperty("java.version") ?: "?")
+        model.addAttribute("javaVendor",  System.getProperty("java.vendor") ?: "?")
+        model.addAttribute("javaHome",    System.getProperty("java.home") ?: "?")
+        model.addAttribute("verifyResult", session.getAttribute("bankingAppVerifyResult"))
+        session.removeAttribute("bankingAppVerifyResult")
+        model.addAttribute("javaVerifyResult", session.getAttribute("bankingAppJavaVerifyResult"))
+        session.removeAttribute("bankingAppJavaVerifyResult")
+        // JDK discovery + toolchain requirement, surfaced together so
+        // the user can spot a mismatch *before* clicking Verify.
+        val jdks = JdkDiscovery.discover()
+        val toolchainMajor = bankingApp.toolchainMajor()
+        val currentJavaHome = System.getenv("JAVA_HOME")
+        // Saved default wins. If it's still in the discovery list, use
+        // it; if the saved path no longer resolves, readSavedDefaultHome
+        // self-cleans the file and returns null so we fall back below.
+        val savedDefault = JdkDiscovery.readSavedDefaultHome()
+            ?.takeIf { saved -> jdks.any { it.home == saved } }
+        val preferredJdkHome = savedDefault
+            ?: jdks.firstOrNull { toolchainMajor != null && it.major == toolchainMajor }?.home
+            ?: jdks.firstOrNull { it.home == currentJavaHome }?.home
+            ?: jdks.firstOrNull()?.home
+        model.addAttribute("availableJdks", jdks.map {
+            mapOf("home" to it.home, "major" to it.major, "label" to it.label,
+                  "versionLine" to it.versionLine, "source" to it.source)
+        })
+        model.addAttribute("toolchainMajor", toolchainMajor ?: -1)
+        model.addAttribute("preferredJdkHome", preferredJdkHome ?: "")
+        model.addAttribute("savedDefaultJdkHome", savedDefault ?: "")
+        model.addAttribute("toolchainMismatch",
+            toolchainMajor != null && jdks.none { it.major == toolchainMajor })
+        // Skip slow ops (git rev-parse, full file walk) when the app isn't
+        // detected — they'd just produce more noise on top of the warning.
+        model.addAttribute("baselineCommit", if (location.hasGradle) resolveCommit(dir, "main") else "")
         model.addAttribute("appStatus", bankingApp.status().name)
         model.addAttribute("appUrl", bankingApp.url)
         model.addAttribute("appPort", bankingApp.port)
-        model.addAttribute("stats", computeStats(dir))
+        model.addAttribute("stats", if (location.hasGradle) computeStats(dir) else AppStats())
 
         val runStatus = session.getAttribute("demoRunStatus") as? DemoRunStatus
         model.addAttribute("runStatus", runStatus)
@@ -267,6 +311,226 @@ class DemoController(
         model.addAttribute("activeRunId", activeRunId)
         model.addAttribute("recentRuns", benchmarkRuns.recentRuns(5))
         return "demo"
+    }
+
+    @PostMapping("/demo/banking-app/verify")
+    fun verifyBankingApp(
+        @RequestParam(required = false) jdkPath: String?,
+        session: HttpSession
+    ): String {
+        session.setAttribute("bankingAppVerifyResult", bankingApp.verifyGradle(jdkPath))
+        return "redirect:/demo#banking-app-verify"
+    }
+
+    @PostMapping("/demo/banking-app/verify-java")
+    fun verifyJava(
+        @RequestParam(required = false) jdkPath: String?,
+        session: HttpSession
+    ): String {
+        session.setAttribute("bankingAppJavaVerifyResult", bankingApp.verifyJava(jdkPath))
+        return "redirect:/demo#banking-app-verify"
+    }
+
+    /**
+     * Persist a user-supplied JDK path so it shows up in the dropdown
+     * even though our standard scan didn't find it (portable JDK,
+     * non-standard install root, USB drive, etc.). Returns JSON so the
+     * page can display a success/failure banner inline.
+     */
+    @PostMapping("/demo/banking-app/jdk/add")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun addCustomJdk(@RequestParam path: String): Map<String, Any> {
+        val jdk = JdkDiscovery.addCustomPath(path)
+            ?: return mapOf(
+                "ok" to false,
+                "message" to "That path doesn't contain a runnable `bin/java` (or it's not a JDK). " +
+                    "Pass the JAVA_HOME-style root (the dir whose `bin/` holds java/java.exe).",
+                "home" to "", "label" to ""
+            )
+        return mapOf(
+            "ok" to true,
+            "message" to "Added ${jdk.label}. Refresh the page to pick it in the dropdown.",
+            "home" to jdk.home, "label" to jdk.label
+        )
+    }
+
+    /**
+     * Recursively scan the given folder for any JDK home and persist
+     * each hit. Used by the "Scan this folder for JDKs" button on the
+     * /demo page so the operator can point at a parent directory
+     * (e.g. <code>C:\Program Files\Java</code>) and let the WebUI
+     * find every install underneath without having to type each
+     * <code>jdk-NN.x.y</code> path individually.
+     */
+    /**
+     * Persist [path] as the user's default JDK. Survives webui
+     * restarts; validated on every page render so a moved or
+     * deleted JDK is auto-cleared instead of silently mis-pointing
+     * the build.
+     */
+    @PostMapping("/demo/banking-app/jdk/save-default")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun saveDefaultJdk(@RequestParam path: String): Map<String, Any> {
+        val ok = JdkDiscovery.saveDefaultHome(path)
+        return mapOf(
+            "ok" to ok,
+            "message" to if (ok)
+                "Saved as default — ~/.ai-bench/default-jdk-home.txt. Survives webui restarts."
+            else
+                "Path doesn't contain a runnable bin/java; default not changed."
+        )
+    }
+
+    @PostMapping("/demo/banking-app/jdk/clear-default")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun clearDefaultJdk(): Map<String, Any> {
+        JdkDiscovery.clearDefaultHome()
+        return mapOf("ok" to true,
+            "message" to "Default cleared. Dropdown will auto-pick on next render.")
+    }
+
+    /**
+     * Create placeholder <code>bug/&lt;id&gt;/break</code> and
+     * <code>bug/&lt;id&gt;/fix</code> branches from <code>main</code>
+     * for every demoIssue. Each branch is empty (no diff) — real bug
+     * patches still have to be committed by hand or by external
+     * tooling. The point of this button is to unblock the UI flow
+     * (Quick benchmark dropdown, prepare/run buttons) on a freshly
+     * cloned banking-app, so the operator can exercise the WebUI
+     * without first hand-running a seeding script that doesn't ship
+     * with the repo.
+     *
+     * <p>Existing branches are left alone (idempotent). Returns a
+     * verbose log block so a failure on any one issue surfaces
+     * inline rather than silently leaving the dropdown half-greyed.
+     */
+    @PostMapping("/demo/banking-app/seed-bug-branches")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun seedBugBranches(): Map<String, Any> {
+        val dir = bankingAppDir()
+        val log = StringBuilder()
+        // banking-app may either be its own git repo (typical when
+        // cloned from omnibank-demo) or a regular subdirectory of a
+        // larger repo (this checkout's case — banking-app/ is a
+        // subdir of ai-bench-java/.git). In both cases `git` commands
+        // run inside the dir resolve to whichever .git applies, so
+        // the rev-parse / branch ops below work regardless. We only
+        // bail if no git context can be found at all.
+        val isInsideRepo = runCatching {
+            val p = ProcessBuilder("git", "rev-parse", "--is-inside-work-tree")
+                .directory(dir).redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText().trim()
+            p.waitFor() == 0 && out == "true"
+        }.getOrDefault(false)
+        if (!isInsideRepo) {
+            return mapOf(
+                "ok" to false,
+                "message" to "${dir.absolutePath} is not inside any git repository.",
+                "log" to "[err] git rev-parse --is-inside-work-tree returned non-true at ${dir.absolutePath}\n"
+            )
+        }
+
+        // 1. Resolve current HEAD commit so we can re-create branches at
+        //    the same point. Doesn't require any active branch — works
+        //    even on detached-HEAD checkouts.
+        val headCommit = runCatching {
+            val proc = ProcessBuilder("git", "rev-parse", "HEAD")
+                .directory(dir).redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText().trim()
+            if (proc.waitFor() == 0 && out.isNotBlank()) out else null
+        }.getOrNull()
+        if (headCommit == null) {
+            return mapOf(
+                "ok" to false,
+                "message" to "Could not resolve HEAD in ${dir.absolutePath}.",
+                "log" to "[err] git rev-parse HEAD failed\n"
+            )
+        }
+        log.appendLine("[info] base commit (HEAD): $headCommit")
+        log.appendLine("[info] seeding placeholder bug branches for ${demoIssues.size} demo issues")
+        log.appendLine()
+
+        var created = 0
+        var skipped = 0
+        var failed = 0
+
+        for (issue in demoIssues) {
+            for (kind in listOf("break", "fix")) {
+                val branch = "bug/${issue.id}/$kind"
+                val exists = runCatching {
+                    val p = ProcessBuilder("git", "rev-parse", "--verify", "--quiet", "refs/heads/$branch")
+                        .directory(dir).redirectErrorStream(true).start()
+                    p.waitFor() == 0
+                }.getOrDefault(false)
+                if (exists) {
+                    log.appendLine("[skip] $branch — already exists")
+                    skipped++
+                    continue
+                }
+                // `git branch <name> <commit>` creates the ref without
+                // touching the working tree. Pure metadata operation —
+                // safe even if the operator has uncommitted changes.
+                val res = runCatching {
+                    val p = ProcessBuilder("git", "branch", branch, headCommit)
+                        .directory(dir).redirectErrorStream(true).start()
+                    val out = p.inputStream.bufferedReader().readText().trim()
+                    p.waitFor() to out
+                }.getOrElse { -1 to (it.message ?: "exception") }
+                if (res.first == 0) {
+                    log.appendLine("[ok]   created $branch @ ${headCommit.take(8)}")
+                    created++
+                } else {
+                    log.appendLine("[err]  $branch failed (exit=${res.first}): ${res.second}")
+                    failed++
+                }
+            }
+        }
+
+        log.appendLine()
+        log.appendLine("[done] created=$created  skipped=$skipped  failed=$failed")
+        log.appendLine("[note] These branches are EMPTY placeholders — no actual bug diff.")
+        log.appendLine("[note] Replace each break branch's tip with a real bug-introducing")
+        log.appendLine("[note] commit (and fix branch with the corresponding fix) to make")
+        log.appendLine("[note] benchmarks meaningful. The webui only needs the branches to")
+        log.appendLine("[note] *exist* for the dropdown to enable; the contents are scored")
+        log.appendLine("[note] separately.")
+
+        return mapOf(
+            "ok" to (failed == 0),
+            "summary" to "created=$created, skipped=$skipped, failed=$failed",
+            "message" to (
+                if (failed == 0)
+                    "Seeded $created branch(es), skipped $skipped existing. Refresh /demo to use the dropdown."
+                else
+                    "Seeding completed with $failed failures — see log."),
+            "log" to log.toString()
+        )
+    }
+
+    @PostMapping("/demo/banking-app/jdk/scan")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun scanForJdks(@RequestParam path: String): Map<String, Any> {
+        val outcome = JdkDiscovery.scanFolderForJdks(path)
+        val message = when {
+            outcome.jdks.isEmpty() && outcome.truncated ->
+                "No JDK found in ${outcome.visitedDirs}+ scanned dirs (search hit the cap). Pick a more specific subfolder and retry."
+            outcome.jdks.isEmpty() ->
+                "No JDK found under that folder (scanned ${outcome.visitedDirs} dirs). Pick the JAVA_HOME-style root or a parent that contains one."
+            outcome.jdks.size == 1 ->
+                "Found 1 JDK (scanned ${outcome.visitedDirs} dirs). Refresh the page to pick it in the dropdown."
+            else ->
+                "Found ${outcome.jdks.size} JDKs (scanned ${outcome.visitedDirs} dirs). Refresh the page to pick one in the dropdown."
+        }
+        return mapOf(
+            "ok" to outcome.jdks.isNotEmpty(),
+            "count" to outcome.jdks.size,
+            "scannedDirs" to outcome.visitedDirs,
+            "truncated" to outcome.truncated,
+            "jdks" to outcome.jdks.map {
+                mapOf("home" to it.home, "label" to it.label, "major" to it.major)
+            },
+            "message" to message
+        )
     }
 
     @PostMapping("/demo/app/start")
@@ -412,6 +676,132 @@ class DemoController(
         val issue = issues.firstOrNull { it.id == issueId }
         model.addAttribute("issue", issue)
         return "demo-detail"
+    }
+
+    /**
+     * Resolve a user-supplied path to the banking-app directory. Accepts
+     * either the banking-app dir itself or a parent that contains a
+     * banking-app/ subdir (e.g. the repo root). Returns null if neither
+     * shape contains a gradlew wrapper.
+     */
+    private fun resolveBankingAppCandidate(input: String, log: StringBuilder): File? {
+        val trimmed = input.trim().trim('"', '\'').trim()
+        if (trimmed.isEmpty()) {
+            log.appendLine("[err]  Empty path.")
+            return null
+        }
+        val direct = File(trimmed)
+        log.appendLine("[info] Checking: ${direct.absolutePath}")
+        if (direct.resolve("gradlew").exists() || direct.resolve("gradlew.bat").exists()) {
+            log.appendLine("[ok]   gradlew wrapper found at ${direct.absolutePath}")
+            return direct
+        }
+        val nested = direct.resolve("banking-app")
+        log.appendLine("[info] Checking: ${nested.absolutePath}")
+        if (nested.resolve("gradlew").exists() || nested.resolve("gradlew.bat").exists()) {
+            log.appendLine("[ok]   gradlew wrapper found at ${nested.absolutePath}")
+            return nested
+        }
+        log.appendLine("[err]  No gradlew wrapper at either path.")
+        return null
+    }
+
+    /**
+     * "How to fix" buttons A & B from the /demo diagnostics panel.
+     * Validates the path the user supplied, persists it as a runtime
+     * override (so the resolution survives a webui restart), and applies
+     * it in-process so the next /demo render shows the warning cleared.
+     */
+    @PostMapping("/demo/banking-app/fix/apply-path")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun fixApplyPath(
+        @RequestParam path: String,
+        @RequestParam(defaultValue = "env") mode: String
+    ): Map<String, Any> {
+        val log = StringBuilder()
+        log.appendLine("$ apply-path mode=$mode")
+        val resolved = resolveBankingAppCandidate(path, log)
+            ?: return mapOf(
+                "ok" to false,
+                "message" to "Path doesn't contain a banking-app/gradlew wrapper.",
+                "output" to log.toString()
+            )
+        return runCatching {
+            bankingApp.setRuntimeOverride(resolved.absolutePath)
+            log.appendLine("[ok]   Persisted to ~/.ai-bench/banking-app-path.txt (survives restart).")
+            log.appendLine("[ok]   In-memory override applied — banking-app now resolves at:")
+            log.appendLine("       ${resolved.absolutePath}")
+            mapOf(
+                "ok" to true,
+                "message" to "Applied. Refresh the page to clear the warning.",
+                "output" to log.toString()
+            )
+        }.getOrElse { e ->
+            log.appendLine("[err]  ${e.message}")
+            mapOf("ok" to false,
+                "message" to "Failed: ${e.message}",
+                "output" to log.toString())
+        }
+    }
+
+    /**
+     * "How to fix" button C from the /demo diagnostics panel. Creates
+     * an NTFS junction (Windows) or a POSIX symlink (Unix) at
+     * ${user.dir}/banking-app pointing at the user's checkout, so the
+     * existing parent-walk discovery finds it on the next request.
+     */
+    @PostMapping("/demo/banking-app/fix/symlink")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun fixSymlink(@RequestParam path: String): Map<String, Any> {
+        val log = StringBuilder()
+        val resolved = resolveBankingAppCandidate(path, log)
+            ?: return mapOf(
+                "ok" to false,
+                "message" to "Path doesn't contain a banking-app/gradlew wrapper.",
+                "output" to log.toString()
+            )
+        val link = File(System.getProperty("user.dir"), "banking-app")
+        if (link.exists()) {
+            log.appendLine("[err]  ${link.absolutePath} already exists; remove or rename it first.")
+            return mapOf(
+                "ok" to false,
+                "message" to "${link.absolutePath} already exists.",
+                "output" to log.toString()
+            )
+        }
+        val cmd = if (Platform.isWindows)
+            listOf("cmd", "/c", "mklink", "/J", link.absolutePath, resolved.absolutePath)
+        else
+            listOf("ln", "-s", resolved.absolutePath, link.absolutePath)
+        log.appendLine("$ ${cmd.joinToString(" ")}")
+        return runCatching {
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+            if (out.isNotBlank()) log.append(out).also { if (!out.endsWith("\n")) log.append("\n") }
+            if (!finished) {
+                proc.destroyForcibly()
+                return mapOf("ok" to false,
+                    "message" to "Command timed out.",
+                    "output" to log.toString())
+            }
+            if (proc.exitValue() == 0) {
+                log.appendLine("[ok]   Junction/symlink created at ${link.absolutePath}.")
+                mapOf("ok" to true,
+                    "message" to "Created. Refresh the page to clear the warning.",
+                    "output" to log.toString())
+            } else {
+                log.appendLine("[err]  Exit code ${proc.exitValue()}.")
+                mapOf("ok" to false,
+                    "message" to "Command failed (exit ${proc.exitValue()}).",
+                    "output" to log.toString())
+            }
+        }.getOrElse { e ->
+            log.appendLine("[err]  ${e.message}")
+            mapOf("ok" to false,
+                "message" to "Failed: ${e.message}",
+                "output" to log.toString())
+        }
     }
 
     @PostMapping("/demo/exec")

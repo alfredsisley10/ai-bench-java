@@ -1,5 +1,8 @@
-// ai-bench Copilot Bridge — listens on a Unix socket and relays bench
-// harness requests to the VSCode Language Model Chat API (vscode.lm).
+// ai-bench Copilot Bridge — listens on a local TCP endpoint
+// (`127.0.0.1` + OS-assigned port) and relays bench-harness requests to
+// the VSCode Language Model Chat API (vscode.lm). The bound port is
+// written to `~/.ai-bench-copilot.port` so other processes (bench-webui,
+// bench-harness) can discover where to connect.
 //
 // Wire format: one JSON object per line, LF-terminated. Request carries
 // an `op` tag that switches handlers:
@@ -31,6 +34,13 @@ import {
 import { BridgeTreeProvider } from './tree-view';
 
 let server: net.Server | undefined;
+// Tracks whether the server actually completed `listen()` and is bound to
+// a TCP port. Distinct from `server !== undefined` because Node assigns
+// the Server object synchronously from `net.createServer`, but the bind is
+// async and can fail without ever firing the listen callback. The webview /
+// tree-view / status bar consult THIS flag, not `server`, so the GUI never
+// shows "running" when the kernel has no listener.
+let bridgeListening = false;
 let tracker: UsageTracker | undefined;
 let statusBar: vscode.StatusBarItem | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
@@ -163,21 +173,28 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
 }
 
 /**
- * Pick a sensible default IPC socket path. Both Node and Java support
- * AF_UNIX sockets on Windows 10 build 17063 (1803) and later, but the
- * /tmp path style is Unix-only — use the user's TEMP dir on Windows.
+ * Sidecar file the bridge writes after it picks an OS-assigned port.
+ * Bench-webui and the bench-harness read this file to discover where to
+ * connect. Single line of text: the decimal port number.
+ *
+ * The bridge originally tried AF_UNIX, but on some Windows machines Node's
+ * libuv returns EACCES on `bind()` regardless of path or ACLs, while Java
+ * binds the same path fine — process-specific policy interception that we
+ * can't easily diagnose. TCP localhost sidesteps the issue: any Node app
+ * on the box can bind a high port on 127.0.0.1.
  */
-function defaultSocketPath(): string {
-    return process.platform === 'win32'
-        ? path.join(os.tmpdir(), 'ai-bench-copilot.sock')
-        : '/tmp/ai-bench-copilot.sock';
+function portFilePath(): string {
+    return path.join(os.homedir(), '.ai-bench-copilot.port');
 }
 
 async function startBridge(context: vscode.ExtensionContext): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('aiBench.copilotBridge');
-    const socketPath = cfg.get<string>('socketPath') || defaultSocketPath();
-    if (server) { vscode.window.showInformationMessage('Copilot Bridge already running.'); return; }
-    try { fs.unlinkSync(socketPath); } catch { /* ok */ }
+    log('startBridge: enter (server=' + (server ? 'set' : 'null')
+        + ', listening=' + bridgeListening + ')');
+    if (server) {
+        log('startBridge: server already set — refusing duplicate start');
+        vscode.window.showInformationMessage('Copilot Bridge already running.');
+        return;
+    }
     server = net.createServer((socket) => {
         let buffer = '';
         socket.on('data', async (chunk) => {
@@ -191,16 +208,47 @@ async function startBridge(context: vscode.ExtensionContext): Promise<void> {
             }
         });
     });
-    server.listen(socketPath, async () => {
-        try { fs.chmodSync(socketPath, 0o600); } catch { /* Windows */ }
+    // Capture bind errors that would otherwise vanish — without this
+    // handler a failed listen() emits 'error' which Node treats as
+    // unhandled and which never reaches the user.
+    server.on('error', (err: NodeJS.ErrnoException) => {
+        log('startBridge: server emitted error — code=' + err.code
+            + ' errno=' + err.errno + ' syscall=' + err.syscall
+            + ' msg=' + err.message);
+        bridgeListening = false;
+        const dead = server;
+        server = undefined;
+        try { dead?.close(); } catch { /* ok — already broken */ }
+        try { fs.unlinkSync(portFilePath()); } catch { /* ok */ }
+        try {
+            vscode.window.showErrorMessage(
+                `Copilot Bridge failed to bind: ${err.code ?? ''} ${err.message}`,
+                'Open Output'
+            ).then(choice => { if (choice === 'Open Output' && output) output.show(true); });
+        } catch { /* ok */ }
+        notifyStateChanged();
+    });
+    log('startBridge: calling server.listen({host:127.0.0.1, port:0})');
+    server.listen({ host: '127.0.0.1', port: 0 }, async () => {
+        const addr = server!.address() as net.AddressInfo;
+        bridgeListening = true;
+        log('startBridge: listen callback fired — bound to 127.0.0.1:' + addr.port);
+        try {
+            fs.writeFileSync(portFilePath(), String(addr.port), { encoding: 'utf8', mode: 0o600 });
+            log('startBridge: wrote port to ' + portFilePath());
+        } catch (e: any) {
+            log('startBridge: WARN — could not write port file: ' + (e?.message ?? e));
+        }
         try {
             const models = await enumerateModels();
+            log('startBridge: ' + models.length + ' model(s) available');
             vscode.window.showInformationMessage(
-                `Copilot Bridge listening on ${socketPath} — ${models.length} model(s) available` +
+                `Copilot Bridge listening on 127.0.0.1:${addr.port} — ${models.length} model(s) available` +
                 (models[0] ? `; auto → ${models[0].name}` : ''));
         } catch (e: any) {
+            log('startBridge: model enumeration deferred — ' + (e?.message ?? e));
             vscode.window.showInformationMessage(
-                `Copilot Bridge listening on ${socketPath} (model enumeration deferred until consent grant)`);
+                `Copilot Bridge listening on 127.0.0.1:${addr.port} (model enumeration deferred until consent grant)`);
         }
         notifyStateChanged();
     });
@@ -222,15 +270,14 @@ function stopBridge(): void {
     try {
         const s = server;
         server = undefined;
+        bridgeListening = false;
         if (s) {
             try { s.close(); log('stopBridge: server.close() called'); }
             catch (e) { logError('stopBridge s.close', e); }
             try {
-                const cfg = vscode.workspace.getConfiguration('aiBench.copilotBridge');
-                const sockPath = cfg.get<string>('socketPath') || defaultSocketPath();
-                try { fs.unlinkSync(sockPath); log('stopBridge: unlinkSync ok'); }
-                catch { /* not present is fine */ }
-            } catch (e) { logError('stopBridge cfg', e); }
+                fs.unlinkSync(portFilePath());
+                log('stopBridge: portFile unlinked');
+            } catch { /* not present is fine */ }
             try { vscode.window.showInformationMessage('Copilot Bridge stopped.'); }
             catch (e) { logError('stopBridge info', e); }
         }
@@ -247,10 +294,18 @@ function getRuntimeState(): RuntimeState {
     const cfg = vscode.workspace.getConfiguration('aiBench.copilotBridge');
     const port = cfg.get<number>('openAiPort') ?? 11434;
     const bind = cfg.get<string>('openAiBindAddress') ?? '127.0.0.1';
+    // Reflect the actual kernel-level bind, not just whether the Server
+    // object exists. The display string is the host:port the bridge bound
+    // to, sourced from the live server.address() so it tracks restarts.
+    let bridgeAddr = '';
+    if (bridgeListening && server) {
+        const a = server.address();
+        if (a && typeof a === 'object') bridgeAddr = `127.0.0.1:${a.port}`;
+    }
     return {
-        bridgeRunning: server !== undefined,
+        bridgeRunning: bridgeListening,
         openAiRunning: isOpenAiServerRunning(),
-        socketPath: cfg.get<string>('socketPath') || defaultSocketPath(),
+        socketPath: bridgeAddr,
         openAiUrl: isOpenAiServerRunning() ? `http://${bind}:${port}/v1/` : null,
         auth: getAuthState(),
     };

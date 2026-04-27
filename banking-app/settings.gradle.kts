@@ -1,17 +1,58 @@
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        mavenCentral()
+// --- enterprise-sim diagnostic probe (read-only on system properties) ---
+// Activated when -Denterprise.sim.mirror=<url> is passed. Swaps upstream
+// repositories with the local mirror so the build verifies behind a corporate
+// Artifactory + auth-proxy. Reads sysprops only; never writes.
+run {
+    val mirror = System.getProperty("enterprise.sim.mirror") ?: return@run
+    val proxyHost = System.getProperty("https.proxyHost") ?: System.getProperty("http.proxyHost")
+    val proxyPort = System.getProperty("https.proxyPort") ?: System.getProperty("http.proxyPort")
+    val proxyUser = System.getProperty("https.proxyUser") ?: System.getProperty("http.proxyUser")
+    val nonProxy  = System.getProperty("http.nonProxyHosts")
+    println("[enterprise-sim] active")
+    println("[enterprise-sim]   mirror:        $mirror")
+    println("[enterprise-sim]   proxy:         ${proxyHost ?: "<unset>"}:${proxyPort ?: "<unset>"}")
+    println("[enterprise-sim]   proxy user:    ${proxyUser ?: "<unset>"}")
+    println("[enterprise-sim]   nonProxyHosts: ${nonProxy ?: "<unset>"}")
+    if (proxyHost == null) {
+        println("[enterprise-sim]   WARN: https.proxyHost is not set.")
+        println("[enterprise-sim]         External HTTPS (e.g. api.foojay.io for JDK toolchain) will attempt direct connect and fail.")
+        println("[enterprise-sim]         Fix: pass -Dhttps.proxyHost=localhost -Dhttps.proxyPort=3128 (or set systemProp.https.proxyHost in gradle.properties)")
+    }
+    if (nonProxy == null || !nonProxy.contains("localhost")) {
+        println("[enterprise-sim]   WARN: http.nonProxyHosts does not include localhost.")
+        println("[enterprise-sim]         Mirror traffic at http://localhost:8081 may be (incorrectly) routed via the proxy.")
+        println("[enterprise-sim]         Fix: pass -Dhttp.nonProxyHosts='localhost|127.0.0.1' (or set systemProp.http.nonProxyHosts in gradle.properties)")
     }
 }
 
-// Auto-provision the JDK the toolchain asks for (17) when the user's
-// machine only has a different JDK installed. Hits the Foojay Disco
-// API to download the matching Temurin build into Gradle's caches —
-// lets 'gradlew build' work out-of-box on Windows / macOS / Linux
-// regardless of which JDK the user installed first.
+pluginManagement {
+    repositories {
+        val mirror = System.getProperty("enterprise.sim.mirror")
+        if (mirror != null) {
+            maven {
+                url = uri("$mirror/gradle-plugins/")
+                isAllowInsecureProtocol = true
+            }
+        } else {
+            gradlePluginPortal()
+            mavenCentral()
+        }
+    }
+}
+
+// Auto-provision the JDK the toolchain asks for (currently 21) when
+// the user's machine only has a different JDK installed. Hits the
+// Foojay Disco API to download the matching Temurin build into
+// Gradle's caches — lets 'gradlew build' work out-of-box on Windows /
+// macOS / Linux regardless of which JDK the user installed first.
+//
+// Pinned at 1.0.0 (not 0.8.0) because Gradle 9 added new vendor
+// constants to org.gradle.jvm.toolchain.JvmVendorSpec; the 0.8.0
+// plugin is compiled against an older Gradle and explodes with
+// `NoSuchFieldError: IBM_SEMERU` at static-init when paired with
+// Gradle 9.x. 1.0.0 is the first release with Gradle 9 support.
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "0.8.0"
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 rootProject.name = "omnibank"

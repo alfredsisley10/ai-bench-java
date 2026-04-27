@@ -91,11 +91,15 @@ class RegisteredModelsRegistry {
         val builtins = mutableListOf<LlmConfigController.ModelInfo>()
 
         // Auto-derived: Copilot bridge — present whenever the VSCode
-        // bridge socket file exists. The user doesn't have to Register
-        // anything to get this entry; it shows up implicitly when the
-        // bridge is reachable.
-        val copilotSock = System.getenv("AI_BENCH_COPILOT_SOCK") ?: Platform.defaultCopilotSocket()
-        val copilotLive = java.io.File(copilotSock).exists()
+        // bridge is actually accepting TCP connections. The user doesn't
+        // have to Register anything to get this entry; it shows up
+        // implicitly when the bridge is reachable.
+        val copilotPort = Platform.readCopilotPort()
+        val copilotLive = copilotPort != null && runCatching {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", copilotPort), 500); true
+            }
+        }.getOrDefault(false)
         if (copilotLive) {
             builtins += LlmConfigController.ModelInfo(
                 id = "copilot-default",

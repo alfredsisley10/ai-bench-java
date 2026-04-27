@@ -9,9 +9,15 @@ class CopilotGuideController {
 
     @GetMapping("/copilot-guide")
     fun guide(model: Model): String {
-        val copilotSock = Platform.defaultCopilotSocket()
-        model.addAttribute("copilotSockPath", copilotSock)
-        model.addAttribute("bridgeHealthy", java.io.File(copilotSock).exists())
+        val port = Platform.readCopilotPort()
+        val endpoint = port?.let { "127.0.0.1:$it" } ?: Platform.copilotPortFile()
+        val healthy = port != null && runCatching {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", port), 500); true
+            }
+        }.getOrDefault(false)
+        model.addAttribute("copilotSockPath", endpoint)
+        model.addAttribute("bridgeHealthy", healthy)
         return "copilot-guide"
     }
 }

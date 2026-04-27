@@ -38,9 +38,12 @@
                       th:text="${copilotBridgeHealthy ? '✓ bridge detected — click to review' : '▸ click to expand'}"></span>
             </summary>
         <p class="help-text">
-            The harness talks to Copilot through a local Unix socket that
-            a small VSCode extension exposes. Walk through the three
-            steps below; state icons turn green once each step succeeds.
+            The harness talks to Copilot through a local TCP endpoint
+            (<code>127.0.0.1</code> + an OS-assigned port) that a small
+            VSCode extension exposes. The chosen port is written to a
+            sidecar file at <code>~/.ai-bench-copilot.port</code> for
+            discovery. Walk through the three steps below; state icons
+            turn green once each step succeeds.
         </p>
 
         <div th:if="${copilotProbeResult != null}"
@@ -56,18 +59,19 @@
                 </strong>
                 <p class="help-text">
                     The <code>ai-bench Copilot Bridge</code> VSCode
-                    extension publishes a Unix socket at the path below
-                    and relays requests to GitHub Copilot through the
-                    VSCode Copilot extension. Pick whichever install
-                    link matches how your editor is reachable:
+                    extension binds a TCP listener on
+                    <code>127.0.0.1</code> and relays requests to GitHub
+                    Copilot through the VSCode Copilot extension. Pick
+                    whichever install link matches how your editor is
+                    reachable:
                 </p>
                 <div th:if="${copilotVsixPresent}" class="button-row">
                     <a href="/llm/copilot/download-bridge"
                        class="btn-sm" style="margin-right:0.5em" download>
-                        Download copilot-bridge.vsix
+                        Download copilot-bridge.vsix<span th:if="${copilotVsixVersion}" th:text="' v' + ${copilotVsixVersion}"></span>
                     </a>
                     <span class="help-text"
-                          th:text="'(built locally, ' + ${#numbers.formatInteger(copilotVsixSize / 1024, 1, 'COMMA')} + ' KB)'"></span>
+                          th:text="'(' + (${copilotVsixVersion} ? 'v' + ${copilotVsixVersion} + ', ' : '') + 'built locally, ' + ${#numbers.formatInteger(copilotVsixSize / 1024, 1, 'COMMA')} + ' KB)'"></span>
                 </div>
                 <div th:unless="${copilotVsixPresent}" style="background:#fff3cd; padding:0.5em 0.75em; border-radius:4px; border-left:3px solid #f0ad4e; margin:0.25em 0">
                     <strong>VSIX not built yet.</strong>
@@ -98,7 +102,7 @@ npm run package      # produces copilot-bridge.vsix</pre>
                     launching bench-webui — the link above will pick it
                     up on the next page load.
                 </p>
-                <p>Socket path: <code th:text="${copilotSockPath}"></code></p>
+                <p>Bridge endpoint: <code th:text="${copilotSockPath}"></code></p>
             </li>
             <li>
                 <strong>
@@ -109,10 +113,13 @@ npm run package      # produces copilot-bridge.vsix</pre>
                     Open VSCode's command palette (<code>&#8984;&#8679;P</code>
                     / <code>Ctrl+Shift+P</code>) and run
                     <em>ai-bench: Start Copilot Bridge</em>. The extension
-                    creates / re-binds the socket at the path above.
-                    Override the path by setting the
-                    <code>AI_BENCH_COPILOT_SOCK</code> env var before
-                    launching bench-webui.
+                    binds a fresh TCP port on <code>127.0.0.1</code>,
+                    writes the port to
+                    <code>~/.ai-bench-copilot.port</code>, and the
+                    endpoint above flips to the live address. Override
+                    the sidecar path by setting the
+                    <code>AI_BENCH_COPILOT_PORT_FILE</code> env var
+                    before launching bench-webui.
                 </p>
             </li>
             <li>

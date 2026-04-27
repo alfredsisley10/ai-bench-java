@@ -456,6 +456,70 @@
             #app .appmap--theme-dark .edgeLabel text {
                 fill: #d0d6e0 !important;
             }
+
+            /* Catch-all for unstyled dependency-map elements.
+               Reported issue: the package node bridging
+               com/omnibank → com/omnibank/customerportal renders
+               black-on-black on the dark theme. The earlier rules
+               only target the dagre/mermaid class names AppMap
+               emits for top-level package nodes; intermediate
+               nodes (sub-packages, group circles, label-only
+               markers) come through with a different class set
+               (e.g. `.appmap-package`, `.subpackage`,
+               `.flowchart-link`, `g.label > foreignObject > div`)
+               that the previous rules miss. The selectors below
+               force a readable fill/stroke on every SVG primitive
+               in the appmap viewer dark theme so any node whose
+               class we didn't explicitly override still becomes
+               visible. */
+            #app .appmap--theme-dark svg text:not([fill]),
+            #app .appmap--theme-dark svg tspan:not([fill]) {
+                fill: #e0e6ed !important;
+            }
+            #app .appmap--theme-dark svg [fill="#000"],
+            #app .appmap--theme-dark svg [fill="#000000"],
+            #app .appmap--theme-dark svg [fill="black"] {
+                fill: #e0e6ed !important;
+            }
+            #app .appmap--theme-dark svg [stroke="#000"],
+            #app .appmap--theme-dark svg [stroke="#000000"],
+            #app .appmap--theme-dark svg [stroke="black"] {
+                stroke: #7d8498 !important;
+            }
+            /* Sub-package / intermediate group shapes that appmap-js
+               emits without an explicit class — they live under
+               `g.cluster` or `g.subgraph` and use plain rect/circle
+               with no fill attribute, picking up the SVG default
+               of black. */
+            #app .appmap--theme-dark svg g.cluster > rect:not([fill]),
+            #app .appmap--theme-dark svg g.subgraph > rect:not([fill]),
+            #app .appmap--theme-dark svg g.cluster > polygon:not([fill]),
+            #app .appmap--theme-dark svg g.subgraph > polygon:not([fill]) {
+                fill: rgba(255, 255, 255, 0.04) !important;
+                stroke: #4d5468 !important;
+            }
+            #app .appmap--theme-dark svg circle:not([fill]):not(.no-style) {
+                fill: #2d3447 !important;
+                stroke: #5d6478 !important;
+            }
+            /* HTML-in-SVG label boxes (foreignObject) — appmap uses
+               these for HTML-rendered package labels with browser-
+               default text color (which on a dark embed = invisible). */
+            #app .appmap--theme-dark svg foreignObject,
+            #app .appmap--theme-dark svg foreignObject div,
+            #app .appmap--theme-dark svg foreignObject span {
+                color: #e0e6ed !important;
+            }
+            /* Link/path catch-all for relations that aren't tagged
+               with .edgePath (mermaid emits `.flowchart-link`,
+               `.relation`, etc.). */
+            #app .appmap--theme-dark svg path.flowchart-link,
+            #app .appmap--theme-dark svg path.relation,
+            #app .appmap--theme-dark svg path.messageLine0,
+            #app .appmap--theme-dark svg path.messageLine1 {
+                stroke: #7d8498 !important;
+                fill: none !important;
+            }
         </style>
     </section>
 
