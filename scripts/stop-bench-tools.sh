@@ -44,25 +44,60 @@ if ! kill -0 "$pid" 2>/dev/null; then
     exit 0
 fi
 
+# Snapshot descendants BEFORE we kill the parent. Once the parent
+# exits, its children get re-parented (init/launchd) and walking up
+# from the parent PID won't reach them. bench-webui's BankingAppManager
+# spawns banking-app as a child JVM on port 8080; without explicit
+# tree-kill those children survive the parent's death.
+descendants=""
+collect_descendants() {
+    local root="$1"
+    local children
+    children=$(pgrep -P "$root" 2>/dev/null || true)
+    for c in $children; do
+        descendants="$descendants $c"
+        collect_descendants "$c"
+    done
+}
+collect_descendants "$pid"
+descendants=$(echo $descendants)  # squash whitespace
+[ -n "$descendants" ] && info "Tree under PID $pid: $descendants"
+
 info "Sending SIGTERM to bench-webui PID $pid..."
 kill -TERM "$pid" 2>/dev/null || err "Failed to send SIGTERM to PID $pid"
 
 # Spring Boot generally shuts down within 5-10s. Wait up to 15s, then
 # escalate to SIGKILL if still alive.
+exited=0
 for _ in $(seq 1 30); do
     if ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$pid_file"
-        ok "bench-webui (PID $pid) stopped."
-        exit 0
+        exited=1; break
     fi
     sleep 0.5
 done
 
-warn "PID $pid did not exit within 15s -- escalating to SIGKILL."
-kill -KILL "$pid" 2>/dev/null || true
-sleep 1
-if kill -0 "$pid" 2>/dev/null; then
-    err "PID $pid still alive after SIGKILL. Investigate manually."
+if [ "$exited" = "0" ]; then
+    warn "PID $pid did not exit within 15s -- escalating to SIGKILL."
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        err "PID $pid still alive after SIGKILL. Investigate manually."
+    fi
 fi
+
+# Reap any descendants the parent didn't take with it. SIGKILL on the
+# Java parent doesn't propagate to children spawned with ProcessBuilder
+# unless they were placed in the same process group; this catches the
+# orphans that would otherwise hold file handles in $INSTALL_DIR.
+reaped=0
+for d in $descendants; do
+    if kill -0 "$d" 2>/dev/null; then
+        info "Reaping leftover descendant PID $d"
+        kill -KILL "$d" 2>/dev/null || true
+        reaped=$((reaped+1))
+    fi
+done
+
 rm -f "$pid_file"
-ok "bench-webui (PID $pid) force-killed."
+ok "bench-webui (PID $pid) stopped."
+[ "$reaped" -gt 0 ] && info "Reaped $reaped descendant process(es)."
