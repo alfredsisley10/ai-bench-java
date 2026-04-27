@@ -79,20 +79,37 @@ $webuiJar = Get-ChildItem -Filter 'bench-webui-*.jar' -File -ErrorAction Silentl
 # Cache lookup: if the script lives inside a repo checkout that ships
 # pre-built artifacts under dist/, copy them into $InstallDir rather
 # than downloading. This makes 'git clone' alone sufficient for
-# enterprise users who can reach the git remote but not GitHub
-# Releases.
-if (-not $cliZip -or -not $webuiJar) {
-    $repoDist = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\dist') -ErrorAction SilentlyContinue)
-    if ($repoDist -and (Test-Path $repoDist)) {
-        $repoCli   = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1
-        $repoWebui = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-webui-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($repoCli -and $repoWebui) {
-            Write-Info "Found pre-built artifacts in $repoDist -- copying into $InstallDir..."
-            Copy-Item -LiteralPath $repoCli.FullName   -Destination $InstallDir -Force
+# enterprise users who can reach the git remote but not GitHub Releases.
+#
+# Staleness check: if the LOCAL artifacts already exist but the dist/
+# copy is NEWER (LastWriteTimeUtc), overwrite them. Without this, an
+# operator who git-pulled a newer dist/jar but already had a previous
+# run's jar in $InstallDir would silently keep running the older
+# binary -- the class of bug that masked the /llm 500 fix on Windows
+# machines that had been booted from an earlier release.
+$repoDist = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\dist') -ErrorAction SilentlyContinue)
+if ($repoDist -and (Test-Path $repoDist)) {
+    $repoCli   = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    $repoWebui = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-webui-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($repoCli -and $repoWebui) {
+        $refreshedCli = $false
+        $refreshedWebui = $false
+        if (-not $cliZip -or $repoCli.LastWriteTimeUtc -gt $cliZip.LastWriteTimeUtc) {
+            # Wipe any unzipped bench-cli-* dir so the next "Expand"
+            # step recreates it from the fresher zip.
+            Get-ChildItem -LiteralPath $InstallDir -Directory -Filter 'bench-cli-*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            Copy-Item -LiteralPath $repoCli.FullName -Destination $InstallDir -Force
+            $refreshedCli = $true
+        }
+        if (-not $webuiJar -or $repoWebui.LastWriteTimeUtc -gt $webuiJar.LastWriteTimeUtc) {
             Copy-Item -LiteralPath $repoWebui.FullName -Destination $InstallDir -Force
+            $refreshedWebui = $true
+        }
+        if ($refreshedCli -or $refreshedWebui) {
             $cliZip   = Get-ChildItem -Filter 'bench-cli-*.zip'   -File | Select-Object -First 1
             $webuiJar = Get-ChildItem -Filter 'bench-webui-*.jar' -File | Select-Object -First 1
-            Write-Ok "Copied $($cliZip.Name) + $($webuiJar.Name) from repo dist/."
+            Write-Ok "Refreshed from $repoDist (cli=$refreshedCli, webui=$refreshedWebui)."
         }
     }
 }

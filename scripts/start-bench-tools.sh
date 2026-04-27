@@ -24,6 +24,14 @@
 
 set -eu
 
+# Resolve the script's repo location BEFORE the cd "$INSTALL_DIR"
+# below; otherwise relative-$0 invocations like
+# `./scripts/start-bench-tools.sh` fail to locate ../dist/ from the
+# install dir.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_DIST="$SCRIPT_DIR/../dist"
+[ -d "$REPO_DIST" ] && REPO_DIST="$(cd "$REPO_DIST" && pwd)"
+
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ai-bench}"
 REPO="${REPO:-alfredsisley10/ai-bench-java}"
 
@@ -58,21 +66,47 @@ cd "$INSTALL_DIR"
 
 cli_zip=$(find_artifact "$INSTALL_DIR" 'bench-cli-*.zip')
 webui_jar=$(find_artifact "$INSTALL_DIR" 'bench-webui-*.jar')
-if [ -z "$cli_zip" ] || [ -z "$webui_jar" ]; then
-    # Cache lookup: if the script lives inside a repo checkout that
-    # ships pre-built artifacts under dist/, copy them into INSTALL_DIR
-    # rather than downloading. This makes 'git clone' alone sufficient
-    # for enterprise users who can reach the git remote but not GitHub
-    # Releases.
-    repo_dist="$(cd "$(dirname "$0")/.." && pwd)/dist"
-    repo_cli=$(find_artifact "$repo_dist" 'bench-cli-*.zip')
-    repo_webui=$(find_artifact "$repo_dist" 'bench-webui-*.jar')
-    if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
-        info "Found pre-built artifacts in $repo_dist -- copying into $INSTALL_DIR..."
-        cp "$repo_dist/$repo_cli" "$repo_dist/$repo_webui" "$INSTALL_DIR/"
+
+# Cache lookup: if the script lives inside a repo checkout that ships
+# pre-built artifacts under dist/, copy them into INSTALL_DIR rather
+# than downloading. This makes 'git clone' alone sufficient for
+# enterprise users who can reach the git remote but not GitHub Releases.
+#
+# Staleness check: if the LOCAL artifacts already exist but the dist/
+# copy is NEWER (mtime), overwrite them. Without this, an operator who
+# git-pulled a newer dist/jar but already had a previous run's jar in
+# INSTALL_DIR would silently keep running the older binary -- the
+# class of bug that masked the /llm 500 fix on Windows machines that
+# had been booted from an earlier release.
+repo_dist="$REPO_DIST"
+repo_cli=$(find_artifact "$repo_dist" 'bench-cli-*.zip')
+repo_webui=$(find_artifact "$repo_dist" 'bench-webui-*.jar')
+
+newer_than() {
+    # Returns 0 (true) if $1 exists AND ($2 is missing OR $1 is newer than $2).
+    [ -f "$1" ] || return 1
+    [ -f "$2" ] || return 0
+    [ "$1" -nt "$2" ]
+}
+
+if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
+    refreshed_cli=0
+    refreshed_webui=0
+    if [ -z "$cli_zip" ] || newer_than "$repo_dist/$repo_cli" "$INSTALL_DIR/$cli_zip"; then
+        # Wipe any unzipped bench-cli-* dir so the next "Unzip" step
+        # below recreates it from the fresher zip.
+        rm -rf "$INSTALL_DIR"/bench-cli-*/
+        cp "$repo_dist/$repo_cli" "$INSTALL_DIR/"
         cli_zip="$repo_cli"
+        refreshed_cli=1
+    fi
+    if [ -z "$webui_jar" ] || newer_than "$repo_dist/$repo_webui" "$INSTALL_DIR/$webui_jar"; then
+        cp "$repo_dist/$repo_webui" "$INSTALL_DIR/"
         webui_jar="$repo_webui"
-        ok "Copied $cli_zip + $webui_jar from repo dist/."
+        refreshed_webui=1
+    fi
+    if [ "$refreshed_cli" = "1" ] || [ "$refreshed_webui" = "1" ]; then
+        ok "Refreshed from $repo_dist (cli=$refreshed_cli, webui=$refreshed_webui)."
     fi
 fi
 
