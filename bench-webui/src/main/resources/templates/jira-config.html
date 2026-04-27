@@ -17,36 +17,91 @@
         <h3>Connection</h3>
         <form method="post" action="/jira/save" id="jiraForm">
             <label>Base URL:
-                <input name="baseUrl" th:value="${baseUrl}" required type="url" placeholder="https://yourcorp.atlassian.net" title="Full JIRA URL including https://">
-            </label>
-            <label>Email:
-                <input name="email" th:value="${email}" required type="email" placeholder="you@company.com">
+                <input name="baseUrl" th:value="${baseUrl}" required type="url"
+                       id="baseUrl" oninput="autoSelectAuth()"
+                       placeholder="https://yourcorp.atlassian.net  or  https://jira.yourcorp.com"
+                       title="Full JIRA URL including https://. Cloud = *.atlassian.net; everything else is Server / Data Center.">
             </label>
 
             <label>Authentication method:
                 <select name="authMethod" id="authMethod" onchange="toggleAuthFields()">
-                    <option value="api-token" th:selected="${authMethod == 'api-token'}">API token</option>
-                    <option value="basic" th:selected="${authMethod == 'basic'}">Username and password</option>
+                    <option value="api-token" th:selected="${authMethod == 'api-token'}">
+                        Cloud — Email + API token (atlassian.net)
+                    </option>
+                    <option value="pat" th:selected="${authMethod == 'pat'}">
+                        Server / Data Center — Personal Access Token
+                    </option>
+                    <option value="basic" th:selected="${authMethod == 'basic'}">
+                        Server / Data Center — Username + Password (legacy)
+                    </option>
                 </select>
             </label>
 
+            <p class="help-text" style="margin:0.2em 0 0.5em 0">
+                <strong>Which one?</strong>
+                <em>Cloud</em> is the Atlassian-hosted service at
+                <code>*.atlassian.net</code>; only Cloud uses the
+                email + API token combo. <em>Server / Data Center</em>
+                is self-hosted; PAT (Bearer auth, no email) is the
+                modern path on JIRA 8.14+ and is the supported
+                alternative when admins disable basic auth.
+            </p>
+
+            <!-- Cloud: email + API token. Email is REQUIRED here, not
+                 globally — Datacenter PAT and basic-auth modes don't
+                 need it and we shouldn't reject the form because of it. -->
             <div id="apiTokenField">
-                <label>API token:
-                    <input name="apiToken" type="password" autocomplete="new-password"
-                           th:placeholder="${apiTokenPresent ? '(unchanged — leave blank to keep)' : 'Enter JIRA API token'}">
+                <label>Email <span class="help-text">(Cloud only)</span>:
+                    <input name="email" id="emailField" th:value="${email}" type="email"
+                           placeholder="you@company.com">
                 </label>
-                <p class="help-text">Generate at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API tokens</a>.</p>
+                <label>API token:
+                    <input name="apiToken" id="apiTokenInput" type="password" autocomplete="new-password"
+                           th:placeholder="${apiTokenPresent ? '(unchanged — leave blank to keep)' : 'Enter JIRA Cloud API token'}">
+                </label>
+                <p class="help-text">
+                    Generate at
+                    <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API tokens</a>.
+                    Sent over the wire as
+                    <code>Authorization: Basic base64(email:apiToken)</code>.
+                </p>
+            </div>
+
+            <!-- Datacenter / Server: Personal Access Token. Bearer auth,
+                 no email, no username. Created in JIRA via Profile →
+                 Personal Access Tokens (Datacenter 8.14+). The most
+                 common mistake is to paste a PAT into the Cloud
+                 "API token" field above — the wrong auth scheme
+                 (Basic instead of Bearer) returns 401 with an opaque
+                 message, which is the bug this section fixes. -->
+            <div id="patField" style="display:none">
+                <label>Personal Access Token:
+                    <input name="apiToken" id="patInput" type="password" autocomplete="new-password"
+                           th:placeholder="${apiTokenPresent ? '(unchanged — leave blank to keep)' : 'Paste JIRA PAT (no email needed)'}">
+                </label>
+                <p class="help-text">
+                    Create in JIRA → <em>Profile → Personal Access Tokens</em>
+                    (requires Server / Data Center 8.14+). Sent as
+                    <code>Authorization: Bearer &lt;pat&gt;</code> — no email
+                    or username is sent or required. If your JIRA is older
+                    than 8.14, use the Username + Password option instead.
+                </p>
             </div>
 
             <div id="basicAuthFields" style="display:none">
                 <label>Username:
-                    <input name="username" th:value="${username}" placeholder="JIRA username" autocomplete="off">
+                    <input name="username" id="usernameField" th:value="${username}"
+                           placeholder="JIRA username (not email)" autocomplete="off">
                 </label>
                 <label>Password:
                     <input name="password" type="password" autocomplete="new-password"
                            th:placeholder="${passwordPresent ? '(unchanged — leave blank to keep)' : 'JIRA password'}">
                 </label>
-                <p class="help-text">For JIRA Server/Data Center installations that use basic authentication.</p>
+                <p class="help-text">
+                    For older JIRA Server / Data Center installations
+                    that haven't yet enabled PAT support. Sent as
+                    <code>Authorization: Basic base64(user:pass)</code>.
+                </p>
             </div>
 
             <label>Default project key:
@@ -194,8 +249,43 @@
         function toggleAuthFields() {
             var method = document.getElementById('authMethod').value;
             document.getElementById('apiTokenField').style.display = method === 'api-token' ? 'block' : 'none';
-            document.getElementById('basicAuthFields').style.display = method === 'basic' ? 'block' : 'none';
+            document.getElementById('patField').style.display       = method === 'pat'       ? 'block' : 'none';
+            document.getElementById('basicAuthFields').style.display = method === 'basic'    ? 'block' : 'none';
+            // Email is required only for Cloud (api-token); the
+            // browser would otherwise block submit on the empty
+            // Cloud-email field even when the user picked PAT or
+            // basic. The server-side handler also tolerates empty.
+            var email = document.getElementById('emailField');
+            if (email) email.required = (method === 'api-token');
         }
+        // Auto-suggest the auth method from the URL the operator
+        // typed: anything ending in atlassian.net is Cloud, everything
+        // else is Server / Data Center (PAT first as the modern path).
+        // Only fires when the current selection is the form default
+        // and the user is still typing the URL — never overrides a
+        // deliberate choice.
+        function autoSelectAuth() {
+            var url = (document.getElementById('baseUrl').value || '').toLowerCase();
+            var sel = document.getElementById('authMethod');
+            var current = sel.value;
+            // Don't fight a user who already picked something.
+            if (sel.dataset.touched === '1') return;
+            if (/atlassian\.net\/?$|atlassian\.net\//.test(url)) {
+                if (current !== 'api-token') sel.value = 'api-token';
+            } else if (/^https?:\/\/[^/]+/.test(url)) {
+                if (current === 'api-token') sel.value = 'pat';
+            }
+            toggleAuthFields();
+        }
+        document.getElementById('authMethod').addEventListener('change', function (e) {
+            e.target.dataset.touched = '1';
+            toggleAuthFields();
+        });
+        // Initial paint: show only the fields for the saved auth method
+        // and set required=email accordingly. Without this the form
+        // would render with all three blocks visible until the user
+        // touched the dropdown.
+        toggleAuthFields();
     </script>
 </main>
 </body>

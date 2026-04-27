@@ -65,7 +65,7 @@ class JiraConfigController(
     @PostMapping("/jira/save")
     fun save(
         @RequestParam baseUrl: String,
-        @RequestParam email: String,
+        @RequestParam(required = false) email: String?,
         @RequestParam(defaultValue = "api-token") authMethod: String,
         @RequestParam(required = false) apiToken: String?,
         @RequestParam(required = false) username: String?,
@@ -81,7 +81,10 @@ class JiraConfigController(
         }
 
         session.setAttribute("jiraBaseUrl", baseUrl.trimEnd('/'))
-        session.setAttribute("jiraEmail", email)
+        // Email is only meaningful for Cloud (api-token) auth — Datacenter
+        // PAT and Server basic-auth ignore it. Persist whatever was sent
+        // so the field round-trips, but don't require it server-side.
+        session.setAttribute("jiraEmail", email ?: "")
         session.setAttribute("jiraDefaultProject", defaultProject)
         session.setAttribute("jiraAuthMethod", authMethod)
         session.setAttribute("jiraSecretStorage", effectiveStorage)
@@ -89,6 +92,9 @@ class JiraConfigController(
 
         // Persist each secret into the chosen backend. Blank submissions
         // leave any existing value in place (password-field UX convention).
+        // The "pat" method shares the API_TOKEN_ACCOUNT slot since it's
+        // also a single-token credential — only the wire-time auth header
+        // shape differs (Bearer vs Basic-with-email).
         if (!apiToken.isNullOrBlank()) {
             persistSecret(session, "jiraApiToken", API_TOKEN_ACCOUNT, apiToken, effectiveStorage)
         }
@@ -166,30 +172,101 @@ class JiraConfigController(
         val apiToken = resolveSecret(session, "jiraApiToken", API_TOKEN_ACCOUNT)
         val password = resolveSecret(session, "jiraPassword", PASSWORD_ACCOUNT)
 
+        // Hit /myself instead of /serverInfo. /serverInfo returns 200
+        // even when unauthenticated on many JIRA installs (it's
+        // intentionally public), so a successful test there can hide a
+        // bad credential. /myself requires auth — if the credentials are
+        // wrong, it returns 401 and the test fails properly.
         val result = try {
-            val url = java.net.URI.create("$baseUrl/rest/api/2/serverInfo")
+            val url = java.net.URI.create("$baseUrl/rest/api/2/myself")
             val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(10))
             val builder = java.net.http.HttpRequest.newBuilder().uri(url).GET()
                 .timeout(java.time.Duration.ofSeconds(10))
+                .header("Accept", "application/json")
 
-            // JIRA Cloud + api-token: Basic auth with email:apiToken.
-            // JIRA Server + username/password: Basic auth with username:password.
-            val basic = when (authMethod) {
-                "api-token" -> if (email.isNotBlank() && !apiToken.isNullOrBlank())
-                    java.util.Base64.getEncoder().encodeToString("$email:$apiToken".toByteArray())
-                    else null
-                "basic" -> if (username.isNotBlank() && !password.isNullOrBlank())
-                    java.util.Base64.getEncoder().encodeToString("$username:$password".toByteArray())
-                    else null
-                else -> null
+            // Three auth shapes:
+            //   * Cloud "api-token"       Basic <base64(email:apiToken)>
+            //                              — Atlassian Cloud convention.
+            //   * Datacenter/Server "pat" Bearer <pat>
+            //                              — Personal Access Token, NO email,
+            //                                NO Basic. Sending Basic with a
+            //                                PAT is exactly how this endpoint
+            //                                produces the 401 the user saw.
+            //   * Datacenter/Server "basic" Basic <base64(username:password)>
+            //                              — legacy username/password basic.
+            val authHint: String
+            when (authMethod) {
+                "api-token" -> {
+                    if (email.isBlank() || apiToken.isNullOrBlank()) {
+                        session.setAttribute("jiraTestResult", mapOf(
+                            "success" to false,
+                            "message" to "Cloud (API token) mode requires both Email and API token. Save them and retry."
+                        ))
+                        return "redirect:/jira"
+                    }
+                    val basic = java.util.Base64.getEncoder()
+                        .encodeToString("$email:$apiToken".toByteArray())
+                    builder.header("Authorization", "Basic $basic")
+                    authHint = "Basic email:api-token"
+                }
+                "pat" -> {
+                    if (apiToken.isNullOrBlank()) {
+                        session.setAttribute("jiraTestResult", mapOf(
+                            "success" to false,
+                            "message" to "Personal Access Token mode requires the PAT (no email/username needed). Paste your PAT and Save."
+                        ))
+                        return "redirect:/jira"
+                    }
+                    builder.header("Authorization", "Bearer $apiToken")
+                    authHint = "Bearer <pat>"
+                }
+                "basic" -> {
+                    if (username.isBlank() || password.isNullOrBlank()) {
+                        session.setAttribute("jiraTestResult", mapOf(
+                            "success" to false,
+                            "message" to "Server username/password mode requires both Username and Password. Save them and retry."
+                        ))
+                        return "redirect:/jira"
+                    }
+                    val basic = java.util.Base64.getEncoder()
+                        .encodeToString("$username:$password".toByteArray())
+                    builder.header("Authorization", "Basic $basic")
+                    authHint = "Basic username:password"
+                }
+                else -> {
+                    session.setAttribute("jiraTestResult", mapOf(
+                        "success" to false,
+                        "message" to "Unknown auth method '$authMethod'."
+                    ))
+                    return "redirect:/jira"
+                }
             }
-            if (basic != null) builder.header("Authorization", "Basic $basic")
 
             val response = client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofString())
-            if (response.statusCode() in 200..299) {
-                mapOf("success" to true, "message" to "Connected to JIRA at $baseUrl (HTTP ${response.statusCode()})")
-            } else {
-                mapOf("success" to false, "message" to "JIRA responded with HTTP ${response.statusCode()}")
+            val body = response.body() ?: ""
+            when (response.statusCode()) {
+                in 200..299 -> {
+                    // /myself returns the authenticated principal's display
+                    // name; surface it in the success banner so the user
+                    // can confirm WHO they authed as (catches the
+                    // service-account-vs-personal-account confusion).
+                    val displayName = Regex("\"displayName\"\\s*:\\s*\"([^\"]+)\"")
+                        .find(body)?.groupValues?.get(1) ?: "(unknown)"
+                    mapOf("success" to true,
+                          "message" to "Connected to JIRA at $baseUrl as $displayName (auth: $authHint).")
+                }
+                401 -> {
+                    val hint = when (authMethod) {
+                        "api-token" -> "Cloud uses email + API token via Basic auth. Double-check the email matches the token's owner."
+                        "pat" -> "If your PAT is correct, confirm your JIRA install version: PATs require Datacenter / Server 8.14+. On older Server versions use the Username + Password method instead."
+                        "basic" -> "Username + password rejected. Self-hosted JIRA may have basic auth disabled by admin policy; PAT (Datacenter 8.14+) is the supported alternative."
+                        else -> ""
+                    }
+                    mapOf("success" to false,
+                          "message" to "JIRA returned 401 Unauthorized (auth sent: $authHint). $hint")
+                }
+                else -> mapOf("success" to false,
+                              "message" to "JIRA responded with HTTP ${response.statusCode()} (auth sent: $authHint)")
             }
         } catch (e: Exception) {
             mapOf("success" to false, "message" to "Connection failed: ${e.message}")
