@@ -19,7 +19,17 @@ data class LlmRequest(
     val temperature: Double = 0.0,
     val maxTokens: Int = 4096,
     val seed: Long? = null,
-    val attachments: List<Attachment> = emptyList()
+    val attachments: List<Attachment> = emptyList(),
+    /**
+     * Optional caller-supplied correlation id. Adapters that talk to
+     * the Copilot bridge propagate this on every request so the bridge
+     * can group records under a BenchmarkRun, and so the harness can
+     * later query the bridge for authoritative token totals scoped to
+     * one run (rather than relying on per-call response counts).
+     * Empty / null = uncorrelated; bridge stores the record without a
+     * runId field.
+     */
+    val runId: String? = null
 ) {
     @Serializable
     data class Message(val role: Role, val content: String)

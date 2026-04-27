@@ -153,7 +153,12 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
                 for await (const frag of resp.text) content += frag;
 
                 tracker?.record({
-                    modelId: model.id, client, promptText, completionText: content, via: 'socket'
+                    modelId: model.id, client, promptText, completionText: content, via: 'socket',
+                    // Caller-supplied correlation id (e.g. BenchmarkRun.id).
+                    // Recorded so the webview can filter "all calls for
+                    // this run" and the harness can later query the
+                    // bridge for authoritative totals via /v1/activity.
+                    runId: typeof req.runId === 'string' ? req.runId : undefined,
                 });
                 treeProvider?.refresh();
                 refreshStatusBar();
@@ -163,9 +168,38 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
                 }) + '\n');
                 return;
             }
+            // Query usage stats scoped to a specific runId. Lets the
+            // test harness ask the bridge for AUTHORITATIVE token
+            // totals tagged to a BenchmarkRun, instead of trusting
+            // per-call response counts (which are approximations) or
+            // local-only synthetic stats from BenchmarkRunService.
+            //   request:  { op: "query-activity", runId: "run-abc123" }
+            //   response: { ok: true, snapshot: {...}, runIds: null }
+            // Or, with no runId, returns the list of distinct runIds
+            // currently in the bridge's record buffer:
+            //   request:  { op: "query-activity" }
+            //   response: { ok: true, snapshot: null, runIds: [...] }
+            case 'query-activity': {
+                const wanted = typeof req.runId === 'string' ? req.runId : null;
+                if (wanted == null) {
+                    socket.write(JSON.stringify({
+                        ok: true,
+                        snapshot: null,
+                        runIds: tracker?.knownRunIds() ?? [],
+                    }) + '\n');
+                    return;
+                }
+                const snap = tracker?.snapshotForRunId(wanted) ?? null;
+                socket.write(JSON.stringify({
+                    ok: true,
+                    snapshot: snap,
+                    runIds: null,
+                }) + '\n');
+                return;
+            }
             default:
                 socket.write(JSON.stringify({ ok: false,
-                    error: `unknown op '${op}' — expected 'chat' or 'list-models'` }) + '\n');
+                    error: `unknown op '${op}' — expected 'chat', 'list-models', or 'query-activity'` }) + '\n');
         }
     } catch (e: any) {
         socket.write(JSON.stringify({ ok: false, error: String(e?.message ?? e) }) + '\n');

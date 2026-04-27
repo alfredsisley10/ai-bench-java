@@ -22,6 +22,18 @@ interface RawRecord {
      */
     promptPreview?: string;
     completionPreview?: string;
+    /**
+     * Caller-supplied correlation id. Lets the test harness tag every
+     * bridge call made on behalf of a specific BenchmarkRun (id like
+     * "run-abc123") so the webview can filter the activity to one run
+     * AND so the harness can later query the bridge for authoritative
+     * token totals scoped to that run -- bypassing the synthetic
+     * counts BenchmarkRunService.simulate() generates locally.
+     * Surfaced via:
+     *   * socket op:  request JSON's `runId` field
+     *   * HTTP shim:  X-Run-Id request header
+     */
+    runId?: string;
 }
 
 /** Max chars retained per side for the click-to-expand preview. */
@@ -62,6 +74,26 @@ export interface RecentEntry {
     promptPreview?: string;
     /** Truncated model response for the click-to-expand panel. */
     completionPreview?: string;
+    /** Caller-supplied correlation id (e.g. BenchmarkRun.id). */
+    runId?: string;
+}
+
+/**
+ * Per-run aggregate. Returned by snapshotForRunId() so the harness can
+ * query "how many tokens / how much cost did THIS run consume?" without
+ * having to walk every record itself.
+ */
+export interface RunIdSnapshot {
+    runId: string;
+    requests: number;
+    promptTokens: number;
+    completionTokens: number;
+    estimatedCostUsd: number;
+    firstSeenIso: string | null;
+    lastSeenIso: string | null;
+    perModel: ModelTotals[];
+    /** Latest 50 entries for this runId, newest first. */
+    recent: RecentEntry[];
 }
 
 export interface StatsSnapshot {
@@ -113,6 +145,8 @@ export class UsageTracker {
         promptText: string;
         completionText: string;
         via: 'socket' | 'openai-http';
+        /** Optional caller-supplied correlation id (BenchmarkRun.id, span id, etc). */
+        runId?: string;
     }): void {
         const promptTokens = approxTokens(args.promptText);
         const completionTokens = approxTokens(args.completionText);
@@ -125,6 +159,7 @@ export class UsageTracker {
             via: args.via,
             promptPreview: truncatePreview(args.promptText),
             completionPreview: truncatePreview(args.completionText),
+            runId: args.runId && args.runId.trim().length > 0 ? args.runId.trim() : undefined,
         };
         this.records.push(rec);
         if (this.records.length > MAX_RECORDS) {
@@ -214,6 +249,7 @@ export class UsageTracker {
             via: r.via,
             promptPreview: r.promptPreview ?? '',
             completionPreview: r.completionPreview ?? '',
+            runId: r.runId,
         }));
 
         return {
@@ -223,6 +259,80 @@ export class UsageTracker {
             totalCompletionTokens: totalCompletion,
             totalEstimatedCostUsd: totalCost,
             perModel, perClient, recent,
+        };
+    }
+
+    /**
+     * Distinct runIds present in the current records, newest-seen first.
+     * Used by the webview's "filter by run" dropdown.
+     */
+    knownRunIds(): string[] {
+        const seen = new Map<string, number>(); // runId -> latest ts
+        for (const r of this.records) {
+            if (!r.runId) continue;
+            const prev = seen.get(r.runId);
+            if (prev === undefined || r.ts > prev) seen.set(r.runId, r.ts);
+        }
+        return Array.from(seen.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(e => e[0]);
+    }
+
+    /**
+     * Per-runId snapshot. Returned by GET /v1/activity?runId= so the
+     * harness can ask the bridge for AUTHORITATIVE token totals (rather
+     * than relying on locally-computed approximations from the
+     * synthetic simulate worker). Returns null when no records carry
+     * that runId.
+     */
+    snapshotForRunId(runId: string): RunIdSnapshot | null {
+        const matched = this.records.filter(r => r.runId === runId);
+        if (matched.length === 0) return null;
+
+        let totalPrompt = 0, totalCompletion = 0, totalCost = 0;
+        let firstTs = matched[0].ts, lastTs = matched[0].ts;
+        const perModelMap = new Map<string, ModelTotals>();
+        for (const r of matched) {
+            totalPrompt += r.promptTokens;
+            totalCompletion += r.completionTokens;
+            totalCost += r.estimatedCostUsd;
+            if (r.ts < firstTs) firstTs = r.ts;
+            if (r.ts > lastTs) lastTs = r.ts;
+            const m = perModelMap.get(r.modelId) ?? {
+                modelId: r.modelId,
+                label: priceFor(r.modelId)?.label ?? r.modelId,
+                requests: 0, promptTokens: 0, completionTokens: 0, estimatedCostUsd: 0,
+            };
+            m.requests++;
+            m.promptTokens += r.promptTokens;
+            m.completionTokens += r.completionTokens;
+            m.estimatedCostUsd += r.estimatedCostUsd;
+            perModelMap.set(r.modelId, m);
+        }
+        const recent: RecentEntry[] = matched
+            .slice(-RECENT_LIMIT).reverse()
+            .map(r => ({
+                whenIso: new Date(r.ts).toISOString(),
+                modelId: r.modelId,
+                client: r.client,
+                promptTokens: r.promptTokens,
+                completionTokens: r.completionTokens,
+                estimatedCostUsd: r.estimatedCostUsd,
+                via: r.via,
+                promptPreview: r.promptPreview ?? '',
+                completionPreview: r.completionPreview ?? '',
+                runId: r.runId,
+            }));
+        return {
+            runId,
+            requests: matched.length,
+            promptTokens: totalPrompt,
+            completionTokens: totalCompletion,
+            estimatedCostUsd: totalCost,
+            firstSeenIso: new Date(firstTs).toISOString(),
+            lastSeenIso: new Date(lastTs).toISOString(),
+            perModel: [...perModelMap.values()].sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd),
+            recent,
         };
     }
 

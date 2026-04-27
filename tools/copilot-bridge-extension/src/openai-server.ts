@@ -159,6 +159,32 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                 });
             }
 
+            // Per-runId activity query. Returns the authoritative token
+            // totals + per-model breakdown for a single BenchmarkRun.id
+            // (or whatever caller-correlation slug was tagged on
+            // record()), so the test harness can ASK THE BRIDGE for the
+            // truth instead of computing approximations locally.
+            //   GET /v1/activity                  -> distinct runIds list
+            //   GET /v1/activity?runId=<id>       -> per-run snapshot
+            if (req.method === 'GET' && (url.pathname === '/v1/activity' || url.pathname === '/activity')) {
+                const wanted = url.searchParams.get('runId');
+                if (!wanted) {
+                    return send(res, 200, {
+                        runIds: args.tracker.knownRunIds(),
+                        note: 'GET this endpoint with ?runId=<id> for per-run totals.',
+                    });
+                }
+                const snap = args.tracker.snapshotForRunId(wanted);
+                if (snap == null) {
+                    return send(res, 404, {
+                        error: { message: `No activity recorded for runId=${wanted}`,
+                                 type: 'no_run_activity' },
+                        runId: wanted,
+                    });
+                }
+                return send(res, 200, snap);
+            }
+
             if (req.method === 'POST' && (url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions')) {
                 const raw = await readBody(req);
                 const body = raw ? JSON.parse(raw) : {};
@@ -184,6 +210,14 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                     modelId: model.id, client,
                     promptText, completionText: content,
                     via: 'openai-http',
+                    // X-Run-Id is the HTTP-equivalent of the socket
+                    // protocol's `runId` JSON field. Tag every call
+                    // the harness makes for a specific BenchmarkRun
+                    // so the activity panel can filter to that run
+                    // and so the harness can query authoritative
+                    // totals via GET /v1/activity?runId=.
+                    runId: (req.headers['x-run-id'] != null
+                        ? String(req.headers['x-run-id']) : undefined),
                 });
 
                 return send(res, 200, {

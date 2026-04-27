@@ -303,18 +303,29 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 </tr></thead><tbody></tbody></table>
 
 <h2>Recent activity</h2>
-<div class="row" style="margin:0.3em 0; gap:0.5em; align-items:center">
+<div class="row" style="margin:0.3em 0; gap:0.5em; align-items:center; flex-wrap:wrap">
     <span class="help">Show</span>
     <select id="recentPageSize" style="padding:0.15em 0.3em">
         <option value="10" selected>10</option>
         <option value="25">25</option>
         <option value="50">50</option>
     </select>
-    <span class="help">most recent requests · click a row to inspect the full prompt + response.</span>
+    <span class="help">most recent requests</span>
+    <span class="help" style="margin-left:0.4em">·</span>
+    <span class="help">Filter by run:</span>
+    <!-- Filled by renderStats() with distinct runIds present in the
+         current snapshot. The harness tags each bridge call with a
+         BenchmarkRun.id (socket: runId JSON field; HTTP shim:
+         X-Run-Id header) so the operator can pin Recent activity to
+         one run while a benchmark is in flight. -->
+    <select id="recentRunIdFilter" style="padding:0.15em 0.3em; min-width:14em">
+        <option value="">All requests</option>
+    </select>
+    <span class="help" style="margin-left:0.4em">· click a row to inspect the full prompt + response.</span>
 </div>
 <table id="recent"><thead><tr>
     <th></th><!-- expand chevron column -->
-    <th>When</th><th>Model</th><th>Client</th><th>Via</th>
+    <th>When</th><th>Model</th><th>Client</th><th>Run ID</th><th>Via</th>
     <th class="num">Prompt</th><th class="num">Compl.</th><th class="num">Cost</th>
 </tr></thead><tbody></tbody></table>
 
@@ -460,6 +471,12 @@ var recentPageSize = (function(){
     try { var s = (vscode.getState && vscode.getState()) || {}; return s.recentPageSize || 10; }
     catch (_e) { return 10; }
 })();
+// Active runId filter. Empty string = "All requests". Persisted via
+// vscode.setState so it survives panel reloads.
+var recentRunIdFilter = (function(){
+    try { var s = (vscode.getState && vscode.getState()) || {}; return s.recentRunIdFilter || ''; }
+    catch (_e) { return ''; }
+})();
 // Set of recent-activity row indexes currently expanded; lets us preserve
 // the user's drill-in across snapshot pushes.
 var expandedRecentIdx = {};
@@ -523,16 +540,28 @@ function escapeHtml(s){
  */
 function renderRecent(rows){
     var tbody = document.querySelector('#recent tbody');
-    var slice = (rows || []).slice(0, recentPageSize);
+    // Refresh the runId filter dropdown's option list from the current
+    // snapshot so newly-tagged runs appear without a panel reload.
+    syncRunIdFilterOptions(rows);
+    // Apply the user's filter BEFORE pagination so the page-size
+    // count reflects "matching this run", not "matching anything".
+    var filtered = recentRunIdFilter
+        ? (rows || []).filter(function(r){ return r.runId === recentRunIdFilter; })
+        : (rows || []);
+    var slice = filtered.slice(0, recentPageSize);
     tbody.innerHTML = slice.map(function(r, i){
         var open = !!expandedRecentIdx[i];
         var chevron = open ? '▼' : '▶';
+        var runIdCell = r.runId
+            ? '<code style="font-size:0.85em;background:#1f2937;color:#e5e7eb;padding:1px 4px;border-radius:2px">' + escapeHtml(r.runId) + '</code>'
+            : '<span class="help">—</span>';
         var summary =
             '<tr class="recent-row" data-idx="' + i + '" style="cursor:pointer">' +
               '<td style="width:1.4em;color:#9ca3af">' + chevron + '</td>' +
               '<td>' + escapeHtml(fmtTime(r.whenIso)) + '</td>' +
               '<td>' + escapeHtml(r.modelId) + '</td>' +
               '<td>' + escapeHtml(r.client) + '</td>' +
+              '<td>' + runIdCell + '</td>' +
               '<td>' + escapeHtml(r.via) + '</td>' +
               '<td class="num">' + fmt(r.promptTokens) + '</td>' +
               '<td class="num">' + fmt(r.completionTokens) + '</td>' +
@@ -558,7 +587,7 @@ function renderRecent(rows){
             : '<div class="help">No prompt/completion text captured for this record. Records logged before the upgrade only retained summary stats; new requests after upgrading will include the click-to-expand preview.</div>';
         return summary +
           '<tr class="recent-detail" data-idx="' + i + '">' +
-            '<td colspan="8" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
+            '<td colspan="9" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
           '</tr>';
     }).join('');
     // Wire row clicks. Single delegated listener is replaced each render;
@@ -600,8 +629,39 @@ window.addEventListener('message', function(ev){
 });
 document.getElementById('clearBtn').onclick = function(){ vscode.postMessage({ type: 'clear' }); };
 
-// Page-size selector for recent activity. Persist via vscode.setState
-// so the user's choice survives webview reloads (panel hide/show, F5).
+// Refresh the runId filter dropdown with the distinct runIds present
+// in the current snapshot. Preserves the user's selection if the
+// previously-selected runId is still visible. Called from renderRecent
+// so the dropdown updates as new tagged calls land.
+function syncRunIdFilterOptions(rows){
+    var sel = document.getElementById('recentRunIdFilter');
+    if (!sel) return;
+    var seen = {};
+    (rows || []).forEach(function(r){ if (r.runId) seen[r.runId] = true; });
+    var ids = Object.keys(seen).sort();
+    // Skip rebuild if nothing changed -- avoids killing the user's
+    // open dropdown mid-click on every snapshot tick.
+    var existing = Array.from(sel.options).slice(1).map(function(o){ return o.value; });
+    var same = (existing.length === ids.length) &&
+               existing.every(function(v, i){ return v === ids[i]; });
+    if (same) return;
+    var current = sel.value;
+    var html = '<option value="">All requests</option>';
+    ids.forEach(function(id){
+        html += '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>';
+    });
+    sel.innerHTML = html;
+    // Keep selection if still present; otherwise reset to "All requests".
+    if (ids.indexOf(current) >= 0) sel.value = current;
+    else if (current) {
+        sel.value = '';
+        recentRunIdFilter = '';
+    }
+}
+
+// Page-size + runId-filter selectors for recent activity. Both persist
+// via vscode.setState so the user's choices survive webview reloads
+// (panel hide/show, F5).
 (function(){
     var sel = document.getElementById('recentPageSize');
     if (!sel) return;
@@ -617,6 +677,24 @@ document.getElementById('clearBtn').onclick = function(){ vscode.postMessage({ t
         expandedRecentIdx = {};
         renderStats();
     });
+
+    // RunId filter dropdown -- changing the selection narrows Recent
+    // activity to a single BenchmarkRun (or "All requests" for the
+    // unfiltered view). Persisted alongside page size so the operator
+    // can keep a focus on a long-running benchmark across reloads.
+    var runIdSel = document.getElementById('recentRunIdFilter');
+    if (runIdSel) {
+        runIdSel.value = recentRunIdFilter;
+        runIdSel.addEventListener('change', function(){
+            recentRunIdFilter = runIdSel.value || '';
+            try {
+                var prev = (vscode.getState && vscode.getState()) || {};
+                vscode.setState(Object.assign({}, prev, { recentRunIdFilter: recentRunIdFilter }));
+            } catch (_e) { /* state API unavailable */ }
+            expandedRecentIdx = {};
+            renderStats();
+        });
+    }
 })();
 // Copy-URL button for the OpenAI endpoint.
 var copyUrlBtn = document.getElementById('openAiCopyUrlBtn');
