@@ -83,6 +83,16 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
                 case 'stopBridge':          await hooks.stopBridge(); break;
                 case 'startOpenAi':         await hooks.startOpenAi(); break;
                 case 'stopOpenAi':          await hooks.stopOpenAi(); break;
+                // Stop both services in one click. The bridge IPC socket
+                // and the OpenAI HTTP shim are independent; "Stop bridge"
+                // alone leaves the HTTP shim accepting requests, which
+                // is precisely the surprise that prompted us to add this.
+                case 'stopAll':
+                    try { await hooks.stopBridge(); }
+                    catch (e) { /* still try the second one */ }
+                    try { await hooks.stopOpenAi(); }
+                    catch (_e) { /* tolerated */ }
+                    break;
                 case 'setAuthToken':        hooks.setAuthToken(msg.token ?? null); break;
                 case 'clearAuthToken':      hooks.setAuthToken(null); break;
                 case 'generateAuthToken':
@@ -223,6 +233,25 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
     </p>
 </div>
 
+<!-- Master stop / clarification banner. The TCP bridge (panel ①) and
+     the OpenAI HTTP shim (panel ②) are independent services with
+     independent lifecycles; clicking "Stop bridge" leaves the HTTP
+     shim accepting requests, which surprised at least one Windows
+     operator into thinking the stop didn't take. The banner makes
+     that explicit and offers a one-click Stop everything. -->
+<div id="stopAllBanner"
+     style="display:none; margin:0.4em 0 0.8em 0; padding:0.5em 0.75em;
+            border:1px solid #fbbf24; border-radius:4px;
+            background:#fffbeb; color:#78350f">
+    <strong>Both services are independent.</strong>
+    <span class="help" style="color:inherit">
+        Stopping ① alone leaves ② accepting requests on its HTTP port,
+        and vice versa — the Recent activity table will keep recording
+        whichever is still running.
+    </span>
+    <button id="stopAllBtn" class="danger" style="margin-left:0.6em">Stop everything</button>
+</div>
+
 <p class="help">
     Token counts are character-based approximations (~4 chars/token).
     Cost estimates use the embedded public-pricing table.
@@ -323,6 +352,22 @@ function renderControls() {
                 ? '(loopback bind — anonymous mode is safe)'
                 : '(non-loopback bind — leave auth required)';
         }
+        // Master stop-all banner: visible whenever either service is
+        // running. Re-pointed handler each render in case the snapshot
+        // refreshed mid-click.
+        var stopAllBanner = document.getElementById('stopAllBanner');
+        var stopAllBtn = document.getElementById('stopAllBtn');
+        if (stopAllBanner && stopAllBtn) {
+            var anyRunning = !!(rt.bridgeRunning || rt.openAiRunning);
+            stopAllBanner.style.display = anyRunning ? 'block' : 'none';
+            stopAllBtn.disabled = !anyRunning;
+            stopAllBtn.onclick = function(){
+                stopAllBtn.disabled = true;
+                armSafetyReenable(stopAllBtn);
+                vscode.postMessage({ type: 'stopAll' });
+            };
+        }
+
         var bb = document.getElementById('bridgeBadge');
         bb.textContent = rt.bridgeRunning ? 'running' : 'stopped';
         bb.className = 'badge ' + (rt.bridgeRunning ? 'on' : 'off');
