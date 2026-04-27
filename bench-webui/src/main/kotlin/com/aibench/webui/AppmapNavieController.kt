@@ -7,6 +7,12 @@ import org.springframework.ui.Model
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.ResponseBody
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 
 /**
  * AppMap Navie setup wizard. Lives on its own page (not under /llm)
@@ -37,11 +43,59 @@ class AppmapNavieController(
 
     private val log = LoggerFactory.getLogger(AppmapNavieController::class.java)
 
+    /**
+     * In-flight + recently-completed Verify runs, keyed by run id. Bounded
+     * to the last 4 runs so the operator can flip back to a previous run's
+     * step output without leaking unbounded memory. One worker thread —
+     * the test is short and one-at-a-time keeps the UX (and the bridge
+     * load) predictable.
+     */
+    private val testRuns = ConcurrentHashMap<String, NavieTestRun>()
+    private val testExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "appmap-navie-test").apply { isDaemon = true }
+    }
+
+    /**
+     * Snapshot of one Verify run. Mutable @Volatile fields are safe to
+     * read from the polling GET while the worker thread updates them —
+     * the JSON serializer reads each field once, races yield slightly
+     * stale reads, never torn objects.
+     */
+    data class NavieTestRun(
+        val id: String,
+        val startedAt: Instant,
+        @Volatile var endedAt: Instant? = null,
+        /** queued | running | done | failed */
+        @Volatile var status: String = "queued",
+        @Volatile var success: Boolean? = null,
+        @Volatile var message: String = "",
+        val steps: MutableList<NavieTestStep> = CopyOnWriteArrayList()
+    )
+
+    /** One stage of a Verify run. Three stages today: locate-cli, cli-version, bridge-probe. */
+    data class NavieTestStep(
+        val name: String,
+        @Volatile var status: String = "pending",   // pending | running | passed | failed
+        @Volatile var startedAt: Instant? = null,
+        @Volatile var endedAt: Instant? = null,
+        @Volatile var command: String = "",
+        @Volatile var output: String = "",
+        @Volatile var detail: String = "",
+        @Volatile var exitCode: Int? = null
+    ) {
+        val durationMs: Long? get() {
+            val s = startedAt ?: return null
+            val e = endedAt ?: return null
+            return e.toEpochMilli() - s.toEpochMilli()
+        }
+    }
+
     private companion object {
         const val NAVIE_BASE_URL = "appmapNavie.baseUrl"
         const val NAVIE_API_KEY = "appmapNavie.apiKey"
         const val NAVIE_DEFAULT_MODEL = "appmapNavie.defaultModel"
         const val NAVIE_TEST_RESULT = "appmapNavie.testResult"
+        const val NAVIE_TEST_ID = "appmapNavie.testId"
 
         /** Default OpenAI-compatible URL the Copilot bridge serves on. */
         const val NAVIE_DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -95,6 +149,11 @@ class AppmapNavieController(
             ?.takeIf { it.isNotBlank() } ?: "auto"
         val testResult = session.getAttribute(NAVIE_TEST_RESULT) as? Map<*, *>
         session.removeAttribute(NAVIE_TEST_RESULT)
+        // Expose the active test id (if any) so the template can mount
+        // the live-progress poller for that run. Don't clear the id —
+        // the user may refresh the page mid-test, and we want the poll
+        // to resume.
+        val testId = session.getAttribute(NAVIE_TEST_ID) as? String
 
         // Probe the OpenAI shim at the saved (or default) base URL. The
         // shim is a separate HTTP server from the bridge IPC socket, so
@@ -132,6 +191,7 @@ class AppmapNavieController(
             mapOf("id" to it.first, "label" to it.second)
         })
         model.addAttribute("navieTestResult", testResult)
+        model.addAttribute("navieTestId", testId)
         model.addAttribute("navieReady", ready)
         model.addAttribute("navieDefaultsBaseUrl", NAVIE_DEFAULT_BASE_URL)
         model.addAttribute("navieIsWindows", Platform.isWindows)
@@ -162,121 +222,203 @@ class AppmapNavieController(
     }
 
     /**
-     * Real end-to-end CLI smoke test — spawns the AppMap CLI binary
-     * twice:
+     * Verify — basic end-to-end probe. Three quick steps:
      * <ol>
-     *   <li><code>appmap --version</code> to confirm the binary is
-     *       executable on this host.</li>
-     *   <li><code>appmap navie "@help …"</code> with
-     *       {@code OPENAI_BASE_URL} + {@code OPENAI_API_KEY} pointed
-     *       at the saved endpoint — verifies the full CLI → bridge
-     *       OpenAI-shim → Copilot chain rather than a curl-only
-     *       look-alike.</li>
+     *   <li>Locate the AppMap CLI binary (no I/O — just path resolution).</li>
+     *   <li><code>appmap --version</code> — proves the binary is executable.</li>
+     *   <li>Direct HTTP POST to <code>{baseUrl}/chat/completions</code> with
+     *       <code>max_tokens=5</code> — proves the bridge speaks OpenAI and
+     *       that one round-trip lands in the LLM.</li>
      * </ol>
+     *
+     * <p>Earlier versions invoked <code>appmap navie "@help …"</code>, which
+     * triggered Navie's full agent loop (retrieval, tool calls, multi-turn
+     * reasoning) and could fire 100+ Copilot bridge requests for what was
+     * supposed to be a connectivity check. The point of Verify is that
+     * <em>one</em> request reaches the LLM and comes back; if it does, the
+     * harness's own Navie invocations at benchmark time will too. This
+     * version does that one request directly.
+     *
+     * <p>Runs asynchronously: the POST returns immediately with a redirect
+     * carrying the run id, and the page polls <code>/appmap-navie/test/{id}/status</code>
+     * for live step-by-step progress.
      */
     @PostMapping("/appmap-navie/test")
     fun test(session: HttpSession): String {
         val baseUrl = (session.getAttribute(NAVIE_BASE_URL) as? String)
             ?.takeIf { it.isNotBlank() } ?: NAVIE_DEFAULT_BASE_URL
         val apiKey = session.getAttribute(NAVIE_API_KEY) as? String
-        val cli = registeredModelsRegistry.appmapCliPath()
-        if (cli == null) {
-            session.setAttribute(NAVIE_TEST_RESULT, mapOf(
-                "success" to false,
-                "message" to "AppMap CLI not found on this host. Install per " +
-                    "https://appmap.io/docs/install — we look in " +
-                    "~/.appmap/bin/, %APPDATA%/AppMap/bin/ (Windows), " +
-                    "and every directory on PATH."
-            ))
-            return "redirect:/appmap-navie"
-        }
+        val defaultModel = (session.getAttribute(NAVIE_DEFAULT_MODEL) as? String)
+            ?.takeIf { it.isNotBlank() } ?: "auto"
 
+        val runId = UUID.randomUUID().toString().take(8)
+        val run = NavieTestRun(id = runId, startedAt = Instant.now()).apply {
+            steps += NavieTestStep("Locate AppMap CLI")
+            steps += NavieTestStep("Verify CLI is executable")
+            steps += NavieTestStep("Probe bridge OpenAI endpoint")
+        }
+        testRuns[runId] = run
+        // Cap memory: keep last 4 runs.
+        if (testRuns.size > 4) {
+            testRuns.entries.sortedBy { it.value.startedAt }
+                .take(testRuns.size - 4)
+                .forEach { testRuns.remove(it.key) }
+        }
+        session.setAttribute(NAVIE_TEST_ID, runId)
+        // Wipe the legacy banner so the page renders the new live panel
+        // instead of stale "previous test" text.
+        session.removeAttribute(NAVIE_TEST_RESULT)
+
+        testExecutor.submit { runVerifySteps(run, baseUrl, apiKey, defaultModel, session) }
+        return "redirect:/appmap-navie"
+    }
+
+    /** Live status JSON for the polling UI. */
+    @GetMapping("/appmap-navie/test/{id}/status")
+    @ResponseBody
+    fun testStatus(@org.springframework.web.bind.annotation.PathVariable id: String): NavieTestRun? =
+        testRuns[id]
+
+    private fun runVerifySteps(
+        run: NavieTestRun,
+        baseUrl: String,
+        apiKey: String?,
+        defaultModel: String,
+        session: HttpSession
+    ) {
+        run.status = "running"
+        val (locate, version, probe) = Triple(run.steps[0], run.steps[1], run.steps[2])
+
+        // Step 1 — locate CLI ----------------------------------------------
+        locate.status = "running"; locate.startedAt = Instant.now()
+        val cli = registeredModelsRegistry.appmapCliPath()
+        locate.endedAt = Instant.now()
+        if (cli == null) {
+            locate.status = "failed"
+            locate.detail = "AppMap CLI not found on this host. Install per https://appmap.io/docs/install — we look in ~/.appmap/bin/, %APPDATA%/AppMap/bin/ (Windows), and every directory on PATH."
+            failRun(run, locate.detail, session)
+            return
+        }
+        locate.status = "passed"
+        locate.detail = cli
+        locate.command = "(path resolution)"
+
+        // Step 2 — appmap --version ----------------------------------------
+        version.status = "running"; version.startedAt = Instant.now()
+        version.command = "$cli --version"
         val versionRes = runCli(listOf(cli, "--version"), emptyMap(), 10, null)
-        val testLog = StringBuilder()
-        testLog.appendLine("$ $cli --version")
-        testLog.appendLine(versionRes.output.trimEnd())
-        testLog.appendLine("[exit=${versionRes.exitCode}${if (versionRes.timedOut) ", timed out" else ""}]")
-        testLog.appendLine()
+        version.output = versionRes.output.trimEnd()
+        version.exitCode = versionRes.exitCode
+        version.endedAt = Instant.now()
         if (versionRes.exitCode != 0 || versionRes.timedOut) {
-            session.setAttribute(NAVIE_TEST_RESULT, mapOf(
-                "success" to false,
-                "message" to "CLI at $cli failed to run `appmap --version` " +
-                    "(exit=${versionRes.exitCode}${if (versionRes.timedOut) ", timed out" else ""}): " +
-                    versionRes.output.take(200).ifBlank { "(no output)" },
-                "log" to testLog.toString()
-            ))
-            return "redirect:/appmap-navie"
+            version.status = "failed"
+            version.detail = if (versionRes.timedOut) "Timed out after 10s"
+                             else "Exit ${versionRes.exitCode}"
+            failRun(run, "CLI at $cli failed to run --version (${version.detail}). Output: ${version.output.take(200).ifBlank { "(none)" }}", session)
+            return
         }
         val cliVersion = versionRes.output.lineSequence()
             .map { it.trim() }.firstOrNull { it.isNotBlank() } ?: "(unknown)"
+        version.status = "passed"
+        version.detail = "v$cliVersion"
 
-        // LangChain's OpenAI client rejects blank api_key, so inject a
-        // placeholder the bridge will ignore when auth is off.
-        val env = mutableMapOf(
-            "OPENAI_BASE_URL" to baseUrl,
-            "OPENAI_API_KEY" to (apiKey?.takeIf { it.isNotBlank() } ?: "sk-no-auth-needed")
-        )
-        val tmpDir = java.nio.file.Files.createTempDirectory("ai-bench-navie-test-").toFile()
-        tmpDir.deleteOnExit()
-
-        val navieCmd = listOf(cli, "navie", "--directory", tmpDir.absolutePath,
-            "@help Reply with one short sentence confirming this Navie connection works.")
-        testLog.appendLine("$ ${navieCmd.joinToString(" ")}")
-        testLog.appendLine("[env] OPENAI_BASE_URL=${env["OPENAI_BASE_URL"]} OPENAI_API_KEY=<${env["OPENAI_API_KEY"]?.take(8)}…>")
-        val navieRes = runCli(navieCmd, env, 75, tmpDir)
-        testLog.appendLine(navieRes.output.trimEnd())
-        testLog.appendLine("[exit=${navieRes.exitCode}${if (navieRes.timedOut) ", timed out" else ""}]")
-        runCatching { tmpDir.deleteRecursively() }
-
-        val authKeyMissing = navieRes.output.contains("OpenAI or Azure OpenAI API key")
-        val connFailure = navieRes.output.contains("ECONNREFUSED") ||
-                          navieRes.output.contains("ENOTFOUND") ||
-                          navieRes.output.contains("fetch failed")
-
-        val result = when {
-            navieRes.timedOut -> mapOf(
-                "success" to false,
-                "message" to "AppMap CLI v$cliVersion: navie call to $baseUrl timed out after 75s. " +
-                    "The endpoint is reachable but the upstream LLM may be slow or hung. " +
-                    "stderr tail: ${navieRes.output.takeLast(300).replace("\n", " ")}"
-            )
-            connFailure -> mapOf(
-                "success" to false,
-                "message" to "AppMap CLI v$cliVersion could not connect to $baseUrl. " +
-                    "Is the Copilot bridge running with the OpenAI shim enabled? " +
-                    "(VSCode command: ai-bench: Start Copilot Bridge)"
-            )
-            authKeyMissing -> mapOf(
-                "success" to false,
-                "message" to "AppMap CLI v$cliVersion rejected the OpenAI API key. " +
-                    "If the bridge has auth enabled, paste its `sk-aibench-…` token " +
-                    "in Bearer token above and re-save."
-            )
-            navieRes.exitCode == 0 -> {
-                val preview = navieRes.output.lineSequence()
-                    .map { it.trim() }
-                    .filter { it.isNotBlank() && !it.startsWith("Requesting") && !it.startsWith("Received completion") }
-                    .toList()
-                    .takeLast(3)
-                    .joinToString(" ⏎ ")
-                mapOf(
-                    "success" to true,
-                    "message" to "OK — AppMap CLI v$cliVersion routed through $baseUrl. " +
-                        "Response preview: ${preview.take(300).ifBlank { "(response captured)" }}"
-                )
-            }
-            else -> mapOf(
-                "success" to false,
-                "message" to "AppMap CLI v$cliVersion exited ${navieRes.exitCode} calling navie. " +
-                    "Last 400 chars: ${navieRes.output.takeLast(400).replace("\n", " ")}"
-            )
+        // Step 3 — direct HTTP probe ---------------------------------------
+        probe.status = "running"; probe.startedAt = Instant.now()
+        val effectiveKey = apiKey?.takeIf { it.isNotBlank() } ?: "sk-no-auth-needed"
+        probe.command = "POST ${baseUrl.trimEnd('/')}/chat/completions  (model=$defaultModel, max_tokens=5)"
+        val probeResult = bridgeChatProbe(baseUrl, effectiveKey, defaultModel)
+        probe.output = probeResult.bodyPreview
+        probe.exitCode = probeResult.httpStatus
+        probe.endedAt = Instant.now()
+        if (probeResult.success) {
+            probe.status = "passed"
+            probe.detail = "HTTP ${probeResult.httpStatus} in ${probe.durationMs}ms · reply: ${probeResult.replySnippet.take(120).ifBlank { "(empty)" }}"
+            succeedRun(run, "OK — AppMap CLI v$cliVersion + bridge at $baseUrl returned a response in ${probe.durationMs}ms.", session)
+        } else {
+            probe.status = "failed"
+            probe.detail = probeResult.diagnosticHint
+            failRun(run, "Bridge probe failed (HTTP ${probeResult.httpStatus}): ${probeResult.diagnosticHint}", session)
         }
-        // Always include the full command log so the user can drill in
-        // even on the success path (helpful for inspecting which model
-        // Copilot resolved to, or how long each phase took).
-        session.setAttribute(NAVIE_TEST_RESULT, result + ("log" to testLog.toString()))
-        return "redirect:/appmap-navie"
     }
+
+    private fun failRun(run: NavieTestRun, message: String, session: HttpSession) {
+        run.success = false
+        run.message = message
+        run.status = "failed"
+        run.endedAt = Instant.now()
+        // Legacy banner support — anything reading NAVIE_TEST_RESULT still works.
+        session.setAttribute(NAVIE_TEST_RESULT, mapOf("success" to false, "message" to message))
+    }
+
+    private fun succeedRun(run: NavieTestRun, message: String, session: HttpSession) {
+        run.success = true
+        run.message = message
+        run.status = "done"
+        run.endedAt = Instant.now()
+        session.setAttribute(NAVIE_TEST_RESULT, mapOf("success" to true, "message" to message))
+    }
+
+    /** Single chat-completions probe. One round-trip, max_tokens=5. */
+    private fun bridgeChatProbe(baseUrl: String, apiKey: String, model: String): BridgeProbeResult {
+        val url = baseUrl.trimEnd('/') + "/chat/completions"
+        val payload = """{"model":"${model.replace("\"","\\\"")}",""" +
+            """"messages":[{"role":"user","content":"Reply with the single word: ok"}],""" +
+            """"max_tokens":5,"temperature":0}"""
+        return try {
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(5))
+                .build()
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(url))
+                .timeout(java.time.Duration.ofSeconds(30))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer $apiKey")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(payload))
+                .build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            val body = resp.body() ?: ""
+            val reply = extractAssistantReply(body)
+            val ok = resp.statusCode() == 200 && reply.isNotBlank()
+            BridgeProbeResult(
+                success = ok,
+                httpStatus = resp.statusCode(),
+                bodyPreview = body.take(2000),
+                replySnippet = reply,
+                diagnosticHint = when {
+                    ok -> ""
+                    resp.statusCode() == 401 -> "Bridge rejected the API key. If the bridge has auth enabled, paste its `sk-aibench-…` token in Bearer token above and re-save."
+                    resp.statusCode() == 404 -> "Bridge returned 404. Confirm the base URL ends with /v1 (we POST to {base}/chat/completions)."
+                    resp.statusCode() in 500..599 -> "Bridge returned ${resp.statusCode()}. Check the VSCode 'AI Bench Copilot Bridge' output panel for upstream Copilot errors."
+                    else -> "HTTP ${resp.statusCode()} — body: ${body.take(300).ifBlank { "(empty)" }}"
+                }
+            )
+        } catch (e: java.net.ConnectException) {
+            BridgeProbeResult(false, 0, "", "", "Could not connect to $url. Is the Copilot bridge running? (VSCode command: ai-bench: Start Copilot Bridge)")
+        } catch (e: java.net.http.HttpTimeoutException) {
+            BridgeProbeResult(false, 0, "", "", "Bridge did not respond within 30s. Upstream Copilot may be slow or hung; check the VSCode output panel.")
+        } catch (e: Exception) {
+            BridgeProbeResult(false, 0, "", "", "${e.javaClass.simpleName}: ${e.message ?: "(no detail)"}")
+        }
+    }
+
+    /** Parse "choices[0].message.content" out of a chat-completions response without a JSON dep. */
+    private fun extractAssistantReply(body: String): String {
+        // Cheap pattern-extract: works for the common shape returned by the
+        // bridge. Falls back to "" so an empty/malformed response is treated
+        // as an unsuccessful probe.
+        val m = Regex("""\"content\"\s*:\s*\"((?:[^\"\\]|\\.)*)\"""").find(body) ?: return ""
+        return m.groupValues[1]
+            .replace("\\n", " ").replace("\\\"", "\"")
+            .replace("\\\\", "\\").trim()
+    }
+
+    data class BridgeProbeResult(
+        val success: Boolean,
+        val httpStatus: Int,
+        val bodyPreview: String,
+        val replySnippet: String,
+        val diagnosticHint: String
+    )
 
     /**
      * Install the AppMap CLI via the npm-global package

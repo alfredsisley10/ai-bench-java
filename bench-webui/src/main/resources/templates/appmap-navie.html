@@ -306,52 +306,189 @@
         </form>
     </section>
 
-    <!-- CLI smoke test ---------------------------------------------------- -->
+    <!-- Verify smoke test ------------------------------------------------- -->
     <section>
         <h3>
-            <span th:text="${navieTestResult != null and navieTestResult['success'] == true ? '✓' : '○'}" style="margin-right:0.3em"></span>
-            Verify — real AppMap CLI round-trip
+            <span id="navieTestHeader" style="margin-right:0.3em">○</span>
+            Verify — basic AppMap CLI + bridge round-trip
         </h3>
         <p class="help-text">
-            Spawns the AppMap CLI twice (same binary the harness
-            invokes at benchmark time):
+            Three quick steps confirm the harness's Navie path works.
+            Earlier versions of this button drove
+            <code>appmap navie "@help …"</code>, which fanned out into
+            100+ Copilot bridge calls before completing — useful as a
+            stress test, but not what you want from a connectivity check.
+            This Verify is one round-trip per step.
         </p>
         <ol style="margin:0.3em 0 0.5em 0">
-            <li>
-                <code>appmap --version</code> —
-                proves the binary is present and executable on this
-                host <em>(fast, &lt;2&nbsp;s)</em>.
-            </li>
-            <li>
-                <code>appmap navie "@help …"</code>
-                with <code>OPENAI_BASE_URL</code> +
-                <code>OPENAI_API_KEY</code> injected from the saved
-                config — exercises the full CLI → bridge OpenAI shim →
-                Copilot chain. The <code>@help</code> agent skips AppMap
-                retrieval so the round-trip finishes quickly.
-                <em>(up to ~75&nbsp;s)</em>
-            </li>
+            <li><strong>Locate AppMap CLI</strong> — path resolution only.</li>
+            <li><strong>Verify CLI is executable</strong> — <code>appmap --version</code> (~2&nbsp;s).</li>
+            <li><strong>Probe bridge OpenAI endpoint</strong> — single
+                <code>POST {baseUrl}/chat/completions</code> with
+                <code>max_tokens=5</code> (~1–3&nbsp;s).</li>
         </ol>
         <p class="help-text">
-            This is the same code path the harness takes at benchmark
-            time, so a green result here means the real
-            <em>AppMap Navie via Copilot</em> benchmark provider will work.
+            All three together: ≤&nbsp;~10&nbsp;s and exactly one LLM call.
+            The harness uses the same CLI + bridge at benchmark time, so
+            a green Verify means the real Navie provider will work.
         </p>
-        <div class="status-banner" style="background:#fffbeb; border:1px solid #f59e0b;
-                                          color:#78350f; padding:0.5em 0.75em;
-                                          border-radius:4px; margin:0.5em 0">
-            <strong>First-time consent prompt:</strong>
-            If you haven't already authorized the AppMap extension to
-            access GitHub Copilot's language models, VSCode will pop a
-            consent dialog the first time this test runs. <em>Switch to
-            VSCode and click <strong>Allow</strong></em> when it
-            appears — the test will hang at the Navie call until you do.
-            Subsequent tests run without the prompt.
-        </div>
-        <form method="post" action="/appmap-navie/test">
-            <button type="submit" class="btn-sm">Test via AppMap CLI</button>
+
+        <form method="post" action="/appmap-navie/test" id="navieTestForm" style="margin:0.5em 0">
+            <button type="submit" class="btn-sm" id="navieTestBtn">Test via AppMap CLI</button>
         </form>
+
+        <!-- Live-progress panel. Mounted whenever navieTestId is set;
+             the JS below polls /appmap-navie/test/{id}/status until the
+             run reaches done|failed, then unsticks the form button. -->
+        <div id="navieTestPanel"
+             th:if="${navieTestId != null}"
+             th:attr="data-test-id=${navieTestId}"
+             style="border:1px solid #d4d4d4; border-radius:4px; padding:0.75em; margin-top:0.5em">
+            <div id="navieTestSummary" class="status-banner"
+                 style="padding:0.4em 0.6em; border-radius:3px; background:#f3f4f6;
+                        border:1px solid #d4d4d4; margin-bottom:0.6em">
+                <span id="navieTestSpinner">⟳</span>
+                <span id="navieTestMessage">Starting Verify…</span>
+                <span id="navieTestElapsed" class="help-text" style="margin-left:0.5em"></span>
+            </div>
+            <ol id="navieTestSteps" style="margin:0; padding-left:1.4em; list-style:none">
+                <!-- Filled by JS. One <li> per step with icon + collapsible
+                     <details> for the command, output, and timing. -->
+            </ol>
+        </div>
     </section>
+
+    <!-- ============================================================
+         Verify run polling
+         ============================================================
+         Polls /appmap-navie/test/{id}/status every 750ms. Renders 3
+         steps (icon + name + duration + collapsible command/output).
+         Stops polling when status is "done" or "failed" — the panel
+         stays on screen so the operator can drill into individual
+         step output even after a green result.
+    -->
+    <script th:if="${navieTestId != null}" th:inline="javascript">
+    (function () {
+        var panel = document.getElementById('navieTestPanel');
+        if (!panel) return;
+        var testId = panel.getAttribute('data-test-id');
+        var btn = document.getElementById('navieTestBtn');
+        var headerIcon = document.getElementById('navieTestHeader');
+        var summary = document.getElementById('navieTestSummary');
+        var spinnerEl = document.getElementById('navieTestSpinner');
+        var msgEl = document.getElementById('navieTestMessage');
+        var elapsedEl = document.getElementById('navieTestElapsed');
+        var stepsEl = document.getElementById('navieTestSteps');
+
+        var stepIcons = { pending: '○', running: '⟳', passed: '✓', failed: '✗' };
+        var stepColors = { pending: '#9ca3af', running: '#0ea5e9',
+                           passed: '#16a34a', failed: '#dc2626' };
+        var pollHandle = null;
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Verifying…'; }
+
+        function fmtMs(ms) { return ms == null ? '' : (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's'); }
+
+        function escapeHtml(s) {
+            return (s || '').replace(/[&<>"']/g, function (c) {
+                return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+            });
+        }
+
+        function render(run) {
+            // Top-line summary.
+            spinnerEl.textContent = run.status === 'running' ? '⟳' :
+                                    run.status === 'done'    ? '✓' :
+                                    run.status === 'failed'  ? '✗' : '○';
+            spinnerEl.style.color = run.status === 'done'    ? '#16a34a' :
+                                    run.status === 'failed'  ? '#dc2626' :
+                                    run.status === 'running' ? '#0ea5e9' : '#9ca3af';
+            msgEl.textContent = run.message || (run.status === 'running'
+                ? 'Step ' + (run.steps.findIndex(function (s) { return s.status === 'running'; }) + 1) +
+                  ' of ' + run.steps.length + '…'
+                : 'Queued');
+            if (run.startedAt) {
+                var started = new Date(run.startedAt).getTime();
+                var ended = run.endedAt ? new Date(run.endedAt).getTime() : Date.now();
+                elapsedEl.textContent = ' · ' + fmtMs(ended - started);
+            }
+
+            // Header icon next to the section title.
+            if (headerIcon) {
+                headerIcon.textContent = stepIcons[run.status === 'running' ? 'running' :
+                                                   run.status === 'done'    ? 'passed' :
+                                                   run.status === 'failed'  ? 'failed' : 'pending'];
+                headerIcon.style.color = stepColors[run.status === 'done'    ? 'passed' :
+                                                    run.status === 'failed'  ? 'failed' :
+                                                    run.status === 'running' ? 'running' : 'pending'];
+            }
+
+            // Recolor summary background by run state for at-a-glance reading.
+            summary.style.background = run.status === 'done'   ? '#ecfdf5' :
+                                       run.status === 'failed' ? '#fef2f2' : '#f3f4f6';
+            summary.style.borderColor = run.status === 'done'   ? '#bbf7d0' :
+                                        run.status === 'failed' ? '#fecaca' : '#d4d4d4';
+
+            // Steps list — one <li> per step. Each has a status icon,
+            // name, duration, and a collapsed <details> for command +
+            // output. Already-open details stay open across re-renders
+            // so the user's drill-in survives the next poll tick.
+            var openIds = Array.prototype.map.call(
+                stepsEl.querySelectorAll('details[open]'),
+                function (d) { return d.dataset.idx; }
+            );
+            var html = run.steps.map(function (step, i) {
+                var icon = stepIcons[step.status] || '○';
+                var col = stepColors[step.status] || '#9ca3af';
+                var dur = step.durationMs == null ? '' : ' · ' + fmtMs(step.durationMs);
+                var detail = step.detail ? ' — ' + escapeHtml(step.detail) : '';
+                var hasBody = (step.command && step.command.length > 0) ||
+                              (step.output  && step.output.length  > 0);
+                var details = hasBody
+                    ? '<details data-idx="' + i + '"' +
+                      (openIds.indexOf(String(i)) >= 0 ? ' open' : '') +
+                      ' style="margin:0.2em 0 0 1.4em">' +
+                        '<summary class="help-text" style="cursor:pointer">command + output</summary>' +
+                        (step.command ? '<pre style="margin:0.3em 0;padding:0.4em;background:#f9fafb;border-radius:3px;white-space:pre-wrap;word-break:break-word">$ ' + escapeHtml(step.command) + '</pre>' : '') +
+                        (step.output ? '<pre style="margin:0.3em 0;padding:0.4em;background:#111827;color:#e5e7eb;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:14em;overflow:auto">' + escapeHtml(step.output) + '</pre>' : '') +
+                        (step.exitCode != null ? '<div class="help-text">exit/HTTP: ' + step.exitCode + '</div>' : '') +
+                      '</details>'
+                    : '';
+                return '<li style="margin:0.25em 0">' +
+                       '<span style="display:inline-block;width:1.2em;color:' + col + ';font-weight:bold">' + icon + '</span>' +
+                       '<span>' + escapeHtml(step.name) + '</span>' +
+                       '<span class="help-text">' + dur + detail + '</span>' +
+                       details +
+                       '</li>';
+            }).join('');
+            stepsEl.innerHTML = html;
+        }
+
+        function poll() {
+            fetch('/appmap-navie/test/' + encodeURIComponent(testId) + '/status', {
+                headers: { 'Accept': 'application/json' }
+            }).then(function (r) {
+                if (r.status === 404) { stopPolling(); return null; }
+                return r.json();
+            }).then(function (run) {
+                if (!run) return;
+                render(run);
+                if (run.status === 'done' || run.status === 'failed') stopPolling();
+            }).catch(function () {
+                // Transient network errors are expected during teardown;
+                // ignore and let the next tick recover.
+            });
+        }
+
+        function stopPolling() {
+            if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Test via AppMap CLI'; }
+        }
+
+        poll();                                  // immediate first paint
+        pollHandle = setInterval(poll, 750);     // and every 750ms
+    })();
+    </script>
 
     <!-- Usage hint + reset ------------------------------------------------ -->
     <section>
