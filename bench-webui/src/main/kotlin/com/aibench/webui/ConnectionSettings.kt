@@ -180,6 +180,41 @@ class ConnectionSettings {
         val results = mutableListOf<ProbeResult>()
         val client = httpClient(Duration.ofSeconds(8))
 
+        // Synthetic top-of-sweep row that surfaces the parsed proxy
+        // state. If the operator saved a proxy but parseHostPort
+        // couldn't extract host:port from it (e.g. "proxy.corp.com"
+        // with no port), every later row would render "Via proxy = no"
+        // with no explanation; this row makes the discrepancy obvious.
+        val httpsParsed = parseHostPort(s.httpsProxy)
+        val httpParsed  = parseHostPort(s.httpProxy)
+        val bothBlank   = s.httpsProxy.isBlank() && s.httpProxy.isBlank()
+        val proxyDiagnostic = when {
+            bothBlank ->
+                ProbeResult("(no proxy)", "Proxy configuration",
+                    viaProxy = false, statusCode = 0, durationMs = 0,
+                    ok = true,
+                    message = "No proxy saved; every probe below will go direct.")
+            httpsParsed != null || httpParsed != null -> {
+                val parts = mutableListOf<String>()
+                httpsParsed?.let { parts += "https=${it.first}:${it.second}" }
+                httpParsed?.let  { parts += "http=${it.first}:${it.second}" }
+                if (s.hasProxyAuth) parts += "auth=${s.proxyAuthUser}"
+                ProbeResult(s.httpsProxy.ifBlank { s.httpProxy }, "Proxy configuration",
+                    viaProxy = true, statusCode = 0, durationMs = 0,
+                    ok = true,
+                    message = "Parsed OK — " + parts.joinToString(", ") +
+                              ". Probes below SHOULD show 'Via proxy = yes'.")
+            }
+            else ->
+                ProbeResult(s.httpsProxy.ifBlank { s.httpProxy }, "Proxy configuration",
+                    viaProxy = false, statusCode = -1, durationMs = 0,
+                    ok = false,
+                    message = "Proxy is saved but couldn't be parsed as host:port — " +
+                              "expected form 'proxy.corp.com:8080' or 'https://proxy.corp.com:8080'. " +
+                              "Probes below will all go direct.")
+        }
+        results += proxyDiagnostic
+
         fun probe(url: String, purpose: String, useMirrorAuth: Boolean = false) {
             val start = System.currentTimeMillis()
             val viaProxy = currentProxySelector() != null && !isLoopback(url)
@@ -1233,10 +1268,24 @@ class ConnectionSettings {
 
     private fun parseHostPort(url: String): Pair<String, String>? {
         if (url.isBlank()) return null
-        val cleaned = url.removePrefix("https://").removePrefix("http://").trim('/')
+        // Be aggressive about cleanup -- the operator may paste anything
+        // from the bare `proxy.corp.com:8080` form to a fully-qualified
+        // `https://proxy.corp.com:8080/path?x=1` URL with surrounding
+        // whitespace. Strip trim, scheme (case-insensitive), userinfo,
+        // path/query, and outer slashes before splitting host:port.
+        var cleaned = url.trim()
+        listOf("https://", "http://", "HTTPS://", "HTTP://").forEach {
+            if (cleaned.startsWith(it, ignoreCase = true))
+                cleaned = cleaned.substring(it.length)
+        }
+        // Drop user:pass@ if present.
+        cleaned.indexOf('@').let { at -> if (at >= 0) cleaned = cleaned.substring(at + 1) }
+        // Drop path / query.
+        cleaned = cleaned.substringBefore('/').substringBefore('?')
+        cleaned = cleaned.trim().trim('/')
         val parts = cleaned.split(":")
         if (parts.size < 2) return null
-        val host = parts[0]
+        val host = parts[0].trim()
         val port = parts[1].takeWhile { it.isDigit() }
         if (host.isBlank() || port.isBlank()) return null
         return host to port
