@@ -1,0 +1,154 @@
+#
+# Auto-rebuild and commit dist/ on every push to main.
+#
+# Why this exists:
+#   The pre-built bench-cli + bench-webui artifacts under dist/ are how
+#   enterprise users (who can reach the git remote but not GitHub
+#   Releases) install the tools. They go stale every time a developer
+#   pushes source changes without remembering to rebuild + commit them
+#   — and stale dist/ has bitten us with /llm 500s and missing-VSIX
+#   warnings on already-installed boxes.
+#
+# What it does:
+#   1. Build the VSCode copilot-bridge extension (npm run package -> .vsix)
+#   2. Stage that VSIX into bench-webui/src/main/resources/static/dist/
+#      so the Spring Boot bootJar bundles it (the path is .gitignore'd
+#      so this stage is fresh every CI run).
+#   3. Build :bench-webui:bootJar (now with the VSIX inside) and
+#      :bench-cli:distZip.
+#   4. Copy both into dist/.
+#   5. Commit + push back to main IF the bytes actually changed.
+#
+# Loop avoidance:
+#   * paths-ignore on dist/** stops the bot's own commits from
+#     re-triggering the workflow (a push that only touches dist/
+#     doesn't match any non-ignored path, so the workflow doesn't run).
+#   * `[skip ci]` in the commit subject is a belt-and-suspenders guard
+#     for any future CI provider that doesn't honour paths-ignore.
+#
+# Failure mode this *doesn't* fix:
+#   If main is a protected branch and the bot can't push directly,
+#   the final step fails. The fix is either to allow the workflow's
+#   GITHUB_TOKEN to bypass protection rules, or to switch to a PR-
+#   based flow (open a "ci: refresh dist/" PR and auto-merge it).
+#
+name: build-dist
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # Skip pushes that ONLY touch ignored paths. dist/** is the
+      # critical one — without it, every bot commit would re-trigger
+      # the workflow forever. The others are doc-only paths that
+      # don't change build output.
+      - 'dist/**'
+      - 'docs/**'
+      - 'README.md'
+      - '.github/**'
+      - '*.md'
+  workflow_dispatch: {}
+
+# The default GITHUB_TOKEN gets contents:read; we need contents:write
+# to push the dist/ refresh back.
+permissions:
+  contents: write
+
+# Multiple rapid pushes shouldn't pile up build jobs. cancel-in-progress
+# kills the older job so only the latest source state ever lands a
+# dist/ commit.
+concurrency:
+  group: build-dist-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild-dist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 is overkill (we don't need history) but keeps
+          # `git diff --cached` predictable when the workflow is rerun
+          # against the same SHA.
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tools/copilot-bridge-extension/package-lock.json
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Build copilot-bridge VSIX
+        working-directory: tools/copilot-bridge-extension
+        run: |
+          npm ci
+          npm run package
+          ls -lh copilot-bridge.vsix
+
+      - name: Stage VSIX into bench-webui resources
+        # The destination is .gitignore'd, so we stage it fresh each run.
+        # Without this, the Spring Boot fat jar would skip the VSIX and
+        # the /llm Copilot panel would surface "not yet built".
+        run: |
+          mkdir -p bench-webui/src/main/resources/static/dist
+          cp tools/copilot-bridge-extension/copilot-bridge.vsix \
+             bench-webui/src/main/resources/static/dist/copilot-bridge.vsix
+          ls -lh bench-webui/src/main/resources/static/dist/copilot-bridge.vsix
+
+      - name: Build bench-webui :bootJar
+        working-directory: bench-webui
+        run: ./gradlew bootJar --no-daemon --console=plain
+
+      - name: Build bench-cli :distZip
+        working-directory: bench-cli
+        run: ./gradlew distZip --no-daemon --console=plain
+
+      - name: Refresh dist/
+        run: |
+          cp bench-webui/build/libs/bench-webui-*.jar dist/
+          cp bench-cli/build/distributions/bench-cli-*.zip dist/
+          ls -lh dist/
+
+      - name: Sanity check — VSIX bundled in fat jar
+        run: |
+          if ! unzip -l dist/bench-webui-*.jar | grep -q 'copilot-bridge.vsix'; then
+            echo "::error::VSIX missing from fat jar — staging step is broken"
+            exit 1
+          fi
+          echo "VSIX confirmed at:"
+          unzip -l dist/bench-webui-*.jar | grep copilot-bridge.vsix
+
+      - name: Commit + push if dist/ actually changed
+        run: |
+          git config user.name "ai-bench-build-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/
+          if git diff --cached --quiet; then
+            echo "No dist/ changes — nothing to commit."
+            exit 0
+          fi
+          # Both shortlog of stat (for human readers) and a marker line
+          # (for grep-based audit) go in the commit body.
+          git commit -m "ci: rebuild dist/ artifacts [skip ci]" \
+                     -m "Source SHA: ${{ github.sha }}" \
+                     -m "Triggering commit: ${{ github.event.head_commit.message }}"
+          git push origin HEAD:main
