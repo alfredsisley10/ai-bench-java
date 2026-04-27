@@ -19,22 +19,35 @@
         <p class="help-text">Loading recording status…</p>
     </div>
 
-    <!-- Banking-app status banner. Surfaces three orthogonal signals
-         so the operator can tell at a glance whether interactive
-         recording will actually work. -->
-    <div th:class="'status-banner ' + (${appRunning and agentAttached} ? 'ok' : (${appRunning} ? 'partial' : 'error'))"
+    <!-- Banking-app status banner. Distinguishes four states so the
+         operator can tell at a glance whether interactive recording
+         will actually work — STARTING is critical because Spring Boot
+         takes 10-30s to bind 8080, and during that window status was
+         previously rendered as "Stopped" which made it look like the
+         start request had silently failed. -->
+    <!-- Auto-refresh while STARTING so the user sees the transition
+         to RUNNING without having to F5. The header refresh is gated
+         on appStarting so it stops once the app is up or stopped. -->
+    <th:block th:if="${appStarting}">
+        <meta http-equiv="refresh" content="3" />
+    </th:block>
+    <div th:class="'status-banner ' + (${appRunning and agentAttached} ? 'ok' : (${appRunning or appStarting} ? 'partial' : 'error'))"
          style="display:flex; align-items:center; gap:0.6em; flex-wrap:wrap">
         <strong>Banking app</strong>
-        <span th:if="${!appRunning}" class="badge unavailable">Stopped</span>
+        <span th:if="${appStarting}" class="badge partial">Starting…</span>
+        <span th:if="${!appRunning and !appStarting}" class="badge unavailable">Stopped</span>
         <span th:if="${appRunning and agentAttached}" class="badge available">Running with AppMap agent</span>
         <span th:if="${appRunning and !agentAttached}" class="badge partial">Running WITHOUT AppMap agent</span>
+        <span th:if="${appStarting}" class="help-text">
+            Spring Boot bootstrap typically 10–30 s; this banner auto-refreshes every 3 s.
+        </span>
         <span th:if="${appRunning}" class="help-text">
             at <a th:href="${bankingAppUrl}" target="_blank" rel="noopener" th:text="${bankingAppUrl}"></a>
         </span>
         <span th:if="${appRunning and !agentAttached}" class="help-text" style="color:#856404">
             Interactive recording is unavailable — restart with <em>1. Start banking app with AppMap agent</em>.
         </span>
-        <form th:if="${appRunning}" method="post" action="/demo/appmap/stop-app" style="display:inline; margin-left:auto"
+        <form th:if="${appRunning or appStarting}" method="post" action="/demo/appmap/stop-app" style="display:inline; margin-left:auto"
               onsubmit="return confirm('Stop the banking app?');">
             <button type="submit" class="btn-danger btn-sm">Stop banking app</button>
         </form>
@@ -191,53 +204,104 @@
     </div>
     <div th:if="${interactiveStatus != null}" class="status-banner ok">
         <strong>Interactive:</strong> <span th:text="${interactiveStatus}"></span>
+        <details th:if="${agentDiagnostic != null and !agentDiagnostic.isEmpty()
+                          and #strings.contains(interactiveStatus, 'Could not discover')}"
+                 open style="margin-top:0.4em">
+            <summary>Agent-jar discovery output</summary>
+            <pre th:text="${agentDiagnostic}"
+                 style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419;
+                        color:#d4d4d4; border-radius:4px; max-height:24em;
+                        overflow:auto; font-size:0.85em"></pre>
+        </details>
     </div>
 
     <section th:if="${isAdmin}">
         <h3>Interactive recording (drive the running app)</h3>
         <p class="help-text">
-            Start the banking app with the AppMap Java agent attached, then
-            use Start / Stop here to bracket recordings while you exercise
-            the running app from your browser. Stop captures the agent's
-            trace and saves it under
-            <code>banking-app/app-bootstrap/tmp/appmap/interactive/</code>
-            so it appears in the table below.
+            Three numbered phases — set up the agent-attached banking
+            app, bracket a recording while you click around or hit the
+            API, then save the trace. Use the red <em>Stop banking app</em>
+            tear-down only when you're done with the whole session;
+            stopping mid-phase loses the recording.
         </p>
-        <div class="button-row">
-            <form method="post" action="/demo/appmap/start-with-agent" style="display:inline">
-                <button type="submit" class="btn-primary btn-sm">
-                    1. Start banking app with AppMap agent
-                </button>
-            </form>
-            <a href="/demo/app/open" target="_blank" rel="noopener"
-               class="btn-sm" style="margin-left:0.5em">
-                1b. Open app (auto-login)
-            </a>
-            <form method="post" action="/demo/appmap/interactive/start" style="display:inline; margin-left:0.5em">
-                <button type="submit" class="btn-sm">
-                    2. Start recording
-                </button>
-            </form>
-            <form method="post" action="/demo/appmap/interactive/stop" style="display:inline; margin-left:0.5em">
-                <button type="submit" class="btn-danger btn-sm">
-                    3. Stop &amp; save recording
-                </button>
-            </form>
-            <form method="post" action="/demo/appmap/stop-app" style="display:inline; margin-left:0.5em"
-                  onsubmit="return confirm('Stop the banking app?');">
-                <button type="submit" class="btn-danger btn-sm">
-                    4. Stop banking app
-                </button>
-            </form>
+
+        <!-- Phase 1: Setup — start the agent-attached app, then open it.
+             Both are forward-going actions so they share the default
+             navy color. The "Open app" link is secondary because it's
+             optional (you can drive the API from curl instead). -->
+        <div class="appmap-phase" style="margin-top:0.6em; padding:0.5em 0.75em;
+                                          background:#eef2ff; border-left:3px solid #4338ca;
+                                          border-radius:4px">
+            <strong style="font-size:0.9em">Phase 1 — Set up</strong>
+            <div class="button-row" style="margin-top:0.3em">
+                <form method="post" action="/demo/appmap/start-with-agent" style="display:inline">
+                    <button type="submit" class="btn-sm">
+                        1. Start banking app with AppMap agent
+                    </button>
+                </form>
+                <a href="/demo/app/open" target="_blank" rel="noopener"
+                   class="btn-sm btn-secondary" style="margin-left:0.5em; display:inline-block; padding:0.3em 0.8em; text-decoration:none">
+                    Open app (auto-login)
+                </a>
+            </div>
         </div>
-        <p class="help-text" style="margin-top:0.5em">
-            Step <strong>1b</strong> opens the banking app in a new tab and
-            exchanges a single-use in-memory token for a session cookie —
-            no password prompt. Then between steps 2 and 3, click around
-            the banking app (or hit <code>http://localhost:8080/api/...</code>
-            from curl) and the agent records every request that flows
-            through the banking-app while the recording is active. Only
-            one agent recording can run at a time.
+
+        <!-- Phase 2: Record — start, then save. "Save" is a green
+             constructive action, NOT destructive, so it must not look
+             like the red "Stop banking app" tear-down. -->
+        <div class="appmap-phase" style="margin-top:0.4em; padding:0.5em 0.75em;
+                                          background:#ecfdf5; border-left:3px solid #047857;
+                                          border-radius:4px">
+            <strong style="font-size:0.9em">Phase 2 — Record</strong>
+            <div class="button-row" style="margin-top:0.3em">
+                <form method="post" action="/demo/appmap/interactive/start" style="display:inline">
+                    <button type="submit" class="btn-sm">
+                        2. Start recording
+                    </button>
+                </form>
+                <form method="post" action="/demo/appmap/interactive/stop"
+                      style="display:inline; margin-left:0.5em">
+                    <button type="submit" class="btn-sm"
+                            style="background:#047857; color:white; border:none;
+                                   padding:0.3em 0.8em; border-radius:4px; cursor:pointer">
+                        3. Save recording
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Phase 3: Tear-down — visually isolated and red so you don't
+             tap it thinking it just saves your work. -->
+        <div class="appmap-phase" style="margin-top:0.4em; padding:0.5em 0.75em;
+                                          background:#fef2f2; border-left:3px solid #b91c1c;
+                                          border-radius:4px">
+            <strong style="font-size:0.9em">Phase 3 — Tear down</strong>
+            <span class="help-text" style="margin-left:0.4em">
+                (only when you're done with all your recordings — this kills the JVM on port 8080)
+            </span>
+            <div class="button-row" style="margin-top:0.3em">
+                <form method="post" action="/demo/appmap/stop-app"
+                      style="display:inline"
+                      onsubmit="return confirm('Stop the banking app? Any in-progress recording will be lost.');">
+                    <button type="submit" class="btn-danger btn-sm">
+                        4. Stop banking app
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <p class="help-text" style="margin-top:0.6em">
+            <strong>How it flows:</strong> click <em>1</em> → wait for
+            STARTING → RUNNING (banner above turns green). Then either
+            click <em>Open app</em> for a browser session (a single-use
+            in-memory token is exchanged for a cookie — no password
+            prompt) or hit <code>http://localhost:8080/api/...</code>
+            from curl. Click <em>2</em> to begin capturing, drive
+            traffic through the app, then <em>3</em> to flush the trace
+            to <code>banking-app/app-bootstrap/tmp/appmap/interactive/</code>
+            (it'll appear in the table below). Repeat 2&nbsp;→&nbsp;3 as
+            many times as you like; only one recording can be active
+            at a time. Click <em>4</em> when you're truly finished.
         </p>
     </section>
 
@@ -260,14 +324,113 @@
             iteration.
         </p>
         <form method="post" action="/demo/appmap/record-tests">
-            <label>Module (optional, e.g. <code>payments-hub</code>):
-                <input type="text" name="module" placeholder="leave blank for all modules">
-            </label>
-            <label style="margin-left:1em">Test filter (optional):
-                <input type="text" name="testFilter" placeholder="e.g. PaymentLifecycleManagerTest">
-            </label>
-            <button type="submit" class="btn-primary" style="margin-left:1em">Record AppMaps from tests</button>
+            <!-- Multi-select with live search. Browser-native <select multiple>
+                 + a filter input above; cheap, no external library, and the
+                 form submits all checked options as repeated `modules` form
+                 values which the controller flattens into a List<String>. -->
+            <fieldset style="border:1px solid #d1d5db; border-radius:4px; padding:0.5em 0.75em">
+                <legend style="padding:0 0.4em; font-size:0.9em">Modules to scope (optional)</legend>
+                <div style="display:flex; gap:0.5em; align-items:center; margin-bottom:0.4em; flex-wrap:wrap">
+                    <input type="text" id="moduleSearch"
+                           placeholder="Search modules (filters list)…"
+                           style="flex:1 1 16em; padding:0.3em 0.5em; font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.85em">
+                    <button type="button" class="btn-sm btn-secondary" onclick="clearModuleSelection()"
+                            style="padding:0.3em 0.7em">Clear selection</button>
+                    <span class="help-text" id="moduleSelCount">0 selected</span>
+                </div>
+                <select name="modules" id="moduleSelect" multiple
+                        style="width:100%; min-height:9em; max-height:18em;
+                               font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.85em">
+                    <option th:each="m : ${availableSubprojects}"
+                            th:value="${m}"
+                            th:text="${m}"></option>
+                </select>
+                <p class="help-text" style="margin:0.3em 0 0 0">
+                    Hold <kbd>Ctrl</kbd> / <kbd>⌘</kbd> to multi-select,
+                    <kbd>Shift</kbd> for ranges. Empty selection = record
+                    from every module (slow). Filter narrows the list
+                    without touching your selection.
+                </p>
+            </fieldset>
+
+            <div style="margin-top:0.6em">
+                <label style="display:block">
+                    Test filter (optional):
+                    <input type="text" name="testFilter" style="width:32em; max-width:100%; margin-left:0.5em"
+                           placeholder="e.g. PaymentLifecycleManagerTest, *.payments.*, AchCutoffTest.testFinalWindow">
+                </label>
+                <details style="margin-top:0.3em">
+                    <summary class="help-text" style="cursor:pointer">
+                        Test-filter syntax — examples and rules
+                    </summary>
+                    <div class="help-text" style="margin:0.3em 0 0 0.4em; padding:0.4em 0.6em;
+                                                   background:#f4f6fa; border-left:3px solid #6c757d; border-radius:4px">
+                        Forwarded directly to Gradle as
+                        <code>--tests &lt;value&gt;</code>; same syntax as
+                        <code>./gradlew test --tests …</code>.
+                        <ul style="margin:0.3em 0 0 1.2em; padding:0">
+                            <li><code>PaymentLifecycleManagerTest</code> —
+                                run every test method in that class.</li>
+                            <li><code>com.omnibank.payments.AchCutoffTest</code>
+                                — fully qualified class name, useful when
+                                the simple name is ambiguous.</li>
+                            <li><code>AchCutoffTest.testFinalWindow</code>
+                                — single test method.</li>
+                            <li><code>*.payments.*Test</code> — wildcard:
+                                every <code>*Test</code> class in any
+                                <code>.payments.</code> package.</li>
+                            <li><code>*Repository*</code> — every test
+                                whose simple name contains "Repository".</li>
+                        </ul>
+                        <strong>Quoting:</strong> on Windows
+                        <code>cmd</code>, wrap patterns containing
+                        <code>*</code> in double quotes
+                        (<code>"*.payments.*"</code>). The WebUI passes
+                        the value through verbatim so any quoting your
+                        shell wants applies.<br>
+                        <strong>Multi-class:</strong> Gradle's
+                        <code>--tests</code> only accepts one pattern
+                        per invocation; to OR several classes,
+                        scope by <em>module</em> above and let the
+                        per-module test task pick them all up.
+                    </div>
+                </details>
+            </div>
+
+            <button type="submit" class="btn-primary" style="margin-top:0.6em">Record AppMaps from tests</button>
         </form>
+        <script>
+            (function () {
+                var sel = document.getElementById('moduleSelect');
+                var search = document.getElementById('moduleSearch');
+                var count = document.getElementById('moduleSelCount');
+                if (!sel) return;
+                function refreshCount() {
+                    var n = 0;
+                    for (var i = 0; i < sel.options.length; i++) {
+                        if (sel.options[i].selected) n++;
+                    }
+                    count.textContent = n + ' selected';
+                }
+                search.addEventListener('input', function () {
+                    var q = (search.value || '').toLowerCase().trim();
+                    for (var i = 0; i < sel.options.length; i++) {
+                        var o = sel.options[i];
+                        var match = !q || o.value.toLowerCase().indexOf(q) >= 0;
+                        // Hide via display so screen readers also skip it,
+                        // and keep selected-but-filtered options visible
+                        // so the operator never loses sight of their picks.
+                        o.style.display = (match || o.selected) ? '' : 'none';
+                    }
+                });
+                sel.addEventListener('change', refreshCount);
+                window.clearModuleSelection = function () {
+                    for (var i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
+                    refreshCount();
+                };
+                refreshCount();
+            })();
+        </script>
     </section>
 
     <section>

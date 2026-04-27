@@ -16,7 +16,10 @@ class NavigationTest {
 
     @Test
     fun `all main pages return 200`() {
-        listOf("/", "/demo", "/results", "/github", "/jira", "/llm", "/run", "/copilot-guide").forEach { path ->
+        // /results is no longer a standalone page (merged into the
+        // dashboard); see ResultsControllerTest for the redirect
+        // behavior on that route.
+        listOf("/", "/demo", "/github", "/jira", "/llm", "/run", "/copilot-guide").forEach { path ->
             mvc.get(path).andExpect {
                 status { isOk() }
             }

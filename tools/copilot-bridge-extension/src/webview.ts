@@ -1,7 +1,7 @@
 // VSCode WebView dashboard for Copilot bridge usage stats. Renders a
 // single-page HTML table that re-fetches from the extension every 2s
 // while the panel is visible. Also surfaces Start/Stop controls for
-// the Unix-socket bridge and the optional local OpenAI endpoint.
+// the local TCP bridge and the optional local OpenAI endpoint.
 
 import * as vscode from 'vscode';
 import { UsageTracker, StatsSnapshot } from './usage';
@@ -162,18 +162,20 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 
 <!-- Local IPC bridge — distinct panel, blue accent -->
 <div class="panel" style="border-left-color: #4a9be8">
-    <h3>① Local IPC bridge</h3>
+    <h3>① Local TCP bridge</h3>
     <div class="row">
-        <strong>Status</strong>
+        <strong>Endpoint</strong>
         <span id="bridgeBadge" class="badge off">stopped</span>
         <span id="bridgeTarget" class="target"></span>
         <button id="bridgeToggle"></button>
     </div>
     <p class="help" style="margin:0.4em 0 0 0">
-        The socket bridge provides client transport to GitHub Copilot
-        Models for the ai-bench harness. AF_UNIX socket — native on
-        macOS / Linux; on Windows 10 build 17063 (version 1803) and
-        later. Default path on Windows lives under <code>%TEMP%</code>.
+        The bridge accepts JSON-line requests from the ai-bench harness
+        and relays them to GitHub Copilot via the VSCode Language Model
+        Chat API. It binds <code>127.0.0.1</code> with an OS-assigned
+        port, then writes the chosen port to
+        <code>~/.ai-bench-copilot.port</code> so other processes can
+        discover it.
     </p>
 </div>
 
@@ -234,7 +236,7 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 </tr></thead><tbody></tbody></table>
 
 <h2>Top consumers</h2>
-<p class="help">Clients are identified by the <code>client</code> field on socket calls or the <code>X-Client-Id</code> header on HTTP calls. Default = "anonymous".</p>
+<p class="help">Clients are identified by the <code>client</code> field on TCP-bridge calls or the <code>X-Client-Id</code> header on HTTP calls. Default = "anonymous".</p>
 <table id="perClient"><thead><tr>
     <th>Client</th><th class="num">Requests</th><th class="num">Prompt tok</th><th class="num">Compl. tok</th><th class="num">Est. cost (USD)</th><th>Last seen</th>
 </tr></thead><tbody></tbody></table>

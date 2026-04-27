@@ -19,7 +19,13 @@ class AuthFilter(
     }
 
     private val readOnlyPaths = setOf("/", "/results", "/results/")
-    private val staticPrefixes = listOf("/static/", "/actuator/")
+    private val staticPrefixes = listOf(
+        "/static/", "/actuator/",
+        // Springdoc-served OpenAPI spec + Swagger UI assets. Public so
+        // the embedded "Demo API" iframe on /demo loads without
+        // tripping the auth gate when authEnabled=true.
+        "/v3/api-docs", "/swagger-ui", "/swagger-resources", "/webjars/"
+    )
 
     override fun doFilterInternal(
         request: HttpServletRequest,

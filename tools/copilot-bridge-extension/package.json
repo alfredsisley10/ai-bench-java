@@ -1,8 +1,8 @@
 {
   "name": "copilot-bridge",
   "displayName": "ai-bench Copilot Bridge",
-  "description": "Exposes the user's GitHub Copilot chat entitlement over a local Unix socket and an optional OpenAI-compatible HTTP endpoint, with a usage-stats dashboard.",
-  "version": "0.2.8",
+  "description": "Exposes the user's GitHub Copilot chat entitlement over a TCP localhost endpoint (and an optional OpenAI-compatible HTTP endpoint), with a usage-stats dashboard.",
+  "version": "0.2.13",
   "publisher": "ai-bench",
   "license": "MIT",
   "icon": "icon.png",
@@ -39,11 +39,6 @@
     "configuration": {
       "title": "ai-bench Copilot Bridge",
       "properties": {
-        "aiBench.copilotBridge.socketPath": {
-          "type": "string",
-          "default": "",
-          "description": "AF_UNIX socket the bridge listens on. Leave empty for the platform default — /tmp/ai-bench-copilot.sock on macOS/Linux, %TEMP%\\ai-bench-copilot.sock on Windows 10 1803+. Must match AI_BENCH_COPILOT_SOCK on the bench-webui side if overridden."
-        },
         "aiBench.copilotBridge.openAiPort": {
           "type": "number",
           "default": 11434,

@@ -35,12 +35,24 @@ class AppMapController(private val appmaps: AppMapService) {
         // just trusting our session-stored startedWithAgent flag)
         // catches the case where the operator launched the app via
         // /demo without the -javaagent flag.
-        val appRunning = appmaps.bankingApp.status() == BankingAppManager.Status.RUNNING
+        val status = appmaps.bankingApp.status()
+        val appRunning = status == BankingAppManager.Status.RUNNING
+        val appStarting = status == BankingAppManager.Status.STARTING
         val agentAttached = appRunning && appmaps.isAgentAttached()
+        model.addAttribute("appStatus", status.name)
         model.addAttribute("appRunning", appRunning)
+        model.addAttribute("appStarting", appStarting)
         model.addAttribute("agentAttached", agentAttached)
         model.addAttribute("startedWithAgent", appmaps.bankingApp.startedWithAgent)
         model.addAttribute("bankingAppUrl", appmaps.bankingApp.url)
+        // Surface last agent-discovery diagnostic so the user can debug a
+        // Phase-1 failure without leaving the page. Empty string when
+        // discovery never failed.
+        model.addAttribute("agentDiagnostic", appmaps.lastAgentDiscoveryDiagnostic())
+        // All Gradle subprojects — feeds the multi-select on "Record from
+        // tests" so the operator picks from a known list rather than
+        // typing a module name and hoping it matches.
+        model.addAttribute("availableSubprojects", appmaps.availableSubprojects())
         return "demo-appmap"
     }
 
@@ -127,11 +139,19 @@ class AppMapController(private val appmaps: AppMapService) {
 
     @PostMapping("/demo/appmap/record-tests")
     fun recordTests(
+        // Accept both `modules` (multi-select, repeated form values) and
+        // legacy `module` (single text field). Empty list → record from
+        // every module.
+        @RequestParam(required = false) modules: List<String>?,
         @RequestParam(required = false) module: String?,
         @RequestParam(required = false) testFilter: String?
     ): String {
+        val combined = buildList<String> {
+            modules?.let { addAll(it) }
+            module?.let { add(it) }
+        }.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         runCatching {
-            val recording = appmaps.startRecordingFromTests(module, testFilter)
+            val recording = appmaps.startRecordingFromTests(combined.takeIf { it.isNotEmpty() }, testFilter)
             // Redirect straight to the live status panel so the user sees
             // progress immediately rather than a flash message.
             return "redirect:/demo/appmap?activeId=${recording.id}"

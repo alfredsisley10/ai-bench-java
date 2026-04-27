@@ -3,21 +3,31 @@
       th:replace="~{fragments/layout :: page('AppMap Navie', ~{::main})}">
 <body>
 <main>
-    <h2>AppMap Navie — context provider setup</h2>
+    <h2>AppMap Setup</h2>
     <p class="subtitle">
         AppMap Navie is <strong>not an LLM</strong> — it's a
-        <strong>context provider</strong> that sits between the harness
-        and whichever OpenAI-compatible endpoint it's pointed at. At
-        benchmark time Navie does its own AppMap-driven retrieval, picks
-        the most relevant code + trace excerpts, then forwards a
-        tightly-focused prompt to the LLM. Configure the endpoint
-        coordinates below; the LLM itself is whatever responds at that
-        URL (typically the local Copilot bridge's OpenAI shim).
+        <strong>context provider and interpretive layer</strong> that
+        sits between the harness and whichever OpenAI-compatible endpoint
+        it's pointed at. At benchmark time Navie does its own
+        AppMap-driven retrieval, picks the most relevant code + trace
+        excerpts, then forwards a tightly-focused prompt to the LLM.
+        Configure the endpoint coordinates below; the LLM itself is
+        whatever responds at that URL (typically the local Copilot
+        bridge's OpenAI shim).
     </p>
 
     <div th:if="${navieTestResult != null}"
          th:class="'status-banner ' + (${navieTestResult.success} ? 'ok' : 'error')">
         <span th:text="${navieTestResult.message}"></span>
+        <details th:if="${navieTestResult['log'] != null}"
+                 th:open="${!navieTestResult.success}"
+                 style="margin-top:0.5em">
+            <summary>Full CLI output (<code>appmap --version</code> + <code>appmap navie</code>)</summary>
+            <pre th:text="${navieTestResult['log']}"
+                 style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419;
+                        color:#d4d4d4; border-radius:4px; max-height:24em;
+                        overflow:auto; font-size:0.85em"></pre>
+        </details>
     </div>
 
     <!-- Prerequisites ------------------------------------------------------ -->
@@ -34,9 +44,9 @@
                 </td>
                 <td>
                     <span th:if="${navieBridgeHealthy}"
-                          th:text="'Socket live at ' + ${navieBridgeSockPath}"></span>
+                          th:text="'Bridge live at ' + ${navieBridgeSockPath}"></span>
                     <span th:unless="${navieBridgeHealthy}">
-                        No socket at <code th:text="${navieBridgeSockPath}"></code>.
+                        Bridge not detected (looked for port file at <code th:text="${navieBridgeSockPath}"></code>).
                         Follow the <a href="/llm#copilot">Copilot bridge setup</a> on the LLMs page.
                     </span>
                 </td>
@@ -50,26 +60,124 @@
                 <td>
                     <span th:if="${navieCliPresent}"
                           th:text="'Found at ' + ${navieCliPath}"></span>
-                    <span th:unless="${navieCliPresent}">
-                        Install per
-                        <a href="https://appmap.io/docs/install" target="_blank" rel="noopener">appmap.io/docs/install</a>.
-                        Search order:
-                        <code>~/.appmap/bin/appmap</code>
-                        (plus <code>.exe</code>/<code>.cmd</code> on Windows),
-                        <code>%APPDATA%\AppMap\bin\</code> and
-                        <code>%LOCALAPPDATA%\AppMap\bin\</code> on Windows,
-                        then every directory on <code>PATH</code>.
-                    </span>
+                    <div th:unless="${navieCliPresent}" id="appmap-cli-install">
+                        <p style="margin:0 0 0.4em 0">
+                            Not detected on this host. Pick whichever
+                            install method fits your environment:
+                        </p>
+                        <ol style="margin:0.2em 0 0.5em 1.4em; padding-left:0">
+                            <li class="install-option" style="margin-bottom:0.6em">
+                                <strong>Option 1 — npm-global (recommended).</strong>
+                                Installs the canonical
+                                <code>@appland/appmap</code> package to
+                                your npm-global bin so the binary lands
+                                somewhere already on <code>PATH</code>:
+<pre style="margin:0.3em 0; padding:0.4em 0.6em; background:#f4f6fa; border-radius:4px">npm install -g @appland/appmap</pre>
+                                <div>
+                                    <button type="button" class="btn-sm"
+                                            onclick="runAppmapInstall(this, 'check-npm')">Check npm</button>
+                                    <button type="button" class="btn-sm"
+                                            onclick="runAppmapInstall(this, 'install-npm')">Install via npm</button>
+                                    <span class="help-text" style="margin-left:0.4em">
+                                        Requires Node.js / npm. Up to ~3&nbsp;min on first run.
+                                    </span>
+                                </div>
+                                <details class="install-output" style="display:none; margin-top:0.4em">
+                                    <summary>Command output</summary>
+                                    <pre class="terminal-output" style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4; border-radius:4px; max-height:18em; overflow:auto"></pre>
+                                </details>
+                            </li>
+                            <li class="install-option" style="margin-bottom:0.6em">
+                                <strong>Option 2 — install the AppMap VSCode extension.</strong>
+                                The extension bundles the AppMap CLI and
+                                drops it under <code>~/.appmap/bin/</code>
+                                on first use, which is one of the dirs
+                                this WebUI searches. Recommended if you
+                                don't have Node.js handy or you also
+                                want AppMap recordings inside VS Code:
+                                <ul style="margin:0.3em 0 0.3em 1.2em; padding-left:0">
+                                    <li>
+                                        <a href="https://marketplace.visualstudio.com/items?itemName=appland.appmap"
+                                           target="_blank" rel="noopener">
+                                            Open in the Visual Studio Marketplace
+                                        </a>
+                                        (extension ID
+                                        <code>appland.appmap</code>).
+                                    </li>
+                                    <li>
+                                        From an installed VS Code:
+                                        <code>code --install-extension appland.appmap</code>,
+                                        or paste
+                                        <code>vscode:extension/appland.appmap</code>
+                                        into your browser's address bar.
+                                    </li>
+                                    <li class="help-text">
+                                        After install, open any project
+                                        and run an AppMap recording once
+                                        — that triggers the extension to
+                                        materialize the CLI into
+                                        <code>~/.appmap/bin/appmap</code>.
+                                        Refresh this page; the row turns
+                                        green.
+                                    </li>
+                                </ul>
+                            </li>
+                        </ol>
+                        <p class="help-text" style="margin:0.3em 0 0 0">
+                            Search order this WebUI uses (whichever
+                            method you pick, the binary just has to land
+                            in one of these):
+                            <code>~/.appmap/bin/appmap</code>
+                            (plus <code>.exe</code>/<code>.cmd</code> on Windows),
+                            <code>%APPDATA%\AppMap\bin\</code>,
+                            <code>%LOCALAPPDATA%\AppMap\bin\</code>,
+                            <code>%APPDATA%\npm\</code>, then every
+                            directory on <code>PATH</code>.
+                        </p>
+                    </div>
                 </td>
             </tr>
             <tr>
                 <td>Bridge OpenAI shim enabled</td>
-                <td><span class="badge" style="background:#e5e7eb">info</span></td>
                 <td>
-                    Default <code>127.0.0.1:11434</code>. Toggle / change port
-                    from the VSCode extension's webview
-                    (<em>aiBench.copilotBridge.openAiPort</em> /
-                    <em>bindAddress</em>).
+                    <span th:if="${navieShimReachable}" class="badge available">available</span>
+                    <span th:unless="${navieShimReachable}" class="badge unavailable">unavailable</span>
+                </td>
+                <td>
+                    <span th:if="${navieShimReachable}"
+                          th:text="'Shim probed live: ' + ${navieShimDetail}"
+                          style="display:block; margin-bottom:0.4em"></span>
+                    <span th:unless="${navieShimReachable}"
+                          th:text="'Probe failed: ' + ${navieShimDetail}"
+                          style="display:block; margin-bottom:0.4em"></span>
+                    <strong>What it is.</strong> The Copilot bridge
+                    (the VSCode extension this WebUI talks to) can
+                    expose a small <em>OpenAI-compatible</em> HTTP
+                    server on localhost. Tools that already speak the
+                    OpenAI Chat Completions API — including
+                    <code>appmap navie</code> — POST to that endpoint;
+                    the bridge translates each call into a real GitHub
+                    Copilot request using your VSCode session, then
+                    streams the answer back in OpenAI wire format.
+                    <br>
+                    <strong>When &amp; why to enable it.</strong>
+                    <em>Required</em> for the
+                    <em>AppMap Navie via Copilot</em> path: Navie has
+                    no Copilot client of its own, so without the shim
+                    it can't use Copilot as its LLM. <em>Skip it</em>
+                    if you've pointed Navie at some other
+                    OpenAI-compatible endpoint instead (direct OpenAI,
+                    Azure OpenAI, Ollama, etc.) — the shim only matters
+                    when Copilot is the upstream model.
+                    <br>
+                    <strong>How to enable.</strong> Open the VSCode
+                    extension's webview and toggle
+                    <em>Enable OpenAI shim</em>. Defaults to
+                    <code>127.0.0.1:11434</code> (loopback only, no
+                    auth); change via
+                    <em>aiBench.copilotBridge.openAiPort</em> /
+                    <em>bindAddress</em> if those defaults clash with
+                    something else on your machine.
                 </td>
             </tr>
             </tbody>
@@ -89,7 +197,7 @@
     <section>
         <h3>
             <span th:text="${navieConfigExists ? '✓' : '○'}" style="margin-right:0.3em"></span>
-            OpenAI endpoint coordinates
+            OpenAI Endpoint
         </h3>
         <p class="help-text">
             Defaults match the Copilot bridge's out-of-box settings
@@ -100,17 +208,65 @@
             <code th:text="${navieConfigPath}"></code>.
         </p>
         <form method="post" action="/appmap-navie/save">
-            <label>OpenAI base URL:
-                <input name="baseUrl" type="url" required style="width:480px"
+            <label>OpenAI API base URL:
+                <input name="baseUrl" id="navieBaseUrl" type="url" required style="width:480px"
                        th:value="${navieBaseUrl}"
                        th:placeholder="${navieDefaultsBaseUrl}">
             </label>
-            <p class="help-text" style="margin-top:0; margin-left:0.2em">
+            <div style="margin-top:0.3em">
+                <button type="button" class="btn-sm" onclick="detectBridge(this)">
+                    Detect AI-Bridge endpoint
+                </button>
+                <span class="help-text" style="margin-left:0.5em">
+                    Probes <code>127.0.0.1:11434</code> (and a few common
+                    alternates), applies the live URL, and persists it
+                    so you can immediately click <em>Test via AppMap CLI</em>
+                    below.
+                </span>
+            </div>
+            <details id="bridgeDetectOutput" style="display:none; margin-top:0.4em">
+                <summary id="bridgeDetectSummary">Detect output</summary>
+                <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419;
+                            color:#d4d4d4; border-radius:4px; max-height:14em; overflow:auto;
+                            font-size:0.85em"></pre>
+            </details>
+            <p class="help-text" style="margin-top:0.4em; margin-left:0.2em">
                 Default <code th:text="${navieDefaultsBaseUrl}"></code>
                 — change only if the bridge's
                 <em>aiBench.copilotBridge.openAiPort</em> /
                 <em>bindAddress</em> have been customized.
             </p>
+            <script>
+                function detectBridge(btn) {
+                    var details = document.getElementById('bridgeDetectOutput');
+                    var summary = document.getElementById('bridgeDetectSummary');
+                    var pre = details.querySelector('pre');
+                    var input = document.getElementById('navieBaseUrl');
+                    details.style.display = '';
+                    details.open = true;
+                    summary.textContent = 'Probing…';
+                    pre.textContent = '';
+                    btn.disabled = true;
+                    fetch('/appmap-navie/detect-bridge', {method: 'POST'})
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            var marker = data.ok ? '✓' : '✗';
+                            summary.textContent = marker + ' ' + (data.message || '');
+                            pre.textContent = data.output || '(no output)';
+                            if (data.ok && data.baseUrl) {
+                                input.value = data.baseUrl;
+                                input.style.background = '#dcfce7';
+                                setTimeout(function () { input.style.background = ''; }, 2000);
+                            }
+                            btn.disabled = false;
+                        })
+                        .catch(function (e) {
+                            summary.textContent = '✗ Request failed';
+                            pre.textContent = 'Error: ' + (e && e.message ? e.message : e);
+                            btn.disabled = false;
+                        });
+                }
+            </script>
 
             <label>Bearer token (optional):
                 <input name="apiKey" type="password" style="width:480px"
@@ -128,18 +284,24 @@
             </p>
 
             <label>Default model:
-                <input name="defaultModel" type="text" style="width:300px"
-                       th:value="${navieDefaultModel}" placeholder="auto">
+                <select name="defaultModel" style="width:340px">
+                    <option th:each="m : ${navieModelOptions}"
+                            th:value="${m.id}"
+                            th:text="${m.label}"
+                            th:selected="${m.id == navieDefaultModel}"></option>
+                </select>
             </label>
             <p class="help-text" style="margin-top:0; margin-left:0.2em">
                 <code>auto</code> lets the bridge resolve to whichever
-                model Copilot picks first. Or pin a specific model id
-                from the <a href="/llm#copilot">Copilot enumeration</a>
-                (e.g. <code>gpt-4o</code>, <code>claude-3-5-sonnet</code>).
+                model Copilot picks first. The list above is constrained
+                to model IDs the Copilot bridge commonly serves; pick
+                one to avoid typos. If you need a model that isn't
+                listed, capture it from the
+                <a href="/llm#copilot">Copilot enumeration</a> page first.
             </p>
 
             <div class="button-row" style="margin-top:0.5em">
-                <button type="submit" class="btn-sm">Save Navie config</button>
+                <button type="submit" class="btn-sm">Save AppMap Config</button>
             </div>
         </form>
     </section>
@@ -175,6 +337,17 @@
             time, so a green result here means the real
             <em>AppMap Navie via Copilot</em> benchmark provider will work.
         </p>
+        <div class="status-banner" style="background:#fffbeb; border:1px solid #f59e0b;
+                                          color:#78350f; padding:0.5em 0.75em;
+                                          border-radius:4px; margin:0.5em 0">
+            <strong>First-time consent prompt:</strong>
+            If you haven't already authorized the AppMap extension to
+            access GitHub Copilot's language models, VSCode will pop a
+            consent dialog the first time this test runs. <em>Switch to
+            VSCode and click <strong>Allow</strong></em> when it
+            appears — the test will hang at the Navie call until you do.
+            Subsequent tests run without the prompt.
+        </div>
         <form method="post" action="/appmap-navie/test">
             <button type="submit" class="btn-sm">Test via AppMap CLI</button>
         </form>
@@ -194,10 +367,48 @@
             Navie: …</code> lines).
         </p>
         <form method="post" action="/appmap-navie/reset" style="margin-top:0.5em">
-            <button type="submit" class="btn-danger btn-sm">Reset Navie config</button>
+            <button type="submit" class="btn-danger btn-sm">Reset AppMap Config</button>
             <span class="help-text">— clears saved coordinates and removes the persisted YAML.</span>
         </form>
     </section>
+
+    <script>
+        function runAppmapInstall(btn, action) {
+            var li = btn.closest('.install-option');
+            var details = li.querySelector('.install-output');
+            var pre = details.querySelector('pre');
+            var summary = details.querySelector('summary');
+            details.style.display = '';
+            details.open = true;
+            summary.textContent = 'Running…';
+            pre.textContent = '';
+
+            // Disable both buttons in the option while one runs.
+            var buttons = li.querySelectorAll('button');
+            buttons.forEach(function (b) { b.disabled = true; });
+
+            var url = action === 'check-npm'
+                ? '/appmap-navie/install/check-npm'
+                : '/appmap-navie/install/npm';
+
+            fetch(url, {method: 'POST'})
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var marker = data.ok ? '✓' : '✗';
+                    summary.textContent = marker + ' ' + (data.message || (data.ok ? 'OK' : 'Failed'));
+                    pre.textContent = data.output || '(no output)';
+                    buttons.forEach(function (b) { b.disabled = false; });
+                    if (action === 'install-npm' && data.ok) {
+                        btn.textContent = 'Installed — refresh the page';
+                    }
+                })
+                .catch(function (e) {
+                    summary.textContent = '✗ Request failed';
+                    pre.textContent = 'Error: ' + (e && e.message ? e.message : e);
+                    buttons.forEach(function (b) { b.disabled = false; });
+                });
+        }
+    </script>
 </main>
 </body>
 </html>

@@ -12,7 +12,15 @@ allprojects {
     version = "1.0.0-SNAPSHOT"
 
     repositories {
-        mavenCentral()
+        val mirror = System.getProperty("enterprise.sim.mirror")
+        if (mirror != null) {
+            maven {
+                url = uri("$mirror/maven-central/")
+                isAllowInsecureProtocol = true
+            }
+        } else {
+            mavenCentral()
+        }
     }
 }
 
@@ -25,7 +33,14 @@ subprojects {
 
     extensions.configure<JavaPluginExtension> {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(17))
+            // Bumped from 17 to 21 because shared-domain (Result.java,
+            // CircuitBreakerRegistry.java) uses type patterns in switch
+            // — JEP 441, finalized in Java 21. With toolchain 17 the
+            // compiler treats them as a preview feature and the build
+            // fails. The WebUI's "Verify Java" panel surfaces the
+            // toolchain requirement so a future operator with only
+            // JDK 17 installed sees the gap before clicking Start.
+            languageVersion.set(JavaLanguageVersion.of(21))
         }
     }
 

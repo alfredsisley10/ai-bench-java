@@ -24,10 +24,13 @@ class DashboardControllerTest {
     }
 
     @Test
-    fun `results page returns 200`() {
+    fun `bare results redirects to dashboard`() {
+        // /results used to render its own page; the WebUI refactor
+        // merged that page into the dashboard. Cached bookmarks
+        // should 302 to /, not 404 or 200 with a stale template.
         mvc.get("/results").andExpect {
-            status { isOk() }
-            content { string(org.hamcrest.Matchers.containsString("Benchmark Results")) }
+            status { is3xxRedirection() }
+            redirectedUrl("/")
         }
     }
 }

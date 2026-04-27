@@ -39,18 +39,20 @@ export class BridgeTreeProvider implements vscode.TreeDataProvider<TreeNode> {
         const stats = this.tracker.snapshot();
         return [
             new TreeNode({
-                label: 'Local IPC bridge',
+                label: 'Local TCP bridge',
                 description: rt.bridgeRunning ? 'running' : 'stopped',
                 contextValue: rt.bridgeRunning ? 'bridge.on' : 'bridge.off',
                 icon: rt.bridgeRunning ? 'pass-filled' : 'circle-large-outline',
-                tooltip: 'Socket: ' + rt.socketPath,
+                tooltip: rt.bridgeRunning
+                    ? 'Endpoint: ' + rt.socketPath
+                    : 'Bridge stopped — start it to bind 127.0.0.1:<auto>',
                 children: [
                     actionNode(rt.bridgeRunning ? 'Stop bridge' : 'Start bridge',
                         rt.bridgeRunning
                             ? 'aiBench.copilotBridge.stop'
                             : 'aiBench.copilotBridge.start',
                         rt.bridgeRunning ? 'debug-stop' : 'play'),
-                    infoNode('Socket', rt.socketPath, 'symbol-file'),
+                    infoNode('Endpoint', rt.socketPath || '— not running —', 'globe'),
                 ],
             }),
             new TreeNode({

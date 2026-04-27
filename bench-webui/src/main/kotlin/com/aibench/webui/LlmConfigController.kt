@@ -17,9 +17,10 @@ import org.springframework.web.bind.annotation.ResponseBody
  * <p>Two providers are supported:
  * <ul>
  *   <li><b>GitHub Copilot (VSCode Bridge)</b> — the user installs a VSCode
- *       extension that publishes a local Unix socket; the harness talks to
- *       Copilot through that bridge. The wizard walks the user through
- *       extension install, bridge start, and a socket-health probe.</li>
+ *       extension that publishes a local TCP endpoint on 127.0.0.1; the
+ *       harness talks to Copilot through that bridge. The wizard walks
+ *       the user through extension install, bridge start, and a
+ *       TCP-connect probe against the port written to the sidecar file.</li>
  *   <li><b>Corporate OpenAI Gateway</b> — two-hop flow: first an OAuth2
  *       client-credentials exchange at the Apigee login URL to mint an
  *       access token, then REST calls to an OpenAI-compatible endpoint
@@ -116,16 +117,26 @@ class LlmConfigController(
     @GetMapping("/llm")
     fun config(model: Model, session: HttpSession): String {
         // --- Copilot bridge health ------------------------------------------
-        val copilotSock = Platform.defaultCopilotSocket()
-        val copilotHealthy = java.io.File(copilotSock).exists()
+        // Bridge is healthy if the port-sidecar file exists AND a TCP
+        // connect to that port succeeds. The sidecar may be stale if the
+        // extension crashed without cleanup — try-connect tells the truth.
+        val copilotPort = Platform.readCopilotPort()
+        val copilotEndpoint = copilotPort?.let { "127.0.0.1:$it" } ?: Platform.copilotPortFile()
+        val copilotHealthy = copilotPort != null && runCatching {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", copilotPort), 500)
+                true
+            }
+        }.getOrDefault(false)
         val copilotExtId = System.getenv("AI_BENCH_COPILOT_EXT_ID") ?: "ai-bench.copilot-bridge"
-        model.addAttribute("copilotSockPath", copilotSock)
+        model.addAttribute("copilotSockPath", copilotEndpoint)
         model.addAttribute("copilotBridgeHealthy", copilotHealthy)
         model.addAttribute("copilotExtId", copilotExtId)
         val vsix = locateCopilotVsix()
         model.addAttribute("copilotVsixPresent", vsix != null)
         model.addAttribute("copilotVsixPath", vsix?.displayPath ?: "")
         model.addAttribute("copilotVsixSize", vsix?.size ?: 0L)
+        model.addAttribute("copilotVsixVersion", vsix?.version ?: "")
         model.addAttribute("copilotProbeResult", session.getAttribute(COPILOT_PROBE_RESULT))
         session.removeAttribute(COPILOT_PROBE_RESULT)
 
@@ -213,8 +224,8 @@ class LlmConfigController(
         model.addAttribute("providers", listOf(
             ProviderStatus("copilot", "GitHub Copilot (VSCode Bridge)",
                 if (copilotHealthy) "available" else "unavailable",
-                if (copilotHealthy) "Bridge running at $copilotSock"
-                else "Bridge not detected at $copilotSock. Follow the Copilot wizard below."),
+                if (copilotHealthy) "Bridge running at $copilotEndpoint"
+                else "Bridge not detected at $copilotEndpoint. Follow the Copilot wizard below."),
             ProviderStatus("corp-openai", "Corporate OpenAI Gateway",
                 if (allGreen) "available"
                 else if (apigeeVerified && openAiConfigured) "partial"
@@ -342,21 +353,47 @@ class LlmConfigController(
         val size: Long,
         /** Filename used in Content-Disposition. */
         val name: String,
+        /** Version string from the embedded extension/package.json, or null
+         *  if the artifact couldn't be parsed. Surfaced on the /llm page so
+         *  users can see what they're about to install. */
+        val version: String?,
         /** Caller-provided stream factory. Each call returns a fresh InputStream. */
         val openStream: () -> java.io.InputStream
     )
 
+    /** Peek inside a VSIX (zip) and pull the `version` value out of
+     *  `extension/package.json`. Returns null on any error so the UI can
+     *  fall back to "version unknown" without breaking the page. */
+    private fun readVsixVersion(open: () -> java.io.InputStream): String? = runCatching {
+        java.util.zip.ZipInputStream(open()).use { zin ->
+            var entry = zin.nextEntry
+            while (entry != null) {
+                if (entry.name == "extension/package.json") {
+                    val txt = zin.readBytes().toString(Charsets.UTF_8)
+                    return@runCatching Regex("\"version\"\\s*:\\s*\"([^\"]+)\"")
+                        .find(txt)?.groupValues?.get(1)
+                }
+                entry = zin.nextEntry
+            }
+            null
+        }
+    }.getOrNull()
+
     private fun locateCopilotVsix(): CopilotVsixSource? {
         System.getenv("AI_BENCH_COPILOT_VSIX")?.takeIf { it.isNotBlank() }?.let { path ->
             val f = java.io.File(path)
-            if (f.isFile) return CopilotVsixSource(f.absolutePath, f.length(), f.name) { f.inputStream() }
+            if (f.isFile) {
+                val open = { f.inputStream() }
+                return CopilotVsixSource(f.absolutePath, f.length(), f.name, readVsixVersion(open), open)
+            }
         }
         val repoLocal = java.io.File(
             System.getProperty("user.dir"),
             "../tools/copilot-bridge-extension/copilot-bridge.vsix"
         ).canonicalFile
         if (repoLocal.isFile) {
-            return CopilotVsixSource(repoLocal.absolutePath, repoLocal.length(), repoLocal.name) { repoLocal.inputStream() }
+            val open = { repoLocal.inputStream() }
+            return CopilotVsixSource(repoLocal.absolutePath, repoLocal.length(), repoLocal.name, readVsixVersion(open), open)
         }
         // Spring Boot fat-jar fallback. ClassLoader.getResource returns a
         // jar:file:.../bench-webui.jar!/static/dist/copilot-bridge.vsix URL
@@ -367,11 +404,14 @@ class LlmConfigController(
         val resource = ClassPathResource("static/dist/copilot-bridge.vsix")
         if (resource.exists()) {
             val size = runCatching { resource.contentLength() }.getOrDefault(0L)
+            val open = { resource.inputStream }
             return CopilotVsixSource(
                 displayPath = "classpath:static/dist/copilot-bridge.vsix",
                 size        = if (size > 0) size else 0L,
-                name        = "copilot-bridge.vsix"
-            ) { resource.inputStream }
+                name        = "copilot-bridge.vsix",
+                version     = readVsixVersion(open),
+                openStream  = open
+            )
         }
         return null
     }
@@ -407,7 +447,7 @@ class LlmConfigController(
     }
 
     /**
-     * Dial the Copilot bridge's Unix socket and enumerate every model
+     * Dial the Copilot bridge's TCP endpoint and enumerate every model
      * GitHub Copilot is publishing to the current VSCode session. The
      * bridge replies with an {@code auto} field holding the model id
      * that the synthetic {@code "auto"} selector resolves to (first
@@ -416,26 +456,25 @@ class LlmConfigController(
      */
     @PostMapping("/llm/copilot/list-models")
     fun copilotListModels(session: HttpSession): String {
-        val sock = Platform.defaultCopilotSocket()
-        val f = java.io.File(sock)
+        val port = Platform.readCopilotPort()
         val result = when {
-            !f.exists() -> mapOf("success" to false,
-                "message" to "No socket at $sock. Install + start the Copilot bridge first (Steps 1–3 above).")
+            port == null -> mapOf("success" to false,
+                "message" to "Copilot bridge port file not found at ${Platform.copilotPortFile()}. " +
+                             "Install + start the Copilot bridge first (Steps 1–3 above).")
             else -> runCatching {
-                val addr = java.net.UnixDomainSocketAddress.of(sock)
-                java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX).use { ch ->
-                    ch.connect(addr)
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress("127.0.0.1", port), 2000)
+                    s.soTimeout = 10_000
                     val request = "{\"op\":\"list-models\"}\n"
-                    ch.write(java.nio.ByteBuffer.wrap(request.toByteArray(Charsets.UTF_8)))
-                    val buf = java.nio.ByteBuffer.allocate(32 * 1024)
+                    s.outputStream.write(request.toByteArray(Charsets.UTF_8))
+                    s.outputStream.flush()
                     val sb = StringBuilder()
-                    // Expect a single \n-terminated JSON line from the bridge.
+                    val buf = ByteArray(32 * 1024)
                     val deadline = System.currentTimeMillis() + 10_000
                     while (System.currentTimeMillis() < deadline) {
-                        buf.clear()
-                        val n = ch.read(buf)
+                        val n = s.inputStream.read(buf)
                         if (n <= 0) break
-                        sb.append(String(buf.array(), 0, n, Charsets.UTF_8))
+                        sb.append(String(buf, 0, n, Charsets.UTF_8))
                         if (sb.contains('\n')) break
                     }
                     val line = sb.toString().substringBefore('\n').ifBlank {
@@ -556,15 +595,21 @@ class LlmConfigController(
 
     @PostMapping("/llm/copilot/probe")
     fun copilotProbe(session: HttpSession): String {
-        val sock = Platform.defaultCopilotSocket()
-        val f = java.io.File(sock)
+        val port = Platform.readCopilotPort()
         val result = when {
-            !f.exists() -> mapOf("success" to false,
-                "message" to "No socket at $sock. Install the VSCode extension and start the bridge (Step 1 + 2 below).")
-            !f.canRead() -> mapOf("success" to false,
-                "message" to "Socket exists at $sock but is not readable. Check permissions.")
-            else -> mapOf("success" to true,
-                "message" to "Bridge socket is live at $sock.")
+            port == null -> mapOf("success" to false,
+                "message" to "No port file at ${Platform.copilotPortFile()}. " +
+                             "Install the VSCode extension and start the bridge (Step 1 + 2 below).")
+            else -> runCatching {
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress("127.0.0.1", port), 1000)
+                }
+                mapOf("success" to true, "message" to "Bridge is live at 127.0.0.1:$port.")
+            }.getOrElse {
+                mapOf("success" to false,
+                      "message" to "Port file says 127.0.0.1:$port but TCP connect failed: ${it.message}. " +
+                                   "The bridge may have stopped without cleanup — restart the VSCode extension.")
+            }
         }
         session.setAttribute(COPILOT_PROBE_RESULT, result)
         return "redirect:/llm#copilot"

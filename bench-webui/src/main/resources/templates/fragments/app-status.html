@@ -33,8 +33,50 @@
                 <button type="submit">Start banking app</button>
             </form>
         </span>
-        <a href="/demo/app/log" target="_blank" style="margin-left:0.5em" class="help-text">View log</a>
+        <button type="button" class="btn-sm" style="margin-left:0.5em"
+                onclick="toggleAppLog(this)">View log</button>
     </div>
+    <details id="app-log-details" style="display:none; margin-top:0.5em">
+        <summary>Banking app log <span class="help-text">(last 200 lines of <code>banking-app/tmp/bootRun.log</code>)</span></summary>
+        <div style="margin:0.4em 0">
+            <button type="button" class="btn-sm" onclick="loadAppLog(this)">Refresh</button>
+            <span class="help-text" style="margin-left:0.5em" id="app-log-status"></span>
+        </div>
+        <pre id="app-log-content"
+             style="margin:0.25em 0; padding:0.5em 0.7em; background:#1e1e1e; color:#d4d4d4;
+                    border-radius:4px; overflow:auto; max-height:32em; font-size:0.85em">(click Refresh to load)</pre>
+    </details>
+    <script>
+        function toggleAppLog(btn) {
+            var details = document.getElementById('app-log-details');
+            if (details.style.display === 'none') {
+                details.style.display = '';
+                details.open = true;
+                loadAppLog(btn);
+            } else {
+                details.open = !details.open;
+                if (details.open) loadAppLog(btn);
+            }
+        }
+        function loadAppLog(btn) {
+            var status = document.getElementById('app-log-status');
+            var content = document.getElementById('app-log-content');
+            status.textContent = 'Loading…';
+            fetch('/demo/app/log?lines=200')
+                .then(function (r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.text();
+                })
+                .then(function (text) {
+                    content.textContent = text || '(no log yet — start the banking app first)';
+                    status.textContent = 'Loaded ' + new Date().toLocaleTimeString();
+                })
+                .catch(function (e) {
+                    content.textContent = 'Error: ' + (e && e.message ? e.message : e);
+                    status.textContent = '';
+                });
+        }
+    </script>
 
     <div class="help-panel" style="margin-top:0.75em; padding:8px 12px; background:#f8f9fa; border-left:3px solid #6c757d; font-size:0.9em">
         <p style="margin:0 0 6px 0">

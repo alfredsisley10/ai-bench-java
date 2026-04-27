@@ -6,6 +6,15 @@ import org.springframework.ui.Model
 import org.springframework.web.bind.annotation.GetMapping
 import java.io.File
 
+/**
+ * Combined dashboard + results page. Was two separate routes (`/`
+ * for summary cards + recent-runs table, `/results` for the full
+ * run history); merged so the operator sees the at-a-glance summary
+ * and the complete run history in a single scroll. The
+ * <code>/results/{runId}</code> transcript route still lives in
+ * {@link ResultsController}, which also redirects bare
+ * <code>/results</code> here for any cached bookmarks.
+ */
 @Controller
 class DashboardController(
     private val benchmarkRuns: BenchmarkRunService,
@@ -14,14 +23,14 @@ class DashboardController(
 
     @GetMapping("/")
     fun dashboard(model: Model, session: HttpSession): String {
-        val recent = benchmarkRuns.recentRuns(10)
-        val total = recent.size
-        val passed = recent.count { it.status.name == "PASSED" }
+        val runs = benchmarkRuns.recentRuns(100)
+        val total = runs.size
+        val passed = runs.count { it.status.name == "PASSED" }
 
         model.addAttribute("totalRuns", total)
         model.addAttribute("passRate", if (total > 0) passed.toDouble() / total else 0.0)
         model.addAttribute("solvers", registeredModels.availableProviders(session))
-        model.addAttribute("recentRuns", recent)
+        model.addAttribute("runs", runs)
         model.addAttribute("connectedRepos", 0)
         model.addAttribute("availableBugs", countBugs())
         return "dashboard"

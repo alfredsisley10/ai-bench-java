@@ -14,8 +14,14 @@ class ResultsControllerTest {
     @Autowired lateinit var mvc: MockMvc
 
     @Test
-    fun `results list page is reachable`() {
-        mvc.get("/results").andExpect { status { isOk() } }
+    fun `bare results redirects to dashboard`() {
+        // /results used to render its own list; the WebUI refactor
+        // merged that into the dashboard. Cached bookmarks should
+        // 302 to / now.
+        mvc.get("/results").andExpect {
+            status { is3xxRedirection() }
+            redirectedUrl("/")
+        }
     }
 
     @Test

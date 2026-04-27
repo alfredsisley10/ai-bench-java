@@ -94,7 +94,15 @@ class AppMapService(
         val out = mutableListOf<TraceSummary>()
         Files.walk(appmapRoot.toPath()).use { stream ->
             stream
-                .filter { it.extension == "json" && it.toString().contains("tmp/appmap") }
+                .filter {
+                    // Use forward-slash form so the `tmp/appmap` substring
+                    // check works on Windows too (Path.toString() returns
+                    // platform-native separators — "\" on Windows — which
+                    // previously made every saved trace invisible because
+                    // none of them contained the literal "tmp/appmap").
+                    it.extension == "json" &&
+                        it.toFile().invariantSeparatorsPath.contains("tmp/appmap")
+                }
                 .forEach { path ->
                     runCatching { summarize(path, appmapRoot.toPath()) }
                         .onSuccess { out.add(it) }
@@ -111,7 +119,9 @@ class AppMapService(
         val relativePath = decodeId(traceId) ?: return null
         val absolute = bankingApp.bankingAppDir.toPath().resolve(relativePath)
         if (!Files.isRegularFile(absolute)) return null
-        if (!absolute.toString().contains("tmp/appmap")) return null // path-traversal guard
+        // Forward-slash form — Windows paths use "\" so the literal
+        // "tmp/appmap" substring would never match without normalization.
+        if (!absolute.toFile().invariantSeparatorsPath.contains("tmp/appmap")) return null // path-traversal guard
         val summary = runCatching { summarize(absolute, bankingApp.bankingAppDir.toPath()) }
             .getOrNull() ?: return null
         val root = mapper.readTree(absolute.toFile())
@@ -379,17 +389,54 @@ class AppMapService(
      * blank) with `ORG_GRADLE_PROJECT_appmap_enabled=true`. Runs detached;
      * caller polls the returned [Recording.id] for live status.
      */
-    fun startRecordingFromTests(module: String?, testFilter: String?): Recording {
+    /**
+     * All Gradle subprojects declared in banking-app/settings.gradle.kts.
+     * Cheap regex parse over the file — accurate enough for populating
+     * the /demo/appmap "Record from tests" multi-select. Used by the UI
+     * so the operator can pick from a known list instead of typing a
+     * module name and hoping it matches. Sorted alphabetically.
+     */
+    fun availableSubprojects(): List<String> {
+        val settings = bankingApp.bankingAppDir.resolve("settings.gradle.kts")
+        if (!settings.isFile) return emptyList()
+        return runCatching {
+            val text = settings.readText()
+            // Match `include("foo")`, `include("foo:bar")`, etc.
+            // Skip commented-out lines.
+            Regex("""(?m)^\s*include\s*\(\s*"([^"]+)"\s*\)""")
+                .findAll(text)
+                .map { it.groupValues[1] }
+                .distinct()
+                .sorted()
+                .toList()
+        }.getOrDefault(emptyList())
+    }
+
+    /** Backwards-compatible single-module entry — see the [List] overload. */
+    fun startRecordingFromTests(module: String?, testFilter: String?): Recording =
+        startRecordingFromTests(module?.takeIf { it.isNotBlank() }?.let { listOf(it) }, testFilter)
+
+    fun startRecordingFromTests(modules: List<String>?, testFilter: String?): Recording {
         val dir = bankingApp.bankingAppDir
         val cmd = mutableListOf<String>().apply { addAll(Platform.gradleWrapper(dir)) }
         // The AppMap gradle plugin's `appmap` task injects the AppMap agent
         // into the matching `test` task; ordering matters — both must run,
         // and `appmap` must come first so the agent settings apply when
         // `test` executes.
-        if (module.isNullOrBlank()) {
+        // Multi-module support: emit `:mod:appmap :mod:test` per picked
+        // module so the operator can scope the recording to a handful
+        // of subprojects without invoking the entire :test graph (which
+        // takes 30-60s on the full generated module set).
+        val cleanModules = (modules ?: emptyList()).map { it.trim() }.filter { it.isNotEmpty() }
+        if (cleanModules.isEmpty()) {
             cmd.add("appmap"); cmd.add("test")
         } else {
-            cmd.add(":$module:appmap"); cmd.add(":$module:test")
+            cleanModules.forEach { m ->
+                // Module IDs may already be colon-separated (`generated:foo`)
+                // — that's fine; Gradle handles `:generated:foo:appmap` directly.
+                val gradlePath = if (m.startsWith(":")) m else ":$m"
+                cmd.add("$gradlePath:appmap"); cmd.add("$gradlePath:test")
+            }
         }
         if (!testFilter.isNullOrBlank()) {
             cmd.add("--tests"); cmd.add(testFilter)
@@ -409,8 +456,10 @@ class AppMapService(
         val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
         pb.environment()["ORG_GRADLE_PROJECT_appmap_enabled"] = "true"
         pb.environment()["APPMAP_ENABLED"] = "true"
-        val javaHome = System.getenv("JAVA_HOME")
-            ?: "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
+        // Cross-platform JDK pick — JdkDiscovery walks env var, PATH,
+        // and platform-specific install roots. Replaces the old
+        // macOS-only Homebrew hardcode that silently broke on Windows.
+        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
         pb.environment()["JAVA_HOME"] = javaHome
         pb.environment()["PATH"] = "$javaHome/bin:" + System.getenv("PATH")
 
@@ -424,7 +473,10 @@ class AppMapService(
         val recording = Recording(
             id = recordingId,
             command = cmd.toList(),
-            module = module,
+            // Concatenate the picked modules for the recording metadata
+            // (used by the live status panel + log line). null when the
+            // operator left the multi-select empty (record everything).
+            module = cleanModules.joinToString(",").takeIf { it.isNotEmpty() },
             testFilter = testFilter,
             logPath = logFile.toPath(),
             pid = proc.pid(),
@@ -447,8 +499,8 @@ class AppMapService(
             isDaemon = true
         }.start()
 
-        log.info("AppMap recording {} started (PID {}, module={}, filter={}). Log: {}",
-            recording.id, proc.pid(), module, testFilter, logFile.absolutePath)
+        log.info("AppMap recording {} started (PID {}, modules={}, filter={}). Log: {}",
+            recording.id, proc.pid(), cleanModules, testFilter, logFile.absolutePath)
         return recording
     }
 
@@ -472,7 +524,8 @@ class AppMapService(
         val rel = decodeId(traceId) ?: return false
         val abs = bankingApp.bankingAppDir.toPath().resolve(rel)
         if (!Files.isRegularFile(abs)) return false
-        if (!abs.toString().contains("tmp/appmap")) return false // guard
+        // Forward-slash form — see listTraces() for why.
+        if (!abs.toFile().invariantSeparatorsPath.contains("tmp/appmap")) return false // guard
         return Files.deleteIfExists(abs)
     }
 
@@ -530,11 +583,22 @@ class AppMapService(
     }
 
     @Volatile private var cachedAgentJar: String? = null
+    @Volatile private var lastAgentDiscoveryDiagnostic: String = ""
+
+    /** Last-attempt diagnostic from agentJarPath() — surfaced in the
+     *  /demo/appmap status banner when discovery fails so the operator
+     *  doesn't have to dig through bench-webui logs to know why. */
+    fun lastAgentDiscoveryDiagnostic(): String = lastAgentDiscoveryDiagnostic
 
     /**
      * Returns the absolute path to the AppMap Java agent jar, discovering
      * it via the `appmap-print-jar-path` gradle task on first call and
      * caching the result. Returns null if discovery fails.
+     *
+     * <p>Has a 120s timeout so a hung Gradle daemon can't block the
+     * WebUI request indefinitely. On failure, captures the full Gradle
+     * output into {@link #lastAgentDiscoveryDiagnostic} so the page can
+     * surface what went wrong without sending the operator into bench-webui logs.
      */
     fun agentJarPath(): String? {
         cachedAgentJar?.let { return it }
@@ -553,19 +617,51 @@ class AppMapService(
         cmd.addAll(connectionSettings.gradleSystemProps())
         val pb = ProcessBuilder(cmd)
             .directory(dir).redirectErrorStream(true)
-        val javaHome = System.getenv("JAVA_HOME")
-            ?: "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
-        pb.environment()["JAVA_HOME"] = javaHome
-        pb.environment()["PATH"] = "$javaHome/bin:" + System.getenv("PATH")
+        // Cross-platform JDK pick — JdkDiscovery walks env var, PATH,
+        // and platform-specific install roots. Replaces the old
+        // macOS-only Homebrew hardcode that silently broke on Windows.
+        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
+        if (javaHome.isNotBlank()) {
+            pb.environment()["JAVA_HOME"] = javaHome
+            pb.environment()["PATH"] =
+                "$javaHome${java.io.File.separator}bin${java.io.File.pathSeparator}" +
+                    (System.getenv("PATH") ?: "")
+        }
+        val diag = StringBuilder()
+        diag.appendLine("$ ${cmd.joinToString(" ")}")
+        diag.appendLine("[env] JAVA_HOME=$javaHome")
         return runCatching {
             val p = pb.start()
             val text = p.inputStream.bufferedReader().readText()
-            p.waitFor()
+            val finished = p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)
+            diag.append(text)
+            if (!finished) {
+                p.destroyForcibly()
+                diag.appendLine("[err] gradle task hung past 120s; killed.")
+                lastAgentDiscoveryDiagnostic = diag.toString()
+                return null
+            }
             // Output line looks like: com.appland:appmap-agent.jar.path=/path/to/agent.jar
             val match = Regex("appmap-agent\\.jar\\.path=(.+)").find(text)
-            match?.groupValues?.get(1)?.trim()?.also { cachedAgentJar = it }
-        }.onFailure { log.warn("Failed to discover AppMap agent jar: {}", it.message) }
-            .getOrNull()
+            val jar = match?.groupValues?.get(1)?.trim()
+            if (jar.isNullOrBlank()) {
+                diag.appendLine("[err] gradle exited ${p.exitValue()} but did not print " +
+                    "an `appmap-agent.jar.path=…` line. Common causes: AppMap Gradle " +
+                    "plugin not applied (check banking-app/app-bootstrap/build.gradle.kts " +
+                    "for the `com.appland.appmap` plugin), a build-script error before " +
+                    "the task runs, or a toolchain mismatch.")
+                lastAgentDiscoveryDiagnostic = diag.toString()
+                return null
+            }
+            diag.appendLine("[ok] resolved agent: $jar")
+            lastAgentDiscoveryDiagnostic = diag.toString()
+            cachedAgentJar = jar
+            jar
+        }.onFailure {
+            diag.appendLine("[err] ${it.javaClass.simpleName}: ${it.message}")
+            lastAgentDiscoveryDiagnostic = diag.toString()
+            log.warn("Failed to discover AppMap agent jar: {}", it.message)
+        }.getOrNull()
     }
 
     fun appMapConfigFile(): String =
@@ -574,9 +670,11 @@ class AppMapService(
     /** Start banking-app with the AppMap agent attached. */
     fun startBankingAppWithAgent(): String {
         val agent = agentJarPath()
-            ?: return "Could not discover AppMap agent jar. Run " +
-                     "`./gradlew :app-bootstrap:appmap-print-jar-path -Pappmap_enabled=true` " +
-                     "from banking-app/ to debug."
+            ?: return "Could not discover AppMap agent jar. " +
+                "Last `appmap-print-jar-path` attempt — see the " +
+                "/demo/appmap diagnostics panel for the captured Gradle " +
+                "output. Quick check: open a terminal in banking-app/ and " +
+                "run `./gradlew :app-bootstrap:appmap-print-jar-path -Pappmap_enabled=true`."
         return bankingApp.startWithAppMapAgent(agent, appMapConfigFile())
     }
 

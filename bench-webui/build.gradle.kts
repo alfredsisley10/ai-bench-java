@@ -24,6 +24,12 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Springdoc auto-generates an OpenAPI 3 spec from the @GetMapping /
+    // @PostMapping annotations on bench-webui controllers and serves
+    // both /v3/api-docs and a Swagger UI at /swagger-ui/index.html.
+    // The "Demo API" page embeds that UI in an iframe; no separate
+    // hand-maintained API listing to drift from the code.
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Gradle 9 enforces an explicit JUnit Platform launcher on the test

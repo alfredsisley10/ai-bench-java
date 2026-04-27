@@ -43,16 +43,38 @@
 
         <fieldset>
             <legend>LLM provider and model</legend>
+
+            <!-- Warning when no providers have passed their verification.
+                 The dropdown is empty in that case, so the operator
+                 can't pick anything — surface the reason and link them
+                 to /llm to verify a provider before this form becomes
+                 actionable. -->
+            <div th:if="${noProvidersVerified}" class="status-banner error">
+                <strong>No LLM providers verified yet.</strong>
+                The launcher only surfaces providers whose
+                connectivity has been confirmed (Copilot bridge live
+                on its TCP socket; Corp-OpenAI capabilities probe
+                green). Open the <a href="/llm">LLMs page</a>, finish
+                a provider's wizard + verify step, then come back —
+                only verified providers can launch a run from here.
+            </div>
+
             <label>LLM provider:
-                <select name="provider" id="provider" required onchange="filterModels()">
+                <select name="provider" id="provider" required onchange="filterModels()"
+                        th:disabled="${noProvidersVerified}">
                     <option value="">-- select provider --</option>
                     <option th:each="p : ${providers}" th:value="${p}" th:text="${p}"></option>
                 </select>
             </label>
-            <p class="help-text">The LLM provider determines which API gateway handles the solver requests.</p>
+            <p class="help-text">
+                Providers shown here have all passed their connectivity
+                check on <a href="/llm">/llm</a>. If a provider you
+                expected to see is missing, finish its verify step there.
+            </p>
 
             <label>Model:
-                <select name="modelId" id="modelId" required>
+                <select name="modelId" id="modelId" required
+                        th:disabled="${noProvidersVerified}">
                     <option value="">-- select provider first --</option>
                     <option th:each="m : ${models}" th:value="${m.id}" th:text="${m.name}" th:attr="data-provider=${m.provider}"></option>
                 </select>
@@ -62,13 +84,68 @@
 
         <fieldset>
             <legend>Runtime options</legend>
+
+            <!-- Context-provider field — same semantics as /demo Quick
+                 benchmark. Picking AppMap Navie auto-forces AppMap mode
+                 to OFF below (Navie does its own AppMap vector search;
+                 letting the harness packer also include traces would
+                 double-count and inflate prompt tokens). -->
+            <label>Context provider:
+                <select name="contextProvider" id="rlContextProvider"
+                        onchange="syncRlAppmapMode()">
+                    <option value="none" selected>None — harness default packer</option>
+                    <option th:if="${navieAvailable}" value="appmap-navie">
+                        AppMap Navie — vector-search AppMaps + forward to selected LLM
+                    </option>
+                    <option th:unless="${navieAvailable}" value="appmap-navie" disabled>
+                        AppMap Navie (unavailable — bridge or AppMap CLI missing)
+                    </option>
+                </select>
+            </label>
+            <p class="help-text">
+                Sits between the harness and the LLM and decides which
+                code/trace excerpts get included in the prompt. Does
+                <strong>not</strong> change which LLM is called — that's
+                still the model selected above. Configure Navie on the
+                <a href="/appmap-navie">AppMap setup page</a>.
+            </p>
+
             <label>AppMap mode:
-                <select name="appmapMode" required>
+                <select name="appmapMode" id="rlAppmapMode" required>
                     <option value="OFF">OFF — No runtime traces collected</option>
                     <option value="ON_RECOMMENDED" selected>ON_RECOMMENDED — Traces for test cases most relevant to the bug</option>
                     <option value="ON_ALL">ON_ALL — Full trace collection for all test executions</option>
                 </select>
+                <span class="help-text" id="rlAppmapModeHint" style="margin-left:0.5em"></span>
             </label>
+            <script>
+                // Mirror /demo's auto-OFF behavior: when Context provider =
+                // AppMap Navie, force AppMap mode to OFF and disable the
+                // dropdown. Restore the prior choice when the user flips
+                // back to "None".
+                (function () {
+                    var ctx = document.getElementById('rlContextProvider');
+                    var mode = document.getElementById('rlAppmapMode');
+                    var hint = document.getElementById('rlAppmapModeHint');
+                    if (!ctx || !mode) return;
+                    var savedMode = mode.value;
+                    window.syncRlAppmapMode = function () {
+                        if (ctx.value === 'appmap-navie') {
+                            if (mode.value !== 'OFF') savedMode = mode.value;
+                            mode.value = 'OFF';
+                            mode.disabled = true;
+                            hint.textContent =
+                                '— forced OFF: AppMap Navie selects relevant maps itself.';
+                            hint.style.color = '#856404';
+                        } else {
+                            mode.disabled = false;
+                            if (mode.value === 'OFF' && savedMode !== 'OFF') mode.value = savedMode;
+                            hint.textContent = '';
+                        }
+                    };
+                    syncRlAppmapMode();
+                })();
+            </script>
             <p class="help-text">
                 AppMap traces provide runtime context (call graphs, data flows, HTTP interactions) to the LLM solver.
                 <strong>ON_RECOMMENDED</strong> is the default and balances trace quality with performance.

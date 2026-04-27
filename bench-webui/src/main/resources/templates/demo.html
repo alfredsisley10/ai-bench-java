@@ -6,6 +6,512 @@
     <h2>Sample banking app (Omnibank)</h2>
     <p class="subtitle">Select a demo issue to prepare the banking app at the bug's break commit, then run benchmark tests against it.</p>
 
+    <!-- ================================================================== -->
+    <!-- Diagnostic panel — shown when banking-app couldn't be located.     -->
+    <!-- ================================================================== -->
+    <section id="banking-app-diagnostics" th:unless="${bankingAppFound}"
+             style="background:#fff3cd; padding:1em 1.25em; border-radius:6px; border-left:4px solid #f0ad4e; margin:1em 0">
+        <h3 style="margin-top:0">Banking app not detected</h3>
+        <p>
+            bench-webui searches a few well-known locations for a checkout
+            of the banking-app at startup; none matched. The cards below
+            will show zeros and the benchmark workflow won't be able to
+            launch builds until this is fixed.
+        </p>
+
+        <h4 style="margin-bottom:0.25em">Paths searched (in order)</h4>
+        <ul style="margin-top:0.25em; font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.9em">
+            <li th:each="p : ${bankingAppLocation.searched}" th:text="${p}"></li>
+        </ul>
+        <p class="help-text">
+            Resolution source: <code th:text="${bankingAppLocation.source}"></code>.
+            Fallback path used: <code th:text="${bankingAppLocation.resolved}"></code>.
+        </p>
+
+        <h4 style="margin-bottom:0.25em">Status checklist</h4>
+        <ul style="list-style:none; padding-left:0; margin-top:0.25em">
+            <li>
+                <span th:text="${bankingAppLocation.exists ? '✓' : '✗'}" style="margin-right:0.4em"></span>
+                Resolved directory exists on disk
+            </li>
+            <li>
+                <span th:text="${bankingAppLocation.hasGradle ? '✓' : '✗'}" style="margin-right:0.4em"></span>
+                <code>gradlew</code> wrapper present
+            </li>
+            <li>
+                <span th:text="${bankingAppLocation.hasSettings ? '✓' : '✗'}" style="margin-right:0.4em"></span>
+                <code>settings.gradle.kts</code> present
+            </li>
+            <li>
+                <span style="margin-right:0.4em">ℹ</span>
+                bench-webui JDK: <code th:text="${javaVendor + ' ' + javaVersion}"></code>
+                (java.home: <code th:text="${javaHome}"></code>)
+            </li>
+        </ul>
+
+        <h4 style="margin-bottom:0.25em">How to fix</h4>
+        <p class="help-text">
+            Each option below has a button that runs the fix in-process.
+            Enter the path to your <code>banking-app</code> checkout (or the
+            repo root that contains it) and pick an option:
+        </p>
+        <div style="margin:0.5em 0 0.75em 0">
+            <label style="display:block">
+                Path to <code>banking-app</code> (or repo root):
+                <input type="text" id="bankingAppPathInput"
+                       placeholder="C:\path\to\ai-bench-java\banking-app"
+                       style="width:32em; max-width:100%; margin-left:0.5em; font-family:ui-monospace, Menlo, Consolas, monospace">
+            </label>
+        </div>
+        <ol>
+            <li class="fix-option">
+                <strong>Option A — set the env var (recommended).</strong>
+                Stop bench-webui, export
+                <code>AI_BENCH_BANKING_APP</code> to the absolute path of
+                your <code>banking-app</code> checkout, then restart:
+<pre style="margin:0.4em 0; padding:0.5em 0.7em; background:#f4f6fa; border-radius:4px"># PowerShell
+Stop-Process -Id (Get-Content $HOME\ai-bench\bench-webui.pid) -Force
+$env:AI_BENCH_BANKING_APP = "C:\path\to\ai-bench-java\banking-app"
+.\scripts\start-bench-tools.ps1</pre>
+                <div style="margin-top:0.4em">
+                    <button type="button" class="btn-sm"
+                            onclick="applyBankingFix(this, 'apply-path', 'env')">Apply (set path now)</button>
+                    <span class="help-text" style="margin-left:0.5em">
+                        Persists to <code>~/.ai-bench/banking-app-path.txt</code> and applies in-process — no restart needed.
+                    </span>
+                </div>
+                <details class="fix-output" style="display:none; margin-top:0.4em">
+                    <summary>Command output</summary>
+                    <pre class="terminal-output" style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4; border-radius:4px; max-height:18em; overflow:auto"></pre>
+                </details>
+            </li>
+            <li class="fix-option">
+                <strong>Option B — run bench-webui from the repo root.</strong>
+                The parent walk finds <code>banking-app/</code> when
+                <code>user.dir</code> is the repo root or one of its parents:
+<pre style="margin:0.4em 0; padding:0.5em 0.7em; background:#f4f6fa; border-radius:4px">cd C:\path\to\ai-bench-java
+java -jar $HOME\ai-bench\bench-webui-0.1.0-SNAPSHOT.jar</pre>
+                <div style="margin-top:0.4em">
+                    <button type="button" class="btn-sm"
+                            onclick="applyBankingFix(this, 'apply-path', 'root')">Apply (use this path)</button>
+                    <span class="help-text" style="margin-left:0.5em">
+                        Accepts the repo root or the banking-app dir directly.
+                    </span>
+                </div>
+                <details class="fix-output" style="display:none; margin-top:0.4em">
+                    <summary>Command output</summary>
+                    <pre class="terminal-output" style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4; border-radius:4px; max-height:18em; overflow:auto"></pre>
+                </details>
+            </li>
+            <li class="fix-option">
+                <strong>Option C — symlink/copy.</strong>
+                Place a copy (or NTFS junction) of <code>banking-app/</code>
+                next to the running webui's working dir:
+<pre style="margin:0.4em 0; padding:0.5em 0.7em; background:#f4f6fa; border-radius:4px">cmd /c mklink /J $HOME\ai-bench\banking-app C:\path\to\ai-bench-java\banking-app</pre>
+                <div style="margin-top:0.4em">
+                    <button type="button" class="btn-sm"
+                            onclick="applyBankingFix(this, 'symlink', '')">Apply (create junction)</button>
+                    <span class="help-text" style="margin-left:0.5em">
+                        Runs <code>mklink /J</code> on Windows or <code>ln -s</code> on Unix.
+                    </span>
+                </div>
+                <details class="fix-output" style="display:none; margin-top:0.4em">
+                    <summary>Command output</summary>
+                    <pre class="terminal-output" style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4; border-radius:4px; max-height:18em; overflow:auto"></pre>
+                </details>
+            </li>
+        </ol>
+        <p class="help-text">
+            Once fixed, refresh this page — the warning disappears and
+            the cards below populate with real numbers.
+        </p>
+        <script>
+            function applyBankingFix(btn, action, mode) {
+                var path = (document.getElementById('bankingAppPathInput').value || '').trim();
+                if (!path) {
+                    alert('Enter the banking-app (or repo root) path first.');
+                    return;
+                }
+                var li = btn.closest('.fix-option');
+                var details = li.querySelector('.fix-output');
+                var pre = details.querySelector('pre');
+                var summary = details.querySelector('summary');
+                details.style.display = '';
+                details.open = true;
+                summary.textContent = 'Running…';
+                pre.textContent = '';
+                btn.disabled = true;
+
+                var url = action === 'symlink'
+                    ? '/demo/banking-app/fix/symlink'
+                    : '/demo/banking-app/fix/apply-path';
+                var body = 'path=' + encodeURIComponent(path);
+                if (action !== 'symlink') body += '&mode=' + encodeURIComponent(mode);
+
+                fetch(url, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: body
+                })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var marker = data.ok ? '✓' : '✗';
+                    summary.textContent = marker + ' ' + (data.message || (data.ok ? 'OK' : 'Failed'));
+                    pre.textContent = data.output || '(no output)';
+                    btn.disabled = false;
+                    if (data.ok) btn.textContent = 'Applied — refresh the page';
+                })
+                .catch(function (e) {
+                    summary.textContent = '✗ Request failed';
+                    pre.textContent = 'Error: ' + (e && e.message ? e.message : e);
+                    btn.disabled = false;
+                });
+            }
+        </script>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- "Verify the build" workflow — Java first, Gradle second.           -->
+    <!-- Both are available regardless of detection state so users can      -->
+    <!-- confirm prerequisites end-to-end before kicking off a benchmark.   -->
+    <!-- ================================================================== -->
+    <section id="banking-app-verify" style="margin:1em 0">
+        <h3 style="margin-bottom:0.25em">Verify the build can launch</h3>
+        <p class="help-text" style="margin-top:0">
+            Two-step pre-flight: pick a JDK, confirm it works, then confirm
+            the Gradle wrapper launches against it. The selected JDK is
+            piped into the gradlew subprocess via <code>JAVA_HOME</code>
+            and a prepended <code>PATH</code> so the wrapper picks it up
+            regardless of your shell defaults.
+        </p>
+
+        <!-- JDK picker (shared between both verify buttons via a single form). -->
+        <form id="verify-form" method="post" style="margin:0.5em 0">
+            <div style="margin-bottom:0.4em">
+                <label>
+                    JDK to use:
+                    <select name="jdkPath" id="jdkPath"
+                            style="min-width:36em; max-width:100%; font-family:ui-monospace, Menlo, Consolas, monospace">
+                        <option value="" th:if="${availableJdks.empty}">(no JDKs auto-detected)</option>
+                        <option th:each="j : ${availableJdks}"
+                                th:value="${j.home}"
+                                th:text="${j.label} + '  [' + ${j.source} + ']'"
+                                th:selected="${j.home == preferredJdkHome}"></option>
+                    </select>
+                </label>
+                <span class="help-text" style="display:block; margin-top:0.25em">
+                    Detected from <code>JAVA_HOME</code>, <code>PATH</code>,
+                    standard install dirs (Adoptium / Microsoft / Corretto /
+                    Zulu / Oracle / GraalVM / IntelliJ <code>~/.jdks</code> /
+                    Homebrew / SDKMAN / <code>/Library/Java/…</code>) plus
+                    any paths you've added below.
+                    <span th:if="${toolchainMajor &gt; 0}">
+                        Banking-app's Gradle toolchain asks for
+                        <strong>JDK <span th:text="${toolchainMajor}"></span></strong>.
+                        <span th:if="${toolchainMismatch}" style="color:#b54708">
+                            ⚠ no detected JDK matches — Gradle will try to
+                            auto-download via foojay (~200&nbsp;MB,
+                            requires internet).
+                        </span>
+                        <span th:unless="${toolchainMismatch}" style="color:#067647">
+                            ✓ a matching JDK is installed.
+                        </span>
+                    </span>
+                </span>
+                <div style="margin-top:0.4em">
+                    <button type="button" class="btn-sm" onclick="saveDefaultJdk(this)">Save as default</button>
+                    <button type="button" class="btn-sm btn-secondary" onclick="clearDefaultJdk(this)"
+                            th:disabled="${savedDefaultJdkHome == ''}"
+                            style="padding:0.3em 0.8em">Clear default</button>
+                    <span class="help-text" style="margin-left:0.5em" id="defaultJdkStatus">
+                        <span th:if="${savedDefaultJdkHome != ''}"
+                              th:text="'Default saved → ' + ${savedDefaultJdkHome}"
+                              style="color:#067647"></span>
+                        <span th:if="${savedDefaultJdkHome == ''}">
+                            (no default saved — using auto-pick)
+                        </span>
+                    </span>
+                </div>
+                <script>
+                    function saveDefaultJdk(btn) {
+                        var sel = document.getElementById('jdkPath');
+                        var status = document.getElementById('defaultJdkStatus');
+                        var path = sel.value;
+                        if (!path) { status.textContent = '(pick a JDK first)'; return; }
+                        btn.disabled = true;
+                        fetch('/demo/banking-app/jdk/save-default', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/x-www-form-urlencoded'},
+                            body: 'path=' + encodeURIComponent(path)
+                        })
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            status.textContent = (d.ok ? '✓ ' : '✗ ') + d.message;
+                            status.style.color = d.ok ? '#067647' : '#b91c1c';
+                            btn.disabled = false;
+                        })
+                        .catch(function (e) {
+                            status.textContent = '✗ ' + ((e && e.message) || e);
+                            status.style.color = '#b91c1c';
+                            btn.disabled = false;
+                        });
+                    }
+                    function clearDefaultJdk(btn) {
+                        btn.disabled = true;
+                        var status = document.getElementById('defaultJdkStatus');
+                        fetch('/demo/banking-app/jdk/clear-default', {method: 'POST'})
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            status.textContent = (d.ok ? '✓ ' : '✗ ') + d.message;
+                            status.style.color = '#6b7280';
+                            btn.disabled = false;
+                        });
+                    }
+                </script>
+            </div>
+            <button type="submit" class="btn-sm" formaction="/demo/banking-app/verify-java">
+                Verify Java
+            </button>
+            <button type="submit" class="btn-sm" formaction="/demo/banking-app/verify"
+                    style="margin-left:0.4em">
+                Run gradlew --version
+            </button>
+            <span class="help-text" style="margin-left:0.5em">
+                Java check: ~1&nbsp;s. Gradle check: 5&nbsp;–&nbsp;30&nbsp;s
+                normally; up to a few minutes if foojay needs to download
+                the toolchain JDK.
+            </span>
+        </form>
+        <details style="margin-top:0.6em; padding:0.5em 0.75em; background:#f4f6fa; border-radius:4px">
+            <summary style="cursor:pointer">
+                <strong style="font-size:0.95em">JDK not in the list?</strong>
+                <span class="help-text" style="margin-left:0.4em">
+                    (browse a folder to scan, or paste a path directly)
+                </span>
+            </summary>
+
+            <!-- Browse + scan: the friendly path. Operator clicks
+                 through dirs, picks a parent like "C:\Program Files\Java",
+                 hits Scan, and we walk every subdir for runnable JDKs. -->
+            <div style="margin-top:0.5em">
+                <strong style="font-size:0.9em">Browse folder &amp; scan recursively</strong>
+                <span class="help-text" style="margin-left:0.3em">
+                    — recommended; eliminates path-typing errors.
+                </span>
+                <div style="margin-top:0.3em">
+                    <button type="button" class="btn-sm" onclick="fsOpen()">Browse folders…</button>
+                    <span id="fsStatus" style="margin-left:0.5em"></span>
+                </div>
+                <div id="fsBrowser" style="display:none; margin-top:0.4em; padding:0.5em 0.75em;
+                                            background:white; border:1px solid #d1d5db; border-radius:4px">
+                    <div style="display:flex; gap:0.4em; align-items:center; margin-bottom:0.4em">
+                        <button type="button" class="btn-sm" onclick="fsHome()" title="Go to home directory">🏠 Home</button>
+                        <button type="button" class="btn-sm" onclick="fsUp()" title="Up one level">⬆ Up</button>
+                        <input type="text" id="fsPath" style="flex:1; font-family:ui-monospace, Menlo, Consolas, monospace"
+                               onkeydown="if (event.key==='Enter') { event.preventDefault(); fsLoad(this.value); }">
+                        <button type="button" class="btn-sm" onclick="fsLoad(document.getElementById('fsPath').value)">Go</button>
+                    </div>
+                    <ul id="fsList" style="list-style:none; padding:0; margin:0; max-height:14em;
+                                            overflow:auto; border:1px solid #e5e7eb; border-radius:4px;
+                                            background:#fafafa"></ul>
+                    <div style="margin-top:0.5em">
+                        <button type="button" class="btn-sm" onclick="fsScan(this)"
+                                style="background:#047857; color:white; border:none;
+                                       padding:0.3em 0.8em; border-radius:4px; cursor:pointer">
+                            Scan this folder for JDKs
+                        </button>
+                        <button type="button" class="btn-sm btn-secondary" onclick="fsClose()"
+                                style="margin-left:0.4em; padding:0.3em 0.8em">Cancel</button>
+                        <span id="fsScanStatus" style="margin-left:0.5em"></span>
+                    </div>
+                    <div id="fsScanDetail" class="help-text" style="margin-top:0.3em"></div>
+                </div>
+            </div>
+
+            <!-- Manual path entry: backstop when the operator already
+                 knows the exact path. -->
+            <div style="margin-top:0.7em">
+                <strong style="font-size:0.9em">Or paste an absolute path</strong>
+                <span class="help-text" style="margin-left:0.3em">
+                    — JAVA_HOME-style root, or directly to <code>bin/java</code>.
+                </span>
+                <div style="margin-top:0.3em">
+                    <input type="text" id="customJdkPath"
+                           placeholder="C:\path\to\jdk-21" style="width:28em; max-width:100%;
+                                  font-family:ui-monospace, Menlo, Consolas, monospace">
+                    <button type="button" class="btn-sm" onclick="addCustomJdk(this)">Add JDK path</button>
+                    <span id="customJdkStatus" style="margin-left:0.5em"></span>
+                </div>
+            </div>
+
+            <p class="help-text" style="margin:0.4em 0 0 0">
+                Either path persists to <code>~/.ai-bench/extra-jdk-paths.txt</code>
+                so detected JDKs survive a webui restart.
+            </p>
+        </details>
+        <script>
+            // ---------- Manual path entry ----------
+            function addCustomJdk(btn) {
+                var input = document.getElementById('customJdkPath');
+                var status = document.getElementById('customJdkStatus');
+                var path = (input.value || '').trim();
+                if (!path) { status.textContent = '(enter a path first)'; return; }
+                btn.disabled = true;
+                status.textContent = 'Validating…';
+                status.style.color = '';
+                fetch('/demo/banking-app/jdk/add', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'path=' + encodeURIComponent(path)
+                })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    status.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+                    status.style.color = data.ok ? '#067647' : '#b91c1c';
+                    btn.disabled = false;
+                    if (data.ok) input.value = '';
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + (e && e.message ? e.message : e);
+                    status.style.color = '#b91c1c';
+                    btn.disabled = false;
+                });
+            }
+
+            // ---------- Folder browser ----------
+            var fsState = { home: '', currentParent: null };
+
+            function fsOpen() {
+                document.getElementById('fsBrowser').style.display = '';
+                fsLoad(''); // empty path = user home
+            }
+            function fsClose() {
+                document.getElementById('fsBrowser').style.display = 'none';
+                document.getElementById('fsStatus').textContent = '';
+                document.getElementById('fsScanStatus').textContent = '';
+                document.getElementById('fsScanDetail').textContent = '';
+            }
+            function fsHome() { fsLoad(fsState.home || ''); }
+            function fsUp() {
+                if (fsState.currentParent) fsLoad(fsState.currentParent);
+            }
+            function fsLoad(path) {
+                var url = '/api/fs/list' + (path ? '?path=' + encodeURIComponent(path) : '');
+                fetch(url)
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        document.getElementById('fsPath').value = data.path || '';
+                        fsState.home = data.home || fsState.home;
+                        fsState.currentParent = data.parent;
+                        var list = document.getElementById('fsList');
+                        list.innerHTML = '';
+                        if (data.invalid) {
+                            list.innerHTML = '<li style="padding:0.5em; color:#b91c1c">Path not found or not a directory.</li>';
+                            return;
+                        }
+                        // Drives row (Windows at root).
+                        (data.drives || []).forEach(function (d) {
+                            list.appendChild(fsRow('💽 ' + d, d));
+                        });
+                        // Subdirs.
+                        (data.entries || []).forEach(function (e) {
+                            list.appendChild(fsRow('📁 ' + e.name, e.path));
+                        });
+                        if ((data.entries || []).length === 0 && !(data.drives || []).length) {
+                            list.innerHTML = '<li style="padding:0.5em; color:#6b7280; font-style:italic">(no subfolders)</li>';
+                        }
+                    })
+                    .catch(function (e) {
+                        document.getElementById('fsList').innerHTML =
+                            '<li style="padding:0.5em; color:#b91c1c">Error: ' +
+                            ((e && e.message) || e) + '</li>';
+                    });
+            }
+            function fsRow(label, path) {
+                var li = document.createElement('li');
+                li.style.cssText = 'padding:0.3em 0.6em; cursor:pointer; border-bottom:1px solid #f0f0f0';
+                li.textContent = label;
+                li.addEventListener('click', function () { fsLoad(path); });
+                li.addEventListener('mouseenter', function () { li.style.background = '#e5e7eb'; });
+                li.addEventListener('mouseleave', function () { li.style.background = ''; });
+                return li;
+            }
+            function fsScan(btn) {
+                var path = document.getElementById('fsPath').value;
+                if (!path) { return; }
+                btn.disabled = true;
+                var status = document.getElementById('fsScanStatus');
+                var detail = document.getElementById('fsScanDetail');
+                status.textContent = 'Scanning…';
+                status.style.color = '';
+                detail.textContent = '';
+                fetch('/demo/banking-app/jdk/scan', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'path=' + encodeURIComponent(path)
+                })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    status.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+                    status.style.color = data.ok ? '#067647' : '#b91c1c';
+                    if (data.jdks && data.jdks.length) {
+                        detail.innerHTML = 'Found:<ul style="margin:0.2em 0 0 1em">' +
+                            data.jdks.map(function (j) {
+                                return '<li>' + escapeJdkHtml(j.label) + '</li>';
+                            }).join('') + '</ul>';
+                    }
+                    btn.disabled = false;
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                    btn.disabled = false;
+                });
+            }
+            function escapeJdkHtml(s) {
+                var d = document.createElement('div');
+                d.appendChild(document.createTextNode(String(s == null ? '' : s)));
+                return d.innerHTML;
+            }
+        </script>
+        <p class="help-text" style="margin:0.4em 0 0 0">
+            Behind a corporate proxy or Artifactory mirror? Use the
+            <a href="/proxy">Proxy &amp; TLS</a> page to set credentials
+            and run the <strong>Verify connectivity</strong> sweep — it
+            probes Gradle's bootstrap endpoints (services.gradle.org,
+            Maven Central, foojay) plus your configured mirror so you
+            can confirm the network path before the build kicks off.
+        </p>
+
+        <!-- Java verify result. -->
+        <div th:if="${javaVerifyResult != null}"
+             th:class="'status-banner ' + (${javaVerifyResult.ok} ? 'ok' : 'error')"
+             style="margin-top:0.5em">
+            <strong th:text="${javaVerifyResult.ok ? 'Java OK' : 'Java failed'}"></strong>:
+            <span th:text="${javaVerifyResult.message}"></span>
+            <span class="help-text" style="margin-left:0.5em"
+                  th:text="'(exit ' + ${javaVerifyResult.exitCode} + ', ' + ${javaVerifyResult.durationMs} + ' ms)'"></span>
+            <details style="margin-top:0.4em" th:open="${!javaVerifyResult.ok}">
+                <summary>Full <code>java -version</code> output</summary>
+                <pre style="margin:0.25em 0; padding:0.5em 0.7em; background:#1e1e1e; color:#d4d4d4; border-radius:4px; overflow:auto; max-height:24em" th:text="${javaVerifyResult.output}"></pre>
+            </details>
+        </div>
+
+        <!-- Gradle verify result. -->
+        <div th:if="${verifyResult != null}"
+             th:class="'status-banner ' + (${verifyResult.ok} ? 'ok' : 'error')"
+             style="margin-top:0.5em">
+            <strong th:text="${verifyResult.ok ? 'Gradle OK' : 'Gradle failed'}"></strong>:
+            <span th:text="${verifyResult.message}"></span>
+            <span class="help-text" style="margin-left:0.5em"
+                  th:text="'(exit ' + ${verifyResult.exitCode} + ', ' + ${verifyResult.durationMs} + ' ms)'"></span>
+            <details style="margin-top:0.4em" th:open="${!verifyResult.ok}">
+                <summary>Full <code>gradlew --version</code> output</summary>
+                <pre style="margin:0.25em 0; padding:0.5em 0.7em; background:#1e1e1e; color:#d4d4d4; border-radius:4px; overflow:auto; max-height:24em" th:text="${verifyResult.output}"></pre>
+            </details>
+        </div>
+    </section>
+
     <section>
         <h3>Banking app</h3>
         <div class="cards">
@@ -198,14 +704,79 @@
     <section th:if="${isAdmin}">
         <h3>Quick benchmark</h3>
         <p class="help-text">Select an issue and configure the solver to run a full benchmark cycle (prepare → solve → score).</p>
+
+        <!-- The previous dropdown filtered to `breakBranch != ''`, so a
+             freshly-cloned banking-app (no `bug/*/break` branches yet)
+             rendered an empty dropdown with no explanation. Now we
+             surface every issue — missing-branch issues are still
+             disabled (the prepare step would 404 against a branch that
+             doesn't exist) but the operator at least sees what's
+             available, plus a warning telling them how to seed the
+             branches. -->
+        <div th:if="${issues.?[breakBranch != ''].isEmpty()}" class="status-banner error"
+             style="margin:0.5em 0">
+            <strong>No bug branches found in banking-app.</strong>
+            The benchmark wizard prepares each issue by checking out
+            <code>bug/&lt;ISSUE-ID&gt;/break</code> — none of these
+            exist in
+            <code th:text="${bankingAppPath}"></code> yet, so every
+            issue below is greyed out.
+            <div style="margin-top:0.5em">
+                <button type="button" class="btn-sm" onclick="seedBugBranches(this)">
+                    Create placeholder bug branches
+                </button>
+                <span class="help-text" id="seedStatus" style="margin-left:0.5em">
+                    Creates empty <code>bug/&lt;id&gt;/break</code> +
+                    <code>bug/&lt;id&gt;/fix</code> branches from current
+                    HEAD so the dropdown becomes selectable. Branches are
+                    placeholders only — replace each with real bug /
+                    fix diffs to score meaningful benchmarks.
+                </span>
+            </div>
+            <details id="seedOutput" style="display:none; margin-top:0.5em">
+                <summary>Seeding log</summary>
+                <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419;
+                            color:#d4d4d4; border-radius:4px; max-height:24em;
+                            overflow:auto; font-size:0.85em"></pre>
+            </details>
+            <script>
+                function seedBugBranches(btn) {
+                    var status = document.getElementById('seedStatus');
+                    var details = document.getElementById('seedOutput');
+                    var pre = details.querySelector('pre');
+                    btn.disabled = true;
+                    status.textContent = 'Seeding…';
+                    status.style.color = '';
+                    details.style.display = '';
+                    details.open = true;
+                    pre.textContent = '';
+                    fetch('/demo/banking-app/seed-bug-branches', {method:'POST'})
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            status.textContent = (d.ok ? '✓ ' : '✗ ') + (d.message || '');
+                            status.style.color = d.ok ? '#067647' : '#b91c1c';
+                            pre.textContent = d.log || '(no log)';
+                            btn.disabled = false;
+                            if (d.ok) btn.textContent = 'Done — refresh the page';
+                        })
+                        .catch(function (e) {
+                            status.textContent = '✗ ' + ((e && e.message) || e);
+                            status.style.color = '#b91c1c';
+                            btn.disabled = false;
+                        });
+                }
+            </script>
+        </div>
+
         <form method="post" id="quickRunForm" action="/demo/run/BUG-0001">
             <label>Issue:
                 <select id="quickIssueSelect" required onchange="updateQuickFormAction()">
                     <option th:each="issue, it : ${issues}"
-                            th:if="${issue.breakBranch != ''}"
                             th:value="${issue.id}"
-                            th:text="${issue.id + ' — ' + issue.title}"
-                            th:attr="selected=${it.first ? 'selected' : null}"></option>
+                            th:text="${issue.id + ' — ' + issue.title +
+                                       (issue.breakBranch == '' ? '  (no break branch)' : '')}"
+                            th:disabled="${issue.breakBranch == ''}"
+                            th:attr="selected=${it.first and issue.breakBranch != '' ? 'selected' : null}"></option>
                 </select>
             </label>
             <!-- Provider + model are now driven entirely off the
@@ -258,7 +829,8 @@
                  not pick the model itself — it forwards prompts to
                  whatever LLM provider/model is selected above). -->
             <label>Context provider:
-                <select name="contextProvider" id="qbContextProvider">
+                <select name="contextProvider" id="qbContextProvider"
+                        onchange="syncAppmapModeForContextProvider()">
                     <option value="none" selected>None — harness default packer</option>
                     <option th:if="${navieAvailable}" value="appmap-navie">
                         AppMap Navie — vector-search AppMaps + forward to selected LLM
@@ -285,12 +857,56 @@
             </p>
 
             <label>AppMap mode:
-                <select name="appmapMode">
+                <select name="appmapMode" id="qbAppmapMode">
                     <option value="OFF">OFF — no traces</option>
                     <option value="ON_RECOMMENDED" selected>ON_RECOMMENDED — bug-relevant traces only</option>
                     <option value="ON_ALL">ON_ALL — full trace collection</option>
                 </select>
+                <span class="help-text" id="qbAppmapModeHint" style="margin-left:0.5em"></span>
             </label>
+            <script>
+                // Auto-toggle AppMap mode based on context provider:
+                // when AppMap Navie is selected, the harness's own AppMap
+                // packer is redundant — Navie does its own AppMap vector
+                // search on the recorded traces and forwards a focused
+                // subset. Leaving the harness packer ON would double-
+                // include traces and inflate prompt tokens, plus risk
+                // truncating Navie's curated picks. The dropdown is
+                // disabled (forced OFF) while Navie is selected; flipping
+                // back to "None" restores the user's previous choice.
+                (function () {
+                    var ctx = document.getElementById('qbContextProvider');
+                    var mode = document.getElementById('qbAppmapMode');
+                    var hint = document.getElementById('qbAppmapModeHint');
+                    if (!ctx || !mode) return;
+                    var savedMode = mode.value;
+                    window.syncAppmapModeForContextProvider = function () {
+                        if (ctx.value === 'appmap-navie') {
+                            // Remember whatever the user had picked so we
+                            // can restore it if they switch back.
+                            if (mode.value !== 'OFF') savedMode = mode.value;
+                            mode.value = 'OFF';
+                            mode.disabled = true;
+                            hint.textContent =
+                                '— forced OFF: AppMap Navie selects relevant maps itself.';
+                            hint.style.color = '#856404';
+                        } else {
+                            mode.disabled = false;
+                            // Only restore if the user's saved choice
+                            // differs from the current OFF value, so a
+                            // user who deliberately picked OFF doesn't
+                            // get bumped back to ON_RECOMMENDED.
+                            if (mode.value === 'OFF' && savedMode !== 'OFF') {
+                                mode.value = savedMode;
+                            }
+                            hint.textContent = '';
+                        }
+                    };
+                    // Apply on initial load too — covers the case where
+                    // a future page-render pre-selects Navie via session.
+                    syncAppmapModeForContextProvider();
+                })();
+            </script>
             <p class="help-text" style="margin:0 0 0.5em 1.5em">
                 Controls whether the solver receives runtime context
                 (call graphs, SQL, HTTP) recorded by the AppMap Java
@@ -331,25 +947,29 @@
 
     <section>
         <h3>API access</h3>
-        <p class="help-text">All demo functionality is available via REST API for programmatic access. Responses include commit identifiers.</p>
-        <table>
-            <thead><tr><th>Endpoint</th><th>Method</th><th>Description</th></tr></thead>
-            <tbody>
-            <tr><td><code>GET /api/demo/issues</code></td><td>GET</td><td>List all demo issues with commit hashes</td></tr>
-            <tr><td><code>GET /api/demo/issues/{id}</code></td><td>GET</td><td>Get issue details including break/fix commits</td></tr>
-            <tr><td><code>POST /api/demo/issues/{id}/prepare</code></td><td>POST</td><td>Prepare worktree at bug's break commit</td></tr>
-            <tr><td><code>POST /api/demo/issues/{id}/run</code></td><td>POST</td><td>Run benchmark (JSON body: provider, modelId, appmapMode, seeds)</td></tr>
-            <tr><td><code>POST /api/demo/issues/{id}/reset</code></td><td>POST</td><td>Reset banking app to clean state</td></tr>
-            <tr><td><code>GET /api/demo/banking-app/status</code></td><td>GET</td><td>Banking app status (running/stopped), URL, module list</td></tr>
-            <tr><td><code>POST /api/demo/banking-app/start</code></td><td>POST</td><td>Start the banking app (Spring Boot on port 8080)</td></tr>
-            <tr><td><code>POST /api/demo/banking-app/stop</code></td><td>POST</td><td>Stop the banking app</td></tr>
-            <tr><td><code>GET /api/demo/banking-app/log</code></td><td>GET</td><td>Tail the banking app boot log (?lines=80)</td></tr>
-            <tr><td><code>GET /api/demo/issues/{id}/download/description</code></td><td>GET</td><td>Download issue description as text file</td></tr>
-            <tr><td><code>GET /api/demo/issues/{id}/download/break</code></td><td>GET</td><td>Download break commit code as zip</td></tr>
-            <tr><td><code>GET /api/demo/issues/{id}/download/tests</code></td><td>GET</td><td>Download only the fix tests as zip (for offline verification)</td></tr>
-            <tr><td><code>POST /api/demo/issues/{id}/submit</code></td><td>POST</td><td>Submit a unified diff patch for grading (text/plain body)</td></tr>
-            </tbody>
-        </table>
+        <p class="help-text">
+            Interactive OpenAPI 3 spec for the demo REST API, generated
+            from the live controller annotations by springdoc — always
+            in sync with the running webui (no hand-maintained table to
+            drift). Use the <em>Try it out</em> button on any endpoint
+            to call it directly with the current session.
+        </p>
+        <div style="margin:0.4em 0">
+            <a href="/swagger-ui/index.html?urls.primaryName=demo"
+               target="_blank" rel="noopener" class="btn-sm btn-link"
+               style="display:inline-block; padding:0.3em 0.8em">
+                Open Swagger UI in a new tab
+            </a>
+            <a href="/v3/api-docs/demo" target="_blank" rel="noopener"
+               class="help-text" style="margin-left:0.5em">
+                Raw OpenAPI JSON
+            </a>
+        </div>
+        <iframe src="/swagger-ui/index.html?urls.primaryName=demo"
+                title="Swagger UI for ai-bench Demo API"
+                style="width:100%; height:600px; border:1px solid #d1d5db;
+                       border-radius:4px; background:white"
+                loading="lazy"></iframe>
     </section>
 
     <script>

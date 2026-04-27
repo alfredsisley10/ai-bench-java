@@ -8,11 +8,15 @@ import org.springframework.web.bind.annotation.PathVariable
 @Controller
 class ResultsController {
 
+    /**
+     * Bare /results used to render its own list page; that's been
+     * merged into the dashboard so the operator gets summary + full
+     * history in one scroll. Redirect cached bookmarks back to the
+     * dashboard. The /results/{runId} transcript route below is
+     * unchanged.
+     */
     @GetMapping("/results")
-    fun list(model: Model): String {
-        model.addAttribute("runs", emptyList<Any>())
-        return "results"
-    }
+    fun list(): String = "redirect:/"
 
     @GetMapping("/results/{runId}")
     fun detail(@PathVariable runId: String, model: Model): String {
