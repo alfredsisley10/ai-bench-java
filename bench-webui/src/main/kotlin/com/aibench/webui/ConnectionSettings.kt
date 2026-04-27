@@ -329,19 +329,25 @@ class ConnectionSettings {
             }
             // OK criterion is context-aware:
             //   * Mirror probe with auth attached: we BELIEVE the
-            //     credentials should work, so 401/403 IS a failure --
+            //     credentials should work, so 4xx/5xx are failures --
             //     the operator needs to know their token is rejected.
-            //     Earlier "anything 200..499" mode reported a green
-            //     check despite a 401 with "token failed verification:
-            //     parse" in the body, hiding the real bug behind a
-            //     reachability success.
+            //     But 3xx (redirect) is fine: many Artifactory installs
+            //     302 the root URL to a UI path, a trailing-slash
+            //     variant, or an authenticated landing page. Treating
+            //     302 as failure was overcorrection from the earlier
+            //     "401-as-success" bug -- the right line is "did the
+            //     request reach a fully authenticated endpoint?", and
+            //     a 302 satisfies that. (A 302 redirect-to-login WOULD
+            //     be a covert auth failure, but tier-2 artifact
+            //     resolution catches that since the actual POM GETs
+            //     would still 401.)
             //   * Generic URL probe (no auth, just connectivity): the
             //     historical "200..499 = reachable" stance still
             //     applies -- a 401 from Maven Central means we got there
             //     but the endpoint requires auth, which is still useful
             //     diagnostic info.
             val authoritative = useMirrorAuth && s.hasMirrorAuth
-            val ok = if (authoritative) code in 200..299 else code in 200..499
+            val ok = if (authoritative) code in 200..399 else code in 200..499
             // Mine common Artifactory body-error patterns for a more
             // actionable message. Without this, the operator sees
             // "HTTP 401 — server error" and has to dig the
