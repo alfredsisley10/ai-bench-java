@@ -120,6 +120,14 @@ class BenchmarkRunService(
     private val executor = Executors.newCachedThreadPool { r ->
         Thread(r, "bench-run").apply { isDaemon = true }
     }
+    /**
+     * Single-threaded scheduler used for the per-run watchdog that
+     * detects "stuck in QUEUED" runs. Daemon thread so it doesn't
+     * block JVM shutdown.
+     */
+    private val watchdog = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "bench-run-watchdog").apply { isDaemon = true }
+    }
 
     fun start(issueId: String, issueTitle: String, provider: String, modelId: String,
               contextProvider: String, appmapMode: String, seeds: Int): BenchmarkRun {
@@ -132,7 +140,33 @@ class BenchmarkRunService(
             startedAt = Instant.now()
         )
         runs[id] = run
+        // Surface ONE log entry the moment we register the run, so the
+        // /results/{id} drill-down has SOMETHING to show right away
+        // instead of the empty "Loading…" placeholder. The previous
+        // behaviour gave the operator no signal that the run existed
+        // until simulate's first line ran -- and if the executor was
+        // somehow late picking the task up, the page looked broken.
+        entry(run, Category.INFO, "Run queued — waiting for worker thread to pick it up.")
         executor.submit { runCatching { simulate(run) }.onFailure { logRunError(run, it) } }
+
+        // Watchdog: if simulate hasn't transitioned the run out of
+        // QUEUED within 15s, something is wrong (executor backlog,
+        // simulate threw before status update, etc.). Fail it loudly
+        // instead of leaving the operator staring at "Queued forever".
+        watchdog.schedule({
+            val current = runs[id]
+            if (current != null && current.status == Status.QUEUED) {
+                current.status = Status.ERRORED
+                current.endedAt = Instant.now()
+                entry(current, Category.ERROR,
+                    "Run never transitioned out of QUEUED within 15s. The simulate worker " +
+                    "did not start (executor backlog, JVM thread limit, or an exception " +
+                    "before the first status update). Try again or check bench-webui logs " +
+                    "for stack traces from BenchmarkRunService.")
+                log.warn("Benchmark run {} stuck in QUEUED >15s -- marked ERRORED", id)
+            }
+        }, 15, java.util.concurrent.TimeUnit.SECONDS)
+
         log.info("Benchmark run {} queued: {} model={} ctx={} seeds={}",
             id, issueId, modelId, contextProvider, seeds)
         return run
@@ -305,10 +339,19 @@ class BenchmarkRunService(
         )
         run.endedAt = Instant.now()
         run.phase = "complete"
-        run.status = if (passCount > 0) Status.PASSED else Status.FAILED
+        // Strict PASSED: ALL seeds must pass. Earlier criterion was
+        // `passCount > 0`, which marked a 2/3 run as PASSED in the
+        // dashboard while the per-seed table showed two passes and
+        // one failure -- visually inconsistent. PASSED now means
+        // "the model resolved this issue every time"; partial
+        // outcomes are FAILED. (Adding a PARTIAL status would split
+        // these correctly but threads through the dashboard,
+        // detail page, and stats query in too many places for the
+        // same fix; keep the binary distinction strict for now.)
+        run.status = if (passCount == run.seeds) Status.PASSED else Status.FAILED
         entry(run, Category.RESULT,
             "Final: $passCount/${run.seeds} seeds passed → " +
-            "pass@${run.seeds}=${if (passCount > 0) "PASS" else "FAIL"}, " +
+            "pass@${run.seeds}=${if (passCount == run.seeds) "PASS" else "FAIL"}, " +
             "estimated cost \$${"%.6f".format(cost)}")
     }
 

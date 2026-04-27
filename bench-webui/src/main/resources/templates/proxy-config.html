@@ -262,6 +262,31 @@
             also picks them up so manual <code>./gradlew</code> calls
             inherit the same routing.
         </p>
+
+        <!-- Multi-mirror reminder. The most common 401 we see in
+             practice is the operator pasting the right URL but the
+             token from a DIFFERENT Artifactory mirror in the same
+             enterprise (e.g. integ-vs-prod, or a different repo
+             group within the same Artifactory). Tokens are scoped
+             per mirror; URL and token must match. -->
+        <div class="status-banner" style="padding:0.5em 0.7em;
+                                          border-radius:4px;
+                                          background:#eff6ff;
+                                          border:1px solid #93c5fd;
+                                          color:#1e40af;
+                                          margin:0.4em 0 0.6em 0">
+            <strong>Heads up — many enterprises run multiple Artifactory mirrors.</strong>
+            Tokens are scoped per mirror (e.g.
+            <code>artifactory-intg</code>,
+            <code>artifactory-prod</code>,
+            <code>artifactory-stage</code>), and a token issued for
+            one mirror returns 401 with
+            <em>"token failed verification"</em> against another even
+            when the URL works. Double-check the URL + token combination
+            comes from the same Artifactory instance, not a
+            sibling/staging one.
+        </div>
+
         <form method="post" action="/proxy/save-mirror">
             <label>Mirror URL:
                 <input name="mirrorUrl" type="url"
