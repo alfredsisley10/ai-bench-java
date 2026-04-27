@@ -91,10 +91,22 @@ $repoDist = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\dist') -Erro
 if ($repoDist -and (Test-Path $repoDist)) {
     $repoCli   = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-cli-*.zip'   -File -ErrorAction SilentlyContinue | Select-Object -First 1
     $repoWebui = Get-ChildItem -LiteralPath $repoDist -Filter 'bench-webui-*.jar' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Size + mtime is more reliable than mtime alone: a Windows machine
+    # that booted from an older release jar, then later git-pulled a
+    # newer dist/jar, can end up with matching mtimes (Copy-Item
+    # preserves nothing by default; git can preserve commit time
+    # depending on core.checkstat). Size catches the content-change
+    # case the mtime check would miss.
+    function Test-NeedsRefresh($src, $dst) {
+        if ($null -eq $dst) { return $true }
+        if ($src.Length -ne $dst.Length) { return $true }
+        return $src.LastWriteTimeUtc -gt $dst.LastWriteTimeUtc
+    }
+
     if ($repoCli -and $repoWebui) {
         $refreshedCli = $false
         $refreshedWebui = $false
-        if (-not $cliZip -or $repoCli.LastWriteTimeUtc -gt $cliZip.LastWriteTimeUtc) {
+        if (Test-NeedsRefresh $repoCli $cliZip) {
             # Wipe any unzipped bench-cli-* dir so the next "Expand"
             # step recreates it from the fresher zip.
             Get-ChildItem -LiteralPath $InstallDir -Directory -Filter 'bench-cli-*' -ErrorAction SilentlyContinue |
@@ -102,7 +114,7 @@ if ($repoDist -and (Test-Path $repoDist)) {
             Copy-Item -LiteralPath $repoCli.FullName -Destination $InstallDir -Force
             $refreshedCli = $true
         }
-        if (-not $webuiJar -or $repoWebui.LastWriteTimeUtc -gt $webuiJar.LastWriteTimeUtc) {
+        if (Test-NeedsRefresh $repoWebui $webuiJar) {
             Copy-Item -LiteralPath $repoWebui.FullName -Destination $InstallDir -Force
             $refreshedWebui = $true
         }

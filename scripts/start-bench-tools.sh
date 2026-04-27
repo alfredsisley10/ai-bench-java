@@ -82,17 +82,26 @@ repo_dist="$REPO_DIST"
 repo_cli=$(find_artifact "$repo_dist" 'bench-cli-*.zip')
 repo_webui=$(find_artifact "$repo_dist" 'bench-webui-*.jar')
 
-newer_than() {
-    # Returns 0 (true) if $1 exists AND ($2 is missing OR $1 is newer than $2).
+differs() {
+    # Returns 0 (true) if $2 is missing OR $1's size differs from $2's
+    # OR $1 is newer than $2. Size + mtime is more reliable than mtime
+    # alone: a Windows machine that booted from an older release jar,
+    # then later git-pulled a newer dist/jar, can end up with matching
+    # mtimes (cp preserves nothing by default; git can preserve commit
+    # time depending on core.checkstat). Size catches the content-
+    # change case the mtime check would miss.
     [ -f "$1" ] || return 1
     [ -f "$2" ] || return 0
+    src_size=$(wc -c < "$1" | tr -d ' ')
+    dst_size=$(wc -c < "$2" | tr -d ' ')
+    [ "$src_size" != "$dst_size" ] && return 0
     [ "$1" -nt "$2" ]
 }
 
 if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
     refreshed_cli=0
     refreshed_webui=0
-    if [ -z "$cli_zip" ] || newer_than "$repo_dist/$repo_cli" "$INSTALL_DIR/$cli_zip"; then
+    if [ -z "$cli_zip" ] || differs "$repo_dist/$repo_cli" "$INSTALL_DIR/$cli_zip"; then
         # Wipe any unzipped bench-cli-* dir so the next "Unzip" step
         # below recreates it from the fresher zip.
         rm -rf "$INSTALL_DIR"/bench-cli-*/
@@ -100,7 +109,7 @@ if [ -n "$repo_cli" ] && [ -n "$repo_webui" ]; then
         cli_zip="$repo_cli"
         refreshed_cli=1
     fi
-    if [ -z "$webui_jar" ] || newer_than "$repo_dist/$repo_webui" "$INSTALL_DIR/$webui_jar"; then
+    if [ -z "$webui_jar" ] || differs "$repo_dist/$repo_webui" "$INSTALL_DIR/$webui_jar"; then
         cp "$repo_dist/$repo_webui" "$INSTALL_DIR/"
         webui_jar="$repo_webui"
         refreshed_webui=1
