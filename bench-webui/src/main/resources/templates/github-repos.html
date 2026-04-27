@@ -98,13 +98,31 @@
                     <span class="help-text">— ranked by recency</span>
                 </td>
                 <td>
-                    <span th:if="${jiraLinks.containsKey(c.fullName)}">
-                        <code th:text="${jiraLinks[__${c.fullName}__].jiraProjectKey}"></code>
-                        <a href="/jira#repo-jira-associations" class="help-text" style="margin-left:0.3em">edit</a>
-                    </span>
-                    <span th:unless="${jiraLinks.containsKey(c.fullName)}">
-                        <a th:href="@{/jira(#=${'repo-jira-associations'})}" class="help-text">link to JIRA</a>
-                    </span>
+                    <!-- Use Thymeleaf null-safe Map.get() instead of the
+                         legacy __${c.fullName}__ preprocessing dance.
+                         Preprocessing inlines the raw key value with no
+                         quoting; once c.fullName contains a slash (any
+                         real repo: owner/name) the resulting OL
+                         expression becomes unparseable and Thymeleaf
+                         fires a TemplateInputException for the whole
+                         /github/repos render. The safe-call form below
+                         resolves to null when the key isn't present
+                         and `<th:block th:with>` short-circuits the
+                         link emission. -->
+                    <th:block th:with="link=${jiraLinks.get(c.fullName)}">
+                        <span th:if="${link != null}">
+                            <code th:text="${link.jiraProjectKey}"></code>
+                            <a href="/jira#repo-jira-associations" class="help-text" style="margin-left:0.3em">edit</a>
+                        </span>
+                        <span th:unless="${link != null}">
+                            <!-- Plain href + literal #-fragment. The
+                                 `@{path(name=value)}` URL-builder syntax
+                                 is for query parameters; `#` is not a
+                                 legal parameter name, and Thymeleaf 3.1
+                                 rejects the expression at parse time. -->
+                            <a href="/jira#repo-jira-associations" class="help-text">link to JIRA</a>
+                        </span>
+                    </th:block>
                 </td>
             </tr>
             </tbody>

@@ -48,7 +48,15 @@ warn() { printf "${YEL}[warn]${CLR} %s\n" "$1"; }
 find_artifact() {
     local dir="$1" pattern="$2" hit
     hit=$(find "$dir" -maxdepth 1 -name "$pattern" -print 2>/dev/null | head -1)
-    [ -n "$hit" ] && basename "$hit"
+    # Explicit return 0 even when no match: the "[ -n ] && basename"
+    # form returns 1 on miss, and `set -e` then terminates the parent
+    # `cli_zip=$(find_artifact …)` assignment silently. That left a
+    # fresh INSTALL_DIR run dying right after the JDK check with no
+    # message and no started server.
+    if [ -n "$hit" ]; then
+        basename "$hit"
+    fi
+    return 0
 }
 
 command -v java >/dev/null 2>&1 \
