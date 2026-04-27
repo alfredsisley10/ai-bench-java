@@ -44,6 +44,26 @@ class ProxyConfigController(
         @RequestParam(required = false, defaultValue = "") proxyAuthPassword: String,
         session: HttpSession
     ): String {
+        // Validate noProxy entries before saving. JVM nonProxyHosts entries
+        // accept hostnames, IPs, dots, dashes, and '*' wildcards; anything
+        // else (whitespace inside entries, shell metacharacters) is either
+        // invalid syntax or an injection vector when the value gets piped
+        // into a Gradle command line. Empty noProxy is fine.
+        val invalid = noProxy.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filterNot { it.matches(Regex("^[A-Za-z0-9.\\-*]+$")) }
+        if (invalid.isNotEmpty()) {
+            session.setAttribute(
+                "proxySaveResult",
+                "Rejected: noProxy contains invalid entries " +
+                    invalid.joinToString(", ") { "'$it'" } +
+                    ". Allowed: hostnames, IPs, dots, dashes, and '*' wildcards. " +
+                    "Examples: '*.corp.com', '127.*', 'localhost'. Comma-separate multiple entries."
+            )
+            return "redirect:/proxy"
+        }
+
         val existing = connectionSettings.settings
         val keepProxyPw = proxyAuthPassword.isBlank() && existing.proxyAuthPassword.isNotBlank()
         connectionSettings.update(

@@ -1097,15 +1097,17 @@ class ConnectionSettings {
             args += "-Dhttps.proxyHost=$h"
             args += "-Dhttps.proxyPort=$p"
         }
-        if (current.noProxy.isNotBlank()) {
-            // JVM uses | as separator with wildcard support; convert from
-            // the comma-separated no_proxy convention.
-            val hosts = current.noProxy.split(",").map { it.trim() }
-                .filter { it.isNotEmpty() }.joinToString("|")
-            if (hosts.isNotEmpty()) {
-                args += "-Dhttp.nonProxyHosts=$hosts"
-            }
-        }
+        // -Dhttp.nonProxyHosts deliberately NOT added here. The JVM's
+        // separator is '|', which cmd.exe interprets as a pipe and
+        // uses to split the command line -- a value like
+        //   -Dhttp.nonProxyHosts=*.corp.com|*.corp.net
+        // makes Windows try to exec `*.corp.net` as its own command and
+        // fails with "is not recognized as an internal or external
+        // command". writeGradleProxyProperties writes the same value to
+        // ~/.gradle/gradle.properties as systemProp.http.nonProxyHosts,
+        // which the Gradle daemon picks up at start without ever going
+        // through a shell -- so plugin/dep resolution still respects it.
+
         // Proxy HTTP-Basic credentials. Gradle, Maven, and most JVM
         // HTTP clients honor these system props for the JVM-default
         // proxy authentication path. Mirroring them on http.* and
