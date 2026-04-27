@@ -105,75 +105,6 @@
         </script>
     </section>
 
-    <section>
-        <h3>Verify connectivity</h3>
-        <p class="help-text" style="margin-top:0">
-            Probes the endpoints Gradle needs to bootstrap a build —
-            <code>services.gradle.org</code> (wrapper distribution),
-            <code>repo.maven.apache.org</code> (Maven Central),
-            <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
-            your configured Artifactory mirror, and the corporate proxy
-            itself. Each probe runs through whatever proxy + auth +
-            mirror settings you've saved above, so a green sweep here
-            means the live config will work the next time you click
-            <em>Run gradlew --version</em> on the demo page.
-        </p>
-        <button type="button" class="btn-sm" onclick="runProxyVerify(this)">Verify connectivity</button>
-        <span class="help-text" style="margin-left:0.5em">~5–15 seconds for the full sweep.</span>
-        <details id="proxy-verify-output" style="display:none; margin-top:0.5em">
-            <summary>Probe results</summary>
-            <div id="proxy-verify-summary" style="margin:0.4em 0; padding:0.4em 0.6em;
-                                                 background:#f4f6fa; border-radius:4px"></div>
-            <table id="proxy-verify-table" style="width:100%; margin-top:0.3em">
-                <thead><tr>
-                    <th>Target</th><th>Purpose</th><th>Via proxy</th>
-                    <th>Status</th><th>ms</th><th>Result</th>
-                </tr></thead>
-                <tbody></tbody>
-            </table>
-        </details>
-        <script>
-            function runProxyVerify(btn) {
-                var details = document.getElementById('proxy-verify-output');
-                var summary = document.getElementById('proxy-verify-summary');
-                var tbody = document.querySelector('#proxy-verify-table tbody');
-                details.style.display = '';
-                details.open = true;
-                summary.textContent = 'Running…';
-                tbody.innerHTML = '';
-                btn.disabled = true;
-                fetch('/proxy/verify', {method: 'POST'})
-                    .then(function (r) { return r.json(); })
-                    .then(function (data) {
-                        summary.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
-                        summary.style.background = data.ok ? '#dcfce7' : '#fee2e2';
-                        (data.results || []).forEach(function (row) {
-                            var tr = document.createElement('tr');
-                            tr.innerHTML =
-                                '<td><code style="font-size:0.85em">' + escapeHtmlProxy(row.target) + '</code></td>' +
-                                '<td>' + escapeHtmlProxy(row.purpose) + '</td>' +
-                                '<td>' + (row.viaProxy ? 'yes' : 'no') + '</td>' +
-                                '<td>' + (row.statusCode > 0 ? row.statusCode : '—') + '</td>' +
-                                '<td>' + row.durationMs + '</td>' +
-                                '<td style="color:' + (row.ok ? '#067647' : '#b91c1c') + '">' +
-                                    (row.ok ? '✓ ' : '✗ ') + escapeHtmlProxy(row.message) + '</td>';
-                            tbody.appendChild(tr);
-                        });
-                        btn.disabled = false;
-                    })
-                    .catch(function (e) {
-                        summary.textContent = '✗ Request failed: ' + (e && e.message ? e.message : e);
-                        btn.disabled = false;
-                    });
-            }
-            function escapeHtmlProxy(s) {
-                var d = document.createElement('div');
-                d.appendChild(document.createTextNode(String(s == null ? '' : s)));
-                return d.innerHTML;
-            }
-        </script>
-    </section>
-
     <!-- ============================================================
          Configure proxy (proxy/TLS half only — distinct from the mirror
          section below). Saving here updates ONLY the proxy fields and
@@ -249,6 +180,75 @@
             Gradle plugins that bring their own HTTP client may still
             require a CA cert installed in the JVM truststore.
         </p>
+    </section>
+
+    <section>
+        <h3>Verify connectivity</h3>
+        <p class="help-text" style="margin-top:0">
+            Probes the endpoints Gradle needs to bootstrap a build —
+            <code>services.gradle.org</code> (wrapper distribution),
+            <code>repo.maven.apache.org</code> (Maven Central),
+            <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
+            your configured Artifactory mirror, and the corporate proxy
+            itself. Each probe runs through whatever proxy + auth +
+            mirror settings you've saved above, so a green sweep here
+            means the live config will work the next time you click
+            <em>Run gradlew --version</em> on the demo page.
+        </p>
+        <button type="button" class="btn-sm" onclick="runProxyVerify(this)">Verify connectivity</button>
+        <span class="help-text" style="margin-left:0.5em">~5–15 seconds for the full sweep.</span>
+        <details id="proxy-verify-output" style="display:none; margin-top:0.5em">
+            <summary>Probe results</summary>
+            <div id="proxy-verify-summary" style="margin:0.4em 0; padding:0.4em 0.6em;
+                                                 background:#f4f6fa; border-radius:4px"></div>
+            <table id="proxy-verify-table" style="width:100%; margin-top:0.3em">
+                <thead><tr>
+                    <th>Target</th><th>Purpose</th><th>Via proxy</th>
+                    <th>Status</th><th>ms</th><th>Result</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </details>
+        <script>
+            function runProxyVerify(btn) {
+                var details = document.getElementById('proxy-verify-output');
+                var summary = document.getElementById('proxy-verify-summary');
+                var tbody = document.querySelector('#proxy-verify-table tbody');
+                details.style.display = '';
+                details.open = true;
+                summary.textContent = 'Running…';
+                tbody.innerHTML = '';
+                btn.disabled = true;
+                fetch('/proxy/verify', {method: 'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        summary.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
+                        summary.style.background = data.ok ? '#dcfce7' : '#fee2e2';
+                        (data.results || []).forEach(function (row) {
+                            var tr = document.createElement('tr');
+                            tr.innerHTML =
+                                '<td><code style="font-size:0.85em">' + escapeHtmlProxy(row.target) + '</code></td>' +
+                                '<td>' + escapeHtmlProxy(row.purpose) + '</td>' +
+                                '<td>' + (row.viaProxy ? 'yes' : 'no') + '</td>' +
+                                '<td>' + (row.statusCode > 0 ? row.statusCode : '—') + '</td>' +
+                                '<td>' + row.durationMs + '</td>' +
+                                '<td style="color:' + (row.ok ? '#067647' : '#b91c1c') + '">' +
+                                    (row.ok ? '✓ ' : '✗ ') + escapeHtmlProxy(row.message) + '</td>';
+                            tbody.appendChild(tr);
+                        });
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        summary.textContent = '✗ Request failed: ' + (e && e.message ? e.message : e);
+                        btn.disabled = false;
+                    });
+            }
+            function escapeHtmlProxy(s) {
+                var d = document.createElement('div');
+                d.appendChild(document.createTextNode(String(s == null ? '' : s)));
+                return d.innerHTML;
+            }
+        </script>
     </section>
 
     <!-- ============================================================
