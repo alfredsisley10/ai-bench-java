@@ -78,6 +78,32 @@ pluginManagement {
             mavenCentral()
         }
     }
+    // Plugin-id → real Maven coordinate substitution. The corp init
+    // script (~/.gradle/init.d/corp-repos.gradle.kts) does the same
+    // thing for project-level plugins, but that init script is the
+    // operator's responsibility to install/refresh -- and an older
+    // copy missing Spring Boot leaves the build trying to resolve
+    // the plugin marker (org.springframework.boot:org.springframework.boot.gradle.plugin)
+    // against a Maven-Central-only mirror that doesn't carry it.
+    // Inlining the substitution here makes banking-app self-sufficient
+    // regardless of whether the init script is current.
+    //
+    // foojay is INTENTIONALLY OMITTED -- its real artifact lives only
+    // at plugins.gradle.org, not Maven Central, so substituting in
+    // local-dev mode would break resolution. The mirror branch above
+    // routes foojay direct via the plugins.gradle.org/m2/ repo with
+    // a content includeGroup filter; local dev resolves foojay via
+    // the standard plugin marker through gradlePluginPortal().
+    resolutionStrategy.eachPlugin {
+        when (requested.id.id) {
+            "org.springframework.boot" ->
+                useModule("org.springframework.boot:spring-boot-gradle-plugin:${requested.version}")
+            "io.spring.dependency-management" ->
+                useModule("io.spring.gradle:dependency-management-plugin:${requested.version}")
+            "com.appland.appmap" ->
+                useModule("com.appland:appmap-gradle-plugin:${requested.version}")
+        }
+    }
 }
 
 // Auto-provision the JDK the toolchain asks for (currently 21) when
