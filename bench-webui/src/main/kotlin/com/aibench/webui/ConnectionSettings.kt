@@ -926,13 +926,21 @@ class ConnectionSettings {
 
         // 4. Env vars as a last-resort fallback (already used at startup
         //    but include in the report so the user knows they're set).
+        //    NO_PROXY / no_proxy are checked alongside the proxy URLs --
+        //    enterprise Windows boxes commonly push the bypass list as a
+        //    system env var and leave the IE registry empty, so without
+        //    this branch the noProxy field would never auto-fill.
         val envHttps = System.getenv("HTTPS_PROXY") ?: System.getenv("https_proxy") ?: ""
-        val envHttp = System.getenv("HTTP_PROXY") ?: System.getenv("http_proxy") ?: ""
-        if (envHttps.isNotBlank() || envHttp.isNotBlank()) {
-            log.appendLine("[env] HTTPS_PROXY=$envHttps HTTP_PROXY=$envHttp")
-            if (https.isBlank()) https = envHttps
-            if (http.isBlank()) http = envHttp
-            if (https.isNotBlank() || http.isNotBlank()) sources += "environment variables"
+        val envHttp  = System.getenv("HTTP_PROXY")  ?: System.getenv("http_proxy")  ?: ""
+        val envNo    = System.getenv("NO_PROXY")    ?: System.getenv("no_proxy")    ?: ""
+        if (envHttps.isNotBlank() || envHttp.isNotBlank() || envNo.isNotBlank()) {
+            log.appendLine("[env] HTTPS_PROXY=$envHttps HTTP_PROXY=$envHttp NO_PROXY=$envNo")
+            if (https.isBlank())   https = envHttps
+            if (http.isBlank())    http = envHttp
+            if (noProxy.isBlank()) noProxy = envNo
+            if (https.isNotBlank() || http.isNotBlank() || noProxy.isNotBlank()) {
+                sources += "environment variables"
+            }
         }
 
         if (sources.isEmpty()) log.appendLine("[info] No proxy detected from any source.")
