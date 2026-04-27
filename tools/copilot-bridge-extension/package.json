@@ -2,22 +2,46 @@
   "name": "copilot-bridge",
   "displayName": "ai-bench Copilot Bridge",
   "description": "Exposes the user's GitHub Copilot chat entitlement over a TCP localhost endpoint (and an optional OpenAI-compatible HTTP endpoint), with a usage-stats dashboard.",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "publisher": "ai-bench",
   "license": "MIT",
   "icon": "icon.png",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "aiBench.copilotBridge.start", "title": "ai-bench: Start Copilot Bridge" },
-      { "command": "aiBench.copilotBridge.stop", "title": "ai-bench: Stop Copilot Bridge" },
-      { "command": "aiBench.copilotBridge.openStats", "title": "ai-bench: Open Bridge Stats" },
-      { "command": "aiBench.copilotBridge.clearStats", "title": "ai-bench: Clear Bridge Stats" },
-      { "command": "aiBench.copilotBridge.startOpenAiEndpoint", "title": "ai-bench: Start Local OpenAI Endpoint" },
-      { "command": "aiBench.copilotBridge.stopOpenAiEndpoint", "title": "ai-bench: Stop Local OpenAI Endpoint" }
+      {
+        "command": "aiBench.copilotBridge.start",
+        "title": "ai-bench: Start Copilot Bridge"
+      },
+      {
+        "command": "aiBench.copilotBridge.stop",
+        "title": "ai-bench: Stop Copilot Bridge"
+      },
+      {
+        "command": "aiBench.copilotBridge.openStats",
+        "title": "ai-bench: Open Bridge Stats"
+      },
+      {
+        "command": "aiBench.copilotBridge.clearStats",
+        "title": "ai-bench: Clear Bridge Stats"
+      },
+      {
+        "command": "aiBench.copilotBridge.startOpenAiEndpoint",
+        "title": "ai-bench: Start Local OpenAI Endpoint"
+      },
+      {
+        "command": "aiBench.copilotBridge.stopOpenAiEndpoint",
+        "title": "ai-bench: Stop Local OpenAI Endpoint"
+      }
     ],
     "viewsContainers": {
       "activitybar": [

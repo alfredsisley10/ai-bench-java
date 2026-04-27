@@ -333,6 +333,68 @@
             a green Verify means the real Navie provider will work.
         </p>
 
+        <!-- Effective configuration the test will use. Surfacing this
+             saves the user a round-trip to the Save form to ask "what
+             URL is the test actually hitting?" — especially useful
+             when troubleshooting 401s, wrong port numbers, or stale
+             session state vs. on-disk YAML. -->
+        <details style="margin:0.4em 0; padding:0.4em 0.6em;
+                        background:#f9fafb; border:1px solid #d4d4d4;
+                        border-radius:3px">
+            <summary style="cursor:pointer">
+                <strong>Configuration the test will use</strong>
+                <span class="help-text"> — base URL, default model, persisted YAML</span>
+            </summary>
+            <table style="margin:0.4em 0 0 0; border-collapse:collapse">
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">OpenAI base URL</td>
+                    <td><code th:text="${navieBaseUrl}">(unset)</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">Default model</td>
+                    <td><code th:text="${navieDefaultModel}">(unset)</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">API key</td>
+                    <td>
+                        <span th:if="${navieApiKeyPresent}" style="color:#16a34a">✓ set in this session</span>
+                        <span th:unless="${navieApiKeyPresent}" class="help-text">— blank, sent as <code>sk-no-auth-needed</code> placeholder</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">Bridge IPC socket</td>
+                    <td><code th:text="${navieBridgeSockPath}">(none)</code></td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">Bridge shim probe</td>
+                    <td>
+                        <span th:if="${navieShimReachable}" style="color:#16a34a">✓ <span th:text="${navieShimDetail}"></span></span>
+                        <span th:unless="${navieShimReachable}" style="color:#dc2626">✗ <span th:text="${navieShimDetail}"></span></span>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280">CLI binary</td>
+                    <td>
+                        <span th:if="${navieCliPresent}"><code th:text="${navieCliPath}"></code></span>
+                        <span th:unless="${navieCliPresent}" style="color:#dc2626">not found on PATH</span>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:0.15em 0.5em 0.15em 0;color:#6b7280;vertical-align:top">Persisted YAML</td>
+                    <td>
+                        <code th:text="${navieConfigPath}"></code>
+                        <span th:if="${navieConfigExists}" style="color:#16a34a; margin-left:0.4em">✓ exists</span>
+                        <span th:unless="${navieConfigExists}" class="help-text" style="margin-left:0.4em">— not yet written; click Save AppMap Config</span>
+                        <div class="help-text" style="margin-top:0.2em">
+                            The harness reads this file at benchmark time. Secrets are NOT written here —
+                            an env-var pointer is, and the harness reads the value from the process
+                            environment at runtime.
+                        </div>
+                    </td>
+                </tr>
+            </table>
+        </details>
+
         <form method="post" action="/appmap-navie/test" id="navieTestForm" style="margin:0.5em 0">
             <button type="submit" class="btn-sm" id="navieTestBtn">Test via AppMap CLI</button>
         </form>
@@ -357,6 +419,44 @@
             </ol>
         </div>
     </section>
+
+    <!-- Preserve scroll position across the Test button's form-POST →
+         redirect → GET cycle. Without this, every click teleports the
+         user to the top of the page, hiding the live-progress panel
+         that just got mounted further down. We stash window.scrollY
+         to sessionStorage on submit and restore it after the page
+         re-renders. Same-origin redirect keeps sessionStorage; the
+         restore runs once and clears the key.
+         Also unconditional — emitted whether or not navieTestId is
+         set — so even the FIRST click preserves the scroll. -->
+    <script>
+    (function () {
+        var form = document.getElementById('navieTestForm');
+        if (form) {
+            form.addEventListener('submit', function () {
+                try { sessionStorage.setItem('navieScrollY', String(window.scrollY)); }
+                catch (_e) { /* storage unavailable — accept the scroll-jump */ }
+            });
+        }
+        // Restore on next render. Use 'load' (not DOMContentLoaded) so
+        // images / late layout have settled before we scroll, otherwise
+        // the target Y can be wrong by the time the user looks at it.
+        window.addEventListener('load', function () {
+            var raw;
+            try { raw = sessionStorage.getItem('navieScrollY'); }
+            catch (_e) { return; }
+            if (raw == null) return;
+            try { sessionStorage.removeItem('navieScrollY'); } catch (_e) {}
+            var y = parseInt(raw, 10);
+            if (!isNaN(y) && y > 0) {
+                // Defer one frame so any th:if-rendered panel below is
+                // already in the layout (otherwise we'd scroll past the
+                // bottom of the page and clamp to it).
+                requestAnimationFrame(function () { window.scrollTo(0, y); });
+            }
+        });
+    })();
+    </script>
 
     <!-- ============================================================
          Verify run polling

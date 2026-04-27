@@ -1,6 +1,12 @@
 plugins {
     kotlin("jvm") version "2.0.20"
     kotlin("plugin.spring") version "2.0.20"
+    // Required for @Serializable to actually generate a serializer.
+    // Without the COMPILER plugin, the runtime kotlinx-serialization-json
+    // dependency is just bytes -- the @Serializable annotation is a
+    // no-op and SerializationException("Serializer for class 'X' is
+    // not found") fires at the first decodeFromString call.
+    kotlin("plugin.serialization") version "2.0.20"
     id("org.springframework.boot") version "3.3.4"
     id("io.spring.dependency-management") version "1.1.6"
     id("com.appland.appmap") version "1.2.0"

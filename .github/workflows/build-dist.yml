@@ -97,6 +97,18 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Bump copilot-bridge VSIX patch version
+        working-directory: tools/copilot-bridge-extension
+        # VSCode silently keeps an installed extension cached in the
+        # extension host when a re-installed VSIX has the same version
+        # number — the operator gets no "Reload to activate" prompt and
+        # keeps running stale code. Bumping the patch on every build
+        # forces VSCode to recognize the install as new and surface the
+        # reload nudge. --no-git-tag-version skips npm's default
+        # tag/commit; the auto-commit step at the end of this workflow
+        # picks up the package.json change along with the rebuilt VSIX.
+        run: npm version patch --no-git-tag-version
+
       - name: Build copilot-bridge VSIX
         working-directory: tools/copilot-bridge-extension
         run: |
