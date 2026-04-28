@@ -434,23 +434,24 @@ class AppMapService(
     fun startRecordingFromTests(modules: List<String>?, testFilter: String?): Recording {
         val dir = bankingApp.bankingAppDir
         val cmd = mutableListOf<String>().apply { addAll(Platform.gradleWrapper(dir)) }
-        // The AppMap gradle plugin's `appmap` task injects the AppMap agent
-        // into the matching `test` task; ordering matters — both must run,
-        // and `appmap` must come first so the agent settings apply when
-        // `test` executes.
-        // Multi-module support: emit `:mod:appmap :mod:test` per picked
-        // module so the operator can scope the recording to a handful
-        // of subprojects without invoking the entire :test graph (which
-        // takes 30-60s on the full generated module set).
+        // banking-app/build.gradle.kts attaches the AppMap Java agent
+        // to every Test task via afterEvaluate when -Pappmap_enabled=true.
+        // No need to invoke the plugin's :appmap task explicitly --
+        // it's NO-SOURCE on most subprojects (the plugin doesn't auto-
+        // wire testClassesDirs) and its doLast (which was supposed to
+        // attach the agent) never runs in that state, which is exactly
+        // why operators kept reporting "build green, no traces."
+        // We just run the regular :test task; the build script's
+        // afterEvaluate hook handles agent attachment.
         val cleanModules = (modules ?: emptyList()).map { it.trim() }.filter { it.isNotEmpty() }
         if (cleanModules.isEmpty()) {
-            cmd.add("appmap"); cmd.add("test")
+            cmd.add("test")
         } else {
             cleanModules.forEach { m ->
                 // Module IDs may already be colon-separated (`generated:foo`)
-                // — that's fine; Gradle handles `:generated:foo:appmap` directly.
+                // — that's fine; Gradle handles `:generated:foo:test` directly.
                 val gradlePath = if (m.startsWith(":")) m else ":$m"
-                cmd.add("$gradlePath:appmap"); cmd.add("$gradlePath:test")
+                cmd.add("$gradlePath:test")
             }
         }
         if (!testFilter.isNullOrBlank()) {
