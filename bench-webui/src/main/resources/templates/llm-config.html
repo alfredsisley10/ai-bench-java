@@ -153,28 +153,60 @@ npm run package      # produces copilot-bridge.vsix</pre>
                         Adds each row below — and a synthetic
                         <code>auto</code> entry — to the
                         <a href="#registered-models">Registered models</a>
-                        table. Costs default to $0 (Copilot is
-                        seat-priced); override per-model via the catalog
-                        if your org tracks chargeback.
+                        table. Each registered row's per-1K rates are
+                        auto-populated from the
+                        <a href="#public-model-catalog">public model
+                        reference catalog</a> below by id (e.g.
+                        <code>copilot-gpt-4-1</code> picks up GPT-4.1's
+                        published $0.002/$0.008 rate). Copilot itself
+                        bills via seat, not per token — the rate
+                        shown is the underlying vendor's published
+                        rate, useful for chargeback estimates. Override
+                        per-model on the catalog if your org's
+                        contracted rate differs.
                     </span>
                 </div>
 
-                <table th:if="${!copilotEnumeratedModels.isEmpty()}" style="margin-top:0.5em">
+                <div th:if="${!copilotEnumeratedModels.isEmpty()}" class="button-row"
+                     style="margin:0.5em 0; gap:0.5em">
+                    <input type="text" id="copilot-enumerated-search"
+                           placeholder="Search across all columns…"
+                           style="flex:1 1 20em; max-width:30em; padding:0.3em 0.6em">
+                    <span class="help-text" id="copilot-enumerated-count"></span>
+                </div>
+                <div th:if="${!copilotEnumeratedModels.isEmpty()}" class="table-scroll">
+                <table class="sortable-table"
+                       style="margin-top:0.5em"
+                       data-count-target="#copilot-enumerated-count"
+                       data-search-target="#copilot-enumerated-search">
                     <thead>
-                        <tr>
-                            <th>Model ID</th>
-                            <th>Name</th>
-                            <th>Family</th>
-                            <th>Version</th>
-                            <th>Vendor</th>
-                            <th class="num">Max input tokens</th>
-                            <th>Use as 'auto'?</th>
+                        <tr class="sort-row">
+                            <th data-sort-key="id">Model ID <span class="sort-indicator"></span></th>
+                            <th data-sort-key="name">Name <span class="sort-indicator"></span></th>
+                            <th data-sort-key="family">Family <span class="sort-indicator"></span></th>
+                            <th data-sort-key="version">Version <span class="sort-indicator"></span></th>
+                            <th data-sort-key="vendor">Vendor <span class="sort-indicator"></span></th>
+                            <th class="num" data-sort-key="maxinput" data-sort-numeric="true">Max input tokens <span class="sort-indicator"></span></th>
+                            <th data-sort-key="autoresolves">Use as 'auto'? <span class="sort-indicator"></span></th>
+                            <th></th>
+                        </tr>
+                        <tr class="filter-row">
+                            <th><input type="text" data-filter-col="0" placeholder="filter id"></th>
+                            <th><input type="text" data-filter-col="1" placeholder="filter name"></th>
+                            <th><input type="text" data-filter-col="2" placeholder="filter family"></th>
+                            <th><input type="text" data-filter-col="3" placeholder="filter version"></th>
+                            <th><input type="text" data-filter-col="4" placeholder="filter vendor"></th>
+                            <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
+                            <th><input type="text" data-filter-col="6" placeholder="filter"></th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody>
                         <!-- Synthetic 'auto' row, always shown when at least one model exists -->
-                        <tr style="background:#fff7d6">
+                        <tr style="background:#fff7d6"
+                            data-id="auto" data-name="(GitHub picks)" data-family=""
+                            data-version="" data-vendor="copilot" data-maxinput="0"
+                            data-autoresolves="always 'auto'">
                             <td><code>auto</code></td>
                             <td>(GitHub picks)</td>
                             <td>—</td>
@@ -190,7 +222,14 @@ npm run package      # produces copilot-bridge.vsix</pre>
                                 </form>
                             </td>
                         </tr>
-                        <tr th:each="m : ${copilotEnumeratedModels}">
+                        <tr th:each="m : ${copilotEnumeratedModels}"
+                            th:attr="data-id=${m.id},
+                                     data-name=${m.name},
+                                     data-family=${m.family},
+                                     data-version=${m.version},
+                                     data-vendor=${m.vendor},
+                                     data-maxinput=${m.maxInputTokens},
+                                     data-autoresolves=${m.auto ? 'resolves here' : '—'}">
                             <td><code th:text="${m.id}"></code></td>
                             <td th:text="${m.name}"></td>
                             <td th:text="${m.family}"></td>
@@ -211,6 +250,7 @@ npm run package      # produces copilot-bridge.vsix</pre>
                         </tr>
                     </tbody>
                 </table>
+                </div><!-- /.table-scroll -->
             </li>
         </ol>
         </details>
@@ -505,16 +545,55 @@ npm run package      # produces copilot-bridge.vsix</pre>
     <!-- Registered models + Add model                               -->
     <!-- =========================================================== -->
     <section id="registered-models">
-        <h3>Registered models</h3>
+        <h3>Registered models
+            <span class="help-text" id="registered-models-count" style="font-weight:normal; font-size:0.85em"></span>
+        </h3>
         <p class="subtitle">
             Automatically-available models (from the wizards above) plus
             any manually-added entries. Edit cost metadata to enable
-            cost comparison in results.
+            cost comparison in results. Click any column header to sort;
+            use the per-column filters or the global search box to narrow.
         </p>
-        <table>
-            <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model ID</th><th>Status</th><th>$/1k prompt</th><th>$/1k completion</th><th></th></tr></thead>
+        <div class="button-row" style="margin:0.5em 0; gap:0.5em">
+            <input type="text" id="registered-models-search"
+                   placeholder="Search across all columns…"
+                   style="flex:1 1 20em; max-width:30em; padding:0.3em 0.6em">
+        </div>
+        <div class="table-scroll">
+        <table class="sortable-table"
+               data-count-target="#registered-models-count"
+               data-search-target="#registered-models-search">
+            <thead>
+                <tr class="sort-row">
+                    <th data-sort-key="id">ID <span class="sort-indicator"></span></th>
+                    <th data-sort-key="name">Name <span class="sort-indicator"></span></th>
+                    <th data-sort-key="provider">Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="modelid">Model ID <span class="sort-indicator"></span></th>
+                    <th data-sort-key="status">Status <span class="sort-indicator"></span></th>
+                    <th data-sort-key="prompt" data-sort-numeric="true">$/1k prompt <span class="sort-indicator"></span></th>
+                    <th data-sort-key="completion" data-sort-numeric="true">$/1k completion <span class="sort-indicator"></span></th>
+                    <th></th>
+                </tr>
+                <tr class="filter-row">
+                    <th><input type="text" data-filter-col="0" placeholder="filter id"></th>
+                    <th><input type="text" data-filter-col="1" placeholder="filter name"></th>
+                    <th><input type="text" data-filter-col="2" placeholder="filter provider"></th>
+                    <th><input type="text" data-filter-col="3" placeholder="filter model id"></th>
+                    <th><input type="text" data-filter-col="4" placeholder="filter status"></th>
+                    <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="6" placeholder="≥, ≤, ="></th>
+                    <th></th>
+                </tr>
+            </thead>
             <tbody>
-            <tr th:each="m : ${models}">
+            <tr th:each="m : ${models}"
+                th:attr="data-id=${m.id},
+                         data-name=${m.displayName},
+                         data-provider=${m.provider},
+                         data-modelid=${m.modelIdentifier},
+                         data-status=${m.status},
+                         data-prompt=${m.costPer1kPrompt},
+                         data-completion=${m.costPer1kCompletion}">
                 <td th:text="${m.id}"></td>
                 <td th:text="${m.displayName}"></td>
                 <td th:text="${m.provider}"></td>
@@ -565,6 +644,7 @@ npm run package      # produces copilot-bridge.vsix</pre>
             </tr>
             </tbody>
         </table>
+        </div><!-- /.table-scroll -->
     </section>
 
     <!-- "Add model" section removed: models flow into the Registered
@@ -609,6 +689,14 @@ npm run package      # produces copilot-bridge.vsix</pre>
                    style="flex:1 1 20em; max-width:30em; padding:0.3em 0.6em">
             <button type="button" id="catalog-export" class="btn-sm">Export visible rows as CSV</button>
         </div>
+        <!-- Wrap the wide table in an overflow-x:auto container so it
+             never bleeds past the .setup-card border. With 8 columns
+             (model + provider + api id + modality + 2 prices + override
+             + notes) plus the per-column filter inputs, the table's
+             min-width regularly exceeds the card's available width on
+             narrower viewports; without this wrapper the table extended
+             outside the rounded border. -->
+        <div class="table-scroll">
         <table class="sortable-table"
                data-count-target="#catalog-count"
                data-search-target="#catalog-search"
@@ -702,6 +790,7 @@ npm run package      # produces copilot-bridge.vsix</pre>
                 </tr>
             </tbody>
         </table>
+        </div><!-- /.table-scroll -->
         </details>
     </section>
 
@@ -750,6 +839,15 @@ npm run package      # produces copilot-bridge.vsix</pre>
             display: inline-block; transition: transform 0.15s; color: #6c7080; }
         details.setup-card[open] > summary::before { transform: rotate(90deg); }
         details.setup-card[open] { background: #fff; }
+
+        /* Horizontal-scroll wrapper for wide tables. Without this the
+           catalog + registered-models tables (8 cols each) extended
+           past their parent .setup-card border on narrower viewports.
+           Setting overflow-x: auto on the wrapper means just the table
+           scrolls; the surrounding card and its rounded border stay
+           fixed-width and visually correct. */
+        .table-scroll { overflow-x: auto; max-width: 100%; }
+        .table-scroll > table { width: 100%; }
     </style>
 
     <script>
