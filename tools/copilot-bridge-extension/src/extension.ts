@@ -78,7 +78,11 @@ function newReqId(): string { return `r${nextRequestId++}`; }
  * streaming hung on the SSE side, etc.) just from View -> Output
  * -> ai-bench Copilot Bridge.
  */
-async function logStage<T>(reqId: string, stage: string, fn: () => Promise<T>): Promise<T> {
+// fn is typed as PromiseLike<T> (rather than Promise<T>) so call sites
+// can pass VSCode API methods that return Thenable<T> -- e.g.
+// model.sendRequest(...) -- without an explicit Promise.resolve()
+// wrapper. PromiseLike is structurally identical to vscode.Thenable.
+async function logStage<T>(reqId: string, stage: string, fn: () => PromiseLike<T>): Promise<T> {
     const start = Date.now();
     log(`[${reqId}] → ${stage}`);
     const heartbeat = setInterval(() => {

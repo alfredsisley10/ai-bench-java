@@ -88,7 +88,7 @@ interface ServerArgs {
     /** Per-request stage logger from extension.ts. Wraps an async fn
      *  with start/finish + 10-second heartbeat lines so the operator
      *  can see WHICH stage is hung when a chat request stalls. */
-    logStage: <T>(reqId: string, stage: string, fn: () => Promise<T>) => Promise<T>;
+    logStage: <T>(reqId: string, stage: string, fn: () => PromiseLike<T>) => Promise<T>;
     /** Plain log line, same OutputChannel as logStage uses. */
     log: (msg: string) => void;
     /** Mint a per-request id for correlating log lines. */
