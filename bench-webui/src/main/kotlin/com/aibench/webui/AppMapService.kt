@@ -343,7 +343,22 @@ class AppMapService(
 
     // ── Recording state tracking ──────────────────────────────────────
 
-    enum class RecordingStatus { RUNNING, SUCCEEDED, FAILED }
+    enum class RecordingStatus {
+        RUNNING,
+        /** Gradle exited 0 AND new .appmap.json files appeared on disk. */
+        SUCCEEDED,
+        /** Gradle exited non-zero. */
+        FAILED,
+        /** Gradle exited 0 but the trace count didn't increase. The
+         *  build is "green" but produced nothing -- exactly the
+         *  failure mode operators kept reporting as "click succeeds,
+         *  no traces appear." Distinct from SUCCEEDED so the panel
+         *  can surface the specific likely causes inline (no test
+         *  matched the filter, agent didn't attach, plugin marker
+         *  resolution fell through, etc.) instead of a misleading
+         *  green badge. */
+        SUCCEEDED_NO_TRACES
+    }
 
     /**
      * Snapshot of a single recording session. The mutable parts (status,
@@ -491,8 +506,11 @@ class AppMapService(
             recording.exitCode = exit
             recording.tracesAfter = listTraces().size
             recording.finishedAt = Instant.now()
-            recording.status = if (exit == 0) RecordingStatus.SUCCEEDED
-                               else RecordingStatus.FAILED
+            recording.status = when {
+                exit != 0 -> RecordingStatus.FAILED
+                (recording.newTraceCount ?: 0) == 0 -> RecordingStatus.SUCCEEDED_NO_TRACES
+                else -> RecordingStatus.SUCCEEDED
+            }
             log.info("AppMap recording {} finished: exit={} traces+={}",
                 recording.id, exit, recording.newTraceCount)
         }, "appmap-record-watch-${recording.id}").apply {

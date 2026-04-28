@@ -90,6 +90,41 @@
                 Inspect the log above for the gradle stack trace.
             </span>
 
+            <!-- The "build said it worked but produced nothing" outcome.
+                 Distinct from SUCCEEDED so we can spell out the likely
+                 causes inline. The build process exited 0 and we wrote
+                 no .appmap.json files -- typical reasons: testFilter
+                 didn't match anything, the module(s) under test have no
+                 test classes, the AppMap Java agent didn't attach
+                 (-Pappmap_enabled flag swallowed), or the AppMap Gradle
+                 plugin failed to register (plugin marker missed). -->
+            <div th:if="${rec.status.name() == 'SUCCEEDED_NO_TRACES'}" class="status-banner"
+                 style="display:block; padding:8px 12px; background:#fef3c7;
+                        border:1px solid #f59e0b; color:#78350f;
+                        border-radius:4px; margin-top:0.4em">
+                <strong>⚠ Gradle exited 0 but no new traces were created.</strong>
+                <div style="margin-top:0.4em">
+                    Likely causes (in order of frequency):
+                    <ol style="margin:0.3em 0 0 1.2em; padding:0">
+                        <li>The <code>--tests</code> filter didn't match any test methods —
+                            the test task ran 0 tests. Inspect the log above for
+                            <code>0 tests completed</code>.</li>
+                        <li>The module(s) you picked have no JUnit tests yet
+                            (most generated <code>generated-*</code> modules ship empty
+                            until populated).</li>
+                        <li>The AppMap Java agent didn't attach. Check the log for
+                            <code>appmap.config.file=</code> or <code>-javaagent:</code> —
+                            absence means the <code>appmap</code> task wasn't wired.
+                            Re-run with <code>-Pappmap_enabled=true</code> visible
+                            in the gradle command line.</li>
+                        <li>The AppMap Gradle plugin marker
+                            (<code>com.appland.appmap</code>) failed to resolve from
+                            the configured plugin repos. Check the
+                            <a href="/proxy">/proxy</a> verify panel.</li>
+                    </ol>
+                </div>
+            </div>
+
             <form th:if="${rec.status.name() == 'RUNNING'}"
                   th:action="'/demo/appmap/recording/' + ${rec.id} + '/stop'"
                   method="post" style="display:inline; margin-left:0.75em">
@@ -109,9 +144,10 @@
             font-size: 0.8em; max-height: 320px; overflow:auto;
             white-space: pre-wrap;
         }
-        .badge.RUNNING   { background:#007bff; color:#fff; }
-        .badge.SUCCEEDED { background:#28a745; color:#fff; }
-        .badge.FAILED    { background:#dc3545; color:#fff; }
+        .badge.RUNNING            { background:#007bff; color:#fff; }
+        .badge.SUCCEEDED          { background:#28a745; color:#fff; }
+        .badge.SUCCEEDED_NO_TRACES{ background:#f59e0b; color:#fff; }
+        .badge.FAILED             { background:#dc3545; color:#fff; }
     </style>
 </div>
 </body>

@@ -16,14 +16,41 @@ import org.springframework.web.bind.annotation.RequestParam
 class AppMapController(private val appmaps: AppMapService) {
 
     @GetMapping("/demo/appmap")
-    fun list(model: Model, session: HttpSession): String {
-        val traces = appmaps.listTraces()
+    fun list(
+        @RequestParam(defaultValue = "1") page: Int,
+        @RequestParam(defaultValue = "25") pageSize: Int,
+        model: Model,
+        session: HttpSession
+    ): String {
+        val allTraces = appmaps.listTraces()
         val activeRecording = appmaps.latestRecording()
-        model.addAttribute("traces", traces)
-        model.addAttribute("totalCount", traces.size)
-        model.addAttribute("totalEvents", traces.sumOf { it.eventCount })
-        model.addAttribute("totalSql", traces.sumOf { it.sqlCount })
-        model.addAttribute("totalHttp", traces.sumOf { it.httpCount })
+
+        // Server-side pagination. Aggregate stats (totalEvents/Sql/Http)
+        // stay computed across ALL traces because they're summary
+        // numbers; the table itself shows just the current page slice.
+        // pageSize is constrained to the four exposed options so a
+        // hand-edited URL can't blow out memory by requesting a giant
+        // single page.
+        val allowedPageSizes = listOf(10, 25, 50, 100)
+        val safePageSize = if (pageSize in allowedPageSizes) pageSize else 25
+        val total = allTraces.size
+        val totalPages = if (total == 0) 1 else (total + safePageSize - 1) / safePageSize
+        val safePage = page.coerceIn(1, totalPages)
+        val from = (safePage - 1) * safePageSize
+        val to = (from + safePageSize).coerceAtMost(total)
+        val pageTraces = if (total == 0) emptyList() else allTraces.subList(from, to)
+
+        model.addAttribute("traces", pageTraces)
+        model.addAttribute("totalCount", total)
+        model.addAttribute("currentPage", safePage)
+        model.addAttribute("pageSize", safePageSize)
+        model.addAttribute("totalPages", totalPages)
+        model.addAttribute("pageFrom", if (total == 0) 0 else from + 1)
+        model.addAttribute("pageTo", to)
+        model.addAttribute("allowedPageSizes", allowedPageSizes)
+        model.addAttribute("totalEvents", allTraces.sumOf { it.eventCount })
+        model.addAttribute("totalSql", allTraces.sumOf { it.sqlCount })
+        model.addAttribute("totalHttp", allTraces.sumOf { it.httpCount })
         model.addAttribute("activeRecording", activeRecording)
         model.addAttribute("modules", appmaps.modulesWithTraces())
         model.addAttribute("deleteResult", session.getAttribute("appmapDeleteResult"))

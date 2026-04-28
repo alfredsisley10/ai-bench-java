@@ -460,10 +460,64 @@
             (distinct packages, sequence-diagram roots, trace-view rows,
             flame-graph frames). Hover any number for the verbose label.
         </p>
+        <!-- Pager + page-size selector. Two-form layout: the page-size
+             dropdown auto-submits to /demo/appmap?page=1&pageSize=N
+             (resetting to page 1 because the current offset may not
+             exist at the new size); the prev/next links shift page
+             while preserving the current pageSize. Search + sort
+             below operate within the rendered page only -- to filter
+             the full dataset, bump pageSize to 100 first. -->
+        <div th:if="${totalCount > 0}" class="button-row" style="margin:0.4em 0; gap:0.6em; flex-wrap:wrap; align-items:center">
+            <form method="get" action="/demo/appmap"
+                  style="display:inline-flex; align-items:center; gap:0.4em; margin:0">
+                <label for="appmap-pagesize" class="help-text">Per page:</label>
+                <select id="appmap-pagesize" name="pageSize"
+                        onchange="this.form.submit()">
+                    <option th:each="size : ${allowedPageSizes}"
+                            th:value="${size}" th:text="${size}"
+                            th:selected="${size == pageSize}"></option>
+                </select>
+                <input type="hidden" name="page" value="1">
+            </form>
+            <span class="help-text">
+                Showing <strong th:text="${pageFrom}">1</strong>–<strong th:text="${pageTo}">25</strong>
+                of <strong th:text="${totalCount}">100</strong>
+                (page <strong th:text="${currentPage}">1</strong> of <strong th:text="${totalPages}">4</strong>)
+            </span>
+            <span style="display:inline-flex; gap:0.25em; align-items:center; margin-left:auto">
+                <a th:if="${currentPage > 1}"
+                   th:href="@{/demo/appmap(page=1, pageSize=${pageSize})}"
+                   class="btn-sm" style="text-decoration:none; padding:0.2em 0.6em">« First</a>
+                <span th:unless="${currentPage > 1}" class="btn-sm"
+                      style="padding:0.2em 0.6em; opacity:0.4; cursor:not-allowed">« First</span>
+
+                <a th:if="${currentPage > 1}"
+                   th:href="@{/demo/appmap(page=${currentPage - 1}, pageSize=${pageSize})}"
+                   class="btn-sm" style="text-decoration:none; padding:0.2em 0.6em">‹ Prev</a>
+                <span th:unless="${currentPage > 1}" class="btn-sm"
+                      style="padding:0.2em 0.6em; opacity:0.4; cursor:not-allowed">‹ Prev</span>
+
+                <a th:if="${currentPage < totalPages}"
+                   th:href="@{/demo/appmap(page=${currentPage + 1}, pageSize=${pageSize})}"
+                   class="btn-sm" style="text-decoration:none; padding:0.2em 0.6em">Next ›</a>
+                <span th:unless="${currentPage < totalPages}" class="btn-sm"
+                      style="padding:0.2em 0.6em; opacity:0.4; cursor:not-allowed">Next ›</span>
+
+                <a th:if="${currentPage < totalPages}"
+                   th:href="@{/demo/appmap(page=${totalPages}, pageSize=${pageSize})}"
+                   class="btn-sm" style="text-decoration:none; padding:0.2em 0.6em">Last »</a>
+                <span th:unless="${currentPage < totalPages}" class="btn-sm"
+                      style="padding:0.2em 0.6em; opacity:0.4; cursor:not-allowed">Last »</span>
+            </span>
+        </div>
         <div th:if="${totalCount > 0}" class="button-row" style="margin:0.4em 0">
-            <input type="text" id="appmap-search" placeholder="Search across all columns…"
+            <input type="text" id="appmap-search" placeholder="Search the current page…"
                    style="flex:1 1 18em; max-width:28em; padding:0.3em 0.6em">
             <button type="button" id="appmap-export" class="btn-sm">Export visible rows as CSV</button>
+            <span class="help-text">
+                Search/sort/CSV operate on the current page only.
+                Bump <em>Per page</em> to 100 to act on the whole dataset.
+            </span>
         </div>
         <table th:if="${totalCount > 0}" id="appmap-traces-table"
                class="sortable-table"
