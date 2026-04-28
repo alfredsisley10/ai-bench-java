@@ -578,8 +578,23 @@ class BenchmarkRunService(
                 .replace("\\\"", "\"").replace("\\\\", "\\")
             LlmCallResult(promptTokens, completionTokens, ms, content.length, content)
         } catch (e: Exception) {
-            entry(run, Category.ERROR,
-                "Bridge call threw ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            // Unwrap CompletableFuture's wrapping if present.
+            val root = if (e is java.util.concurrent.ExecutionException) e.cause ?: e else e
+            val msg = when (root) {
+                is java.net.http.HttpTimeoutException ->
+                    "Bridge accepted the request on 11434 but did NOT return a chat-completion " +
+                    "response within 180s. Either Copilot itself is rate-limited / unreachable " +
+                    "from this VSCode session, or the VSIX's internal worker is stuck. " +
+                    "Try: (1) check VSCode's Copilot status icon for a sign-in/quota issue; " +
+                    "(2) Developer: Reload Window in the VSCode hosting the bridge; " +
+                    "(3) re-run the benchmark."
+                is java.net.ConnectException ->
+                    "Bridge HTTP shim isn't listening on 11434 (connection refused). " +
+                    "Start the VSCode Copilot bridge extension."
+                else ->
+                    "Bridge call threw ${root.javaClass.simpleName}: ${root.message ?: ""}"
+            }
+            entry(run, Category.ERROR, msg)
             null
         }
     }

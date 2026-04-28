@@ -511,9 +511,31 @@ class LlmConfigController(
                         )
                     }
                 }
-            }.getOrElse {
-                mapOf("success" to false,
-                      "message" to "Bridge call failed: ${it.javaClass.simpleName}: ${it.message}")
+            }.getOrElse { ex ->
+                // Distinguish "bridge isn't there" (refused) from
+                // "bridge is hung" (accepted but didn't respond): the
+                // OpenAI HTTP shim and the TCP listener are independent
+                // listeners on the same VSIX, so one being responsive
+                // tells the operator nothing about the other. SocketTimeout
+                // means the TCP socket was accepted but the bridge worker
+                // never wrote a reply -- typically a stuck VSIX state.
+                val message = when (ex) {
+                    is java.net.SocketTimeoutException ->
+                        "Bridge accepted the TCP connection on port $port but did NOT respond " +
+                        "within 10s -- the VSCode extension is hung in some way (its message " +
+                        "loop is blocked, or it's mid-call to the GitHub Copilot Language Model " +
+                        "API). The OpenAI HTTP shim on 11434 may still appear 'running' in the " +
+                        "VSIX panel because that's a separate listener. Fix: in VSCode, run " +
+                        "Developer: Reload Window (or Developer: Restart Extension Host) and " +
+                        "click List Models again. If that doesn't help, kill the VSCode window " +
+                        "entirely and reopen -- the extension's state machine resets on launch."
+                    is java.net.ConnectException ->
+                        "Bridge TCP listener is gone (connection refused on port $port). The " +
+                        "VSCode extension probably crashed. Reload the window and retry."
+                    else ->
+                        "Bridge call failed: ${ex.javaClass.simpleName}: ${ex.message}"
+                }
+                mapOf("success" to false, "message" to message)
             }
         }
         session.setAttribute(COPILOT_PROBE_RESULT, result)
