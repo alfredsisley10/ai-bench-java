@@ -48,7 +48,31 @@ class RunLauncherControllerTest {
             param("appmapMode", "OFF")
         }.andExpect {
             status { is3xxRedirection() }
-            redirectedUrl("/run?error=unverified")
+            // The controller appends &picked=<encoded provider/model> so
+            // the form can show "couldn't verify acme-fake-provider/...".
+            // Match prefix only — the encoded suffix can vary across the
+            // URLEncoder's slash handling.
+            redirectedUrlPattern("/run?error=unverified*")
+        }
+    }
+
+    @Test
+    fun `launch with missing modelId redirects back with error=missing-fields rather than 400`() {
+        // Regression: Spring's default @RequestParam binding throws 400
+        // Bad Request when a required param is empty/missing, which
+        // surfaces as an opaque JSON error to the operator. The
+        // controller now validates each required field itself and
+        // redirects to /run with the names of the missing fields so the
+        // form can show a specific error banner.
+        mvc.post("/run/launch") {
+            param("targetType", "omnibank")
+            param("bugId", "BUG-0001")
+            param("provider", "copilot")
+            // intentionally no modelId
+            param("appmapMode", "OFF")
+        }.andExpect {
+            status { is3xxRedirection() }
+            redirectedUrlPattern("/run?error=missing-fields&fields=*modelId*")
         }
     }
 }

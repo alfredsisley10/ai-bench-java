@@ -83,30 +83,58 @@ class RunLauncherController(
 
     @PostMapping("/run/launch")
     fun launch(
-        @RequestParam targetType: String,
+        @RequestParam(required = false) targetType: String?,
         @RequestParam(required = false) bugId: String?,
         @RequestParam(required = false) repoName: String?,
         @RequestParam(required = false) jiraTicket: String?,
-        @RequestParam provider: String,
-        @RequestParam modelId: String,
+        @RequestParam(required = false) provider: String?,
+        @RequestParam(required = false) modelId: String?,
         @RequestParam(defaultValue = "none") contextProvider: String,
-        @RequestParam appmapMode: String,
+        @RequestParam(required = false) appmapMode: String?,
         @RequestParam(defaultValue = "3") seeds: Int,
         session: HttpSession
     ): String {
+        // Validate required fields ourselves rather than relying on
+        // Spring's @RequestParam binding to throw 400. The opaque
+        // "Bad Request" JSON Spring produces is what operators kept
+        // hitting when, e.g., the Copilot model list was empty post-
+        // restart and the form submitted with modelId="" -- they had
+        // no idea which field was missing. Now each missing field
+        // bounces back to the form with a specific named error.
+        val missing = buildList<String> {
+            if (targetType.isNullOrBlank())  add("targetType")
+            if (provider.isNullOrBlank())    add("provider")
+            if (modelId.isNullOrBlank())     add("modelId")
+            if (appmapMode.isNullOrBlank())  add("appmapMode")
+        }
+        if (missing.isNotEmpty()) {
+            val encoded = java.net.URLEncoder.encode(missing.joinToString(","), "UTF-8")
+            return "redirect:/run?error=missing-fields&fields=$encoded"
+        }
+        // Re-bind to non-null locals now that we've validated.
+        val targetTypeNN = targetType!!
+        val providerNN = provider!!
+        val modelIdNN = modelId!!
+        val appmapModeNN = appmapMode!!
         // Defense-in-depth: even though the dropdown only surfaces
         // verified providers, the form could be POSTed by hand with
         // anything. Re-check the chosen provider/model is still in the
         // verified set before kicking off a run.
         val verified = registeredModelsRegistry.availableModels(session)
             .filter { it.provider != "appmap-navie" }
-        val ok = verified.any { it.provider == provider && it.id == modelId }
-        if (!ok) return "redirect:/run?error=unverified"
+        val ok = verified.any { it.provider == providerNN && it.id == modelIdNN }
+        if (!ok) {
+            // Surface the picked combo so the form can show "we
+            // couldn't verify modelId 'copilot-gpt-4-1' for provider
+            // 'copilot' — register it on /llm or pick another."
+            val pickedQ = "&picked=" + java.net.URLEncoder.encode("$providerNN/$modelIdNN", "UTF-8")
+            return "redirect:/run?error=unverified$pickedQ"
+        }
 
         // Build the issueId + title from the target type. Without this
         // the launch redirected to / and silently never started a run --
         // the form's inputs never reached BenchmarkRunService.start.
-        val (issueId, issueTitle) = when (targetType.lowercase()) {
+        val (issueId, issueTitle) = when (targetTypeNN.lowercase()) {
             "omnibank" -> {
                 val id = bugId?.takeIf { it.isNotBlank() }
                     ?: return "redirect:/run?error=missing-bug"
@@ -124,10 +152,10 @@ class RunLauncherController(
         val run = benchmarkRuns.start(
             issueId = issueId,
             issueTitle = issueTitle,
-            provider = provider,
-            modelId = modelId,
+            provider = providerNN,
+            modelId = modelIdNN,
             contextProvider = contextProvider,
-            appmapMode = appmapMode,
+            appmapMode = appmapModeNN,
             seeds = seeds
         )
         // Stash for /demo's live panel + the dashboard's "active run"

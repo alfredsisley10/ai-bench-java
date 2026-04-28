@@ -5,6 +5,39 @@
 <main>
     <h2>Launch benchmark run</h2>
 
+    <!-- Server-side validation feedback: when /run/launch validates a
+         POST and finds something missing or unverified, it redirects
+         back here with ?error=... so the operator can see exactly which
+         field failed instead of getting an opaque Spring 400. -->
+    <div th:if="${param.error != null and param.error[0] == 'missing-fields'}"
+         class="status-banner error">
+        <strong>Missing required field(s):</strong>
+        <code th:text="${param.fields != null ? param.fields[0] : ''}"></code>
+        — fill them in and re-submit.
+    </div>
+    <div th:if="${param.error != null and param.error[0] == 'unverified'}"
+         class="status-banner error">
+        <strong>That provider/model isn't currently verified:</strong>
+        <code th:text="${param.picked != null ? param.picked[0] : ''}"></code>.
+        Open the <a href="/llm">LLMs page</a> to register / verify it,
+        then come back. (Tip: Copilot models auto-discover from the
+        bridge — if the dropdown is missing the model you wanted, make
+        sure VSCode is open and the bridge port is reachable.)
+    </div>
+    <div th:if="${param.error != null and param.error[0] == 'missing-bug'}"
+         class="status-banner error">
+        <strong>Pick a Bug ID</strong> for an Omnibank run.
+    </div>
+    <div th:if="${param.error != null and param.error[0] == 'missing-repo'}"
+         class="status-banner error">
+        <strong>Pick a repository</strong> for an enterprise run.
+    </div>
+    <div th:if="${param.error != null and param.error[0] == 'unknown-target-type'}"
+         class="status-banner error">
+        <strong>Unknown target type.</strong>
+        Pick Omnibank or Enterprise.
+    </div>
+
     <form method="post" action="/run/launch" id="launchForm">
         <fieldset>
             <legend>Target</legend>

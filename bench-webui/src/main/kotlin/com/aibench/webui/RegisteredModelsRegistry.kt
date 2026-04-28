@@ -109,6 +109,13 @@ class RegisteredModelsRegistry {
                 status = "available",
                 editable = false
             )
+            // Auto-discover the rest of the Copilot model catalogue
+            // (gpt-4-1, claude-sonnet-4, gpt-5, etc.) from the live
+            // bridge so the operator doesn't have to click "List
+            // Copilot Models" + "Register" for every model after
+            // every webui restart. Cached for 30s so this isn't a
+            // per-page-render TCP roundtrip.
+            fetchAndCacheCopilotModels(copilotPort).forEach { builtins += it }
         }
 
         // Auto-derived: AppMap Navie via Copilot — only meaningful when
@@ -168,4 +175,73 @@ class RegisteredModelsRegistry {
     /** Convenience: distinct provider names from the merged list. */
     fun availableProviders(session: HttpSession): List<String> =
         availableModels(session).map { it.provider }.distinct().sorted()
+
+    // ---- Copilot model auto-discovery cache --------------------------
+    // The bridge's list-models op is a fresh TCP roundtrip with a 10s
+    // soTimeout; calling it on every page render would be wasteful and
+    // would also block UI threads behind the bridge during a slow
+    // VSCode session. Cache the result for 30 seconds. The set
+    // legitimately changes only when the operator's GitHub Copilot
+    // entitlements change OR they reload the VSCode bridge, so 30s
+    // is the right side of "fast vs fresh."
+
+    @Volatile
+    private var copilotModelsCache: List<LlmConfigController.ModelInfo> = emptyList()
+
+    @Volatile
+    private var copilotModelsCacheUntil: Long = 0L
+
+    private fun fetchAndCacheCopilotModels(port: Int): List<LlmConfigController.ModelInfo> {
+        val now = System.currentTimeMillis()
+        if (now < copilotModelsCacheUntil) return copilotModelsCache
+        val fresh = runCatching { listCopilotModelsViaBridge(port) }.getOrDefault(emptyList())
+        copilotModelsCache = fresh
+        copilotModelsCacheUntil = now + 30_000
+        return fresh
+    }
+
+    private fun listCopilotModelsViaBridge(port: Int): List<LlmConfigController.ModelInfo> {
+        return java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress("127.0.0.1", port), 2_000)
+            s.soTimeout = 10_000
+            s.outputStream.write("{\"op\":\"list-models\"}\n".toByteArray(Charsets.UTF_8))
+            s.outputStream.flush()
+            val buf = ByteArray(64 * 1024)
+            val sb = StringBuilder()
+            val deadline = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < deadline) {
+                val n = try { s.inputStream.read(buf) } catch (_: Exception) { -1 }
+                if (n <= 0) break
+                sb.append(String(buf, 0, n, Charsets.UTF_8))
+                if (sb.contains('\n')) break
+            }
+            val line = sb.toString().substringBefore('\n').takeIf { it.isNotBlank() }
+                ?: return@use emptyList()
+            // Parse the JSON-line shape:
+            //   {"ok":true,"models":[{"id":"...","name":"...","family":"..."}, ...]}
+            // Use a minimal regex extraction rather than dragging Jackson in;
+            // the field shape is stable and we only need id/name.
+            val models = mutableListOf<LlmConfigController.ModelInfo>()
+            // Match each {"id":"...","name":"...",...} object.
+            val rx = Regex("""\{\s*"id"\s*:\s*"([^"]+)"[^}]*?(?:"name"\s*:\s*"([^"]*)")?[^}]*?\}""")
+            rx.findAll(line).forEach { m ->
+                val rawId = m.groupValues[1]
+                val displayName = m.groupValues[2].ifBlank { rawId }
+                if (rawId == "copilot") return@forEach   // already added as copilot-default
+                // The form's id-namespace prefix lets the dropdown
+                // distinguish "copilot foo" from a coincidentally-named
+                // id from another provider.
+                val sanitized = "copilot-" + rawId.replace(Regex("[^A-Za-z0-9_\\-]"), "-")
+                models += LlmConfigController.ModelInfo(
+                    id = sanitized,
+                    displayName = "Copilot · $displayName",
+                    provider = "copilot",
+                    modelIdentifier = rawId,
+                    status = "available",
+                    editable = false
+                )
+            }
+            models
+        }
+    }
 }
