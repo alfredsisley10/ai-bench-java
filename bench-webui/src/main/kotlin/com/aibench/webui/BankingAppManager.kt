@@ -462,10 +462,23 @@ class BankingAppManager(
         if (withAppMapAgent && !agentJarPath.isNullOrBlank()) {
             val jvmArgs = mutableListOf("-javaagent:$agentJarPath")
             if (!configFile.isNullOrBlank()) jvmArgs.add("-Dappmap.config.file=$configFile")
-            // Agent emits trace files under tmp/appmap by default; opt
-            // remote-recording on so /_appmap/record is exposed.
+            // Agent settings: don't auto-record at boot, don't wrap
+            // every HTTP request in its own recording, but DO enable
+            // the /_appmap/record remote endpoint so the operator can
+            // bracket recordings via the interactive UI.
+            //
+            // recording.requests=true was previously on by default,
+            // which made every /actuator/health probe (bench-webui
+            // hits it every few seconds for the status badge) write
+            // a tiny request-recording file -- after a few minutes
+            // of an idle banking-app the trace list was 60+ noise
+            // entries. Switching to requests=false keeps the agent
+            // attached and ready, but only writes traces when
+            // explicitly told to (interactive Start/Stop or the
+            // /_appmap/record API).
             jvmArgs.add("-Dappmap.recording.auto=false")
-            jvmArgs.add("-Dappmap.recording.requests=true")
+            jvmArgs.add("-Dappmap.recording.requests=false")
+            jvmArgs.add("-Dappmap.recording.remote=true")
             // Propagate proxy + TLS onto the banking-app JVM too so any
             // HTTP it makes (webhooks, remote caches) goes through the
             // same egress path.
