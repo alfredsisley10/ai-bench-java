@@ -112,6 +112,7 @@
                 <tr>
                     <th>Seed</th><th>Result</th><th>Tests</th>
                     <th class="num">Prompt tok</th><th class="num">Completion tok</th><th>Duration</th>
+                    <th>Audit</th>
                 </tr>
                 </thead>
                 <tbody><!-- filled by JS --></tbody>
@@ -286,6 +287,12 @@
             var pass = sr.passed
                 ? '<span style="color:#16a34a">✓ PASS</span>'
                 : '<span style="color:#dc2626">✗ FAIL</span>';
+            // Per-seed audit drilldown — bug source, prompts, raw LLM
+            // response, extracted patch, gradle test stdout/exit code.
+            // Link is always rendered; the audit page degrades when
+            // capture is partial (older runs / synthetic seeds).
+            var auditHref = '/results/' + encodeURIComponent(runId)
+                + '/seed/' + sr.seed + '/audit';
             return '<tr>' +
                 '<td>' + sr.seed + '</td>' +
                 '<td>' + pass + '</td>' +
@@ -293,9 +300,10 @@
                 '<td class="num">' + fmt(sr.promptTokens) + '</td>' +
                 '<td class="num">' + fmt(sr.completionTokens) + '</td>' +
                 '<td>' + fmtMs(sr.durationMs) + '</td>' +
+                '<td><a href="' + auditHref + '">Inspect</a></td>' +
                 '</tr>';
         }).join('') ||
-            '<tr><td colspan="6" class="help-text">No seeds completed yet.</td></tr>';
+            '<tr><td colspan="7" class="help-text">No seeds completed yet.</td></tr>';
 
         // Log tail ------------------------------------------------------
         var entries = run.log || [];

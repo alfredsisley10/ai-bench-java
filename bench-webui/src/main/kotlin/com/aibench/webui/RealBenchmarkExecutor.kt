@@ -45,7 +45,22 @@ class RealBenchmarkExecutor(
         val testsPassed: Int,
         val testsTotal: Int,
         val durationMs: Long,
-        val message: String
+        val message: String,
+        // ---- Audit-trail fields ----------------------------------------
+        // Populated whenever the corresponding step actually ran. Null
+        // entries mean the step was skipped (e.g., extractedPatch is
+        // null when outcome=FAILED_NO_PATCH). The /results audit page
+        // surfaces these so the operator can see what was tried.
+        /** The diff block we pulled from the LLM response (input to git apply). */
+        val extractedPatch: String? = null,
+        /** Full gradle command (joined by space) that ran the tests. */
+        val verificationCommand: String? = null,
+        /** Tail of the gradle process's combined stdout+stderr (cap ~16KB). */
+        val testStdoutTail: String? = null,
+        /** gradle :app-bootstrap:test exit code, or null when test step didn't run. */
+        val testExitCode: Int? = null,
+        /** True when the worktree was created and we attempted git apply. */
+        val patchApplied: Boolean = false
     )
 
     /**
@@ -123,7 +138,8 @@ class RealBenchmarkExecutor(
                 System.currentTimeMillis() - started,
                 "Branch '$branch' does not exist in banking-app. Real scoring needs the " +
                     "bug branches seeded first -- click 'Create placeholder bug branches' on /demo, " +
-                    "then commit a real broken state to $branch before re-running.")
+                    "then commit a real broken state to $branch before re-running.",
+                extractedPatch = patch)
         }
         logFn("Seed $seedNumber: bug branch '$branch' exists -- creating per-seed worktree")
 
@@ -139,7 +155,8 @@ class RealBenchmarkExecutor(
             if (worktreeAdd.exitCode != 0) {
                 return ScoreResult(Outcome.FAILED_GRADLE_ERROR, 0, 0,
                     System.currentTimeMillis() - started,
-                    "git worktree add failed (exit ${worktreeAdd.exitCode}): ${worktreeAdd.tail(200)}")
+                    "git worktree add failed (exit ${worktreeAdd.exitCode}): ${worktreeAdd.tail(200)}",
+                    extractedPatch = patch)
             }
             logFn("Seed $seedNumber: worktree at ${seedRoot.absolutePath}")
 
@@ -154,7 +171,8 @@ class RealBenchmarkExecutor(
                 logFn("Seed $seedNumber: ✗ git apply failed (exit ${applyProc.exitCode})")
                 return ScoreResult(Outcome.FAILED_PATCH_APPLY, 0, 0,
                     System.currentTimeMillis() - started,
-                    "git apply rejected the LLM's patch: ${applyProc.tail(300)}")
+                    "git apply rejected the LLM's patch: ${applyProc.tail(300)}",
+                    extractedPatch = patch)
             }
             logFn("Seed $seedNumber: ✓ patch applied cleanly")
 
@@ -168,6 +186,7 @@ class RealBenchmarkExecutor(
                 add("--console=plain")
                 addAll(connectionSettings.gradleSystemProps())
             }
+            val cmdJoined = cmd.joinToString(" ")
             logFn("Seed $seedNumber: running ${cmd.subList(0, 3).joinToString(" ")} … (cap 5min)")
             val testProc = runProcess(cmd, seedRoot, 300)
             val testsTotal = parseInt(testProc.stdout, "(\\d+) tests?", default = 0)
@@ -188,12 +207,22 @@ class RealBenchmarkExecutor(
             }
             logFn(msg)
             ScoreResult(outcome, testsPassed, testsTotal,
-                System.currentTimeMillis() - started, msg)
+                System.currentTimeMillis() - started, msg,
+                extractedPatch = patch,
+                verificationCommand = cmdJoined,
+                // Cap stdout so audit pages stay snappy. 16KB is enough
+                // for a normal failure trace plus the gradle summary;
+                // logs longer than that almost always have the same
+                // failure repeated and aren't more useful uncapped.
+                testStdoutTail = testProc.stdout.takeLast(16_000),
+                testExitCode = testProc.exitCode,
+                patchApplied = true)
         } catch (e: Exception) {
             log.warn("scoreSeed threw for run={} seed={}", runId, seedNumber, e)
             ScoreResult(Outcome.FAILED_GRADLE_ERROR, 0, 0,
                 System.currentTimeMillis() - started,
-                "Real scoring threw ${e.javaClass.simpleName}: ${e.message ?: ""}")
+                "Real scoring threw ${e.javaClass.simpleName}: ${e.message ?: ""}",
+                extractedPatch = patch)
         } finally {
             // Clean up the worktree. 'git worktree remove --force' in the
             // main repo invalidates the per-seed .git pointer; deleting

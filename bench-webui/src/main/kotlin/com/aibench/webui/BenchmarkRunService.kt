@@ -24,7 +24,8 @@ import java.util.concurrent.Executors
 @Component
 class BenchmarkRunService(
     private val priceCatalog: ModelPriceCatalog,
-    private val realExecutor: RealBenchmarkExecutor
+    private val realExecutor: RealBenchmarkExecutor,
+    private val bugCatalog: BugCatalog
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -59,6 +60,30 @@ class BenchmarkRunService(
         val completionTokens: Int
     )
 
+    /**
+     * Full audit trail of what one seed actually did, so the operator
+     * can reconstruct the run end-to-end on /results/{runId}/seed/{n}.
+     * Every field is nullable -- when a step didn't run (e.g. the LLM
+     * call failed before patch extraction) the corresponding field
+     * stays null and the audit page renders "skipped" rather than
+     * inventing data. The full body of the LLM response and the test
+     * stdout are kept here so the audit doesn't depend on the bridge's
+     * own per-call records (which are scoped to bridge lifetime).
+     */
+    data class SeedAudit(
+        val seed: Int,
+        val systemPrompt: String? = null,
+        val userPrompt: String? = null,
+        val llmRawResponse: String? = null,
+        val extractedPatch: String? = null,
+        val patchApplied: Boolean = false,
+        val verificationCommand: String? = null,
+        val testStdoutTail: String? = null,
+        val testExitCode: Int? = null,
+        val outcome: String? = null,
+        val outcomeMessage: String? = null
+    )
+
     data class RunStats(
         val tracesRecorded: Int = 0,
         val tracesSubmitted: Int = 0,
@@ -88,6 +113,11 @@ class BenchmarkRunService(
         @Volatile var status: Status = Status.QUEUED,
         @Volatile var stats: RunStats = RunStats(),
         @Volatile var seedResults: List<SeedResult> = emptyList(),
+        /** Per-seed audit detail (prompts, raw LLM response, extracted
+         *  patch, verification cmd + stdout, exit code). Filled in
+         *  parallel with seedResults; survive for the lifetime of the
+         *  in-memory run (lost on JVM restart, like seedResults). */
+        @Volatile var seedAudits: List<SeedAudit> = emptyList(),
         /** True once at least one seed got a real bridge response back.
          *  Drives the result-detail banner: green "real LLM" vs amber
          *  "synthetic" so operators can tell the modes apart. */
@@ -320,6 +350,10 @@ class BenchmarkRunService(
             }
             val solveStart = System.currentTimeMillis()
             var llmResponseText: String? = null
+            // Audit slots filled in as the seed progresses; consolidated
+            // into a SeedAudit record at the bottom of the iteration.
+            var auditSystemPrompt: String? = null
+            var auditUserPrompt: String? = null
             val completion: Int = if (bridgeLive) {
                 val realResp = realLlmCall(run, seed, totalPromptTokens)
                 if (realResp != null) {
@@ -327,6 +361,8 @@ class BenchmarkRunService(
                         "Seed $seed ← real response: ${realResp.completionTokens} completion tokens " +
                         "in ${realResp.latencyMillis}ms, patch ~${realResp.contentLength} chars")
                     llmResponseText = realResp.content
+                    auditSystemPrompt = realResp.systemPrompt
+                    auditUserPrompt = realResp.userPrompt
                     run.usedRealLlm = true
                     realResp.completionTokens
                 } else {
@@ -354,6 +390,10 @@ class BenchmarkRunService(
             // back to the synthetic path when (a) no bridge text, (b) no
             // bug branch seeded, or (c) git/gradle pipeline blew up --
             // each fallback is logged with the specific reason.
+            // Real-scoring outcome captured here so the audit record at
+            // the bottom of the loop can reach it whether we ran real
+            // scoring or fell back to synthetic.
+            var realScore: RealBenchmarkExecutor.ScoreResult? = null
             val seedResult: SeedResult = if (llmResponseText != null) {
                 val real = realExecutor.scoreSeed(
                     runId = run.id,
@@ -362,6 +402,7 @@ class BenchmarkRunService(
                     llmResponseText = llmResponseText,
                     logFn = { msg -> entry(run, Category.RESULT, msg) }
                 )
+                realScore = real
                 // Outcome PASSED, FAILED_TESTS, FAILED_PATCH_APPLY, and
                 // FAILED_NO_PATCH all mean the real path actually ran;
                 // only NO_BRANCH and GRADLE_ERROR are fall-through.
@@ -399,6 +440,24 @@ class BenchmarkRunService(
             }
             seedResults += seedResult
             run.seedResults = seedResults.toList()
+            // Stash everything we know about this seed for the per-seed
+            // audit drilldown. Truncating happens on the SCORE side
+            // (testStdoutTail capped to 16KB) and within the LLM-
+            // response capture; nothing else gets serialised over HTTP.
+            val audit = SeedAudit(
+                seed = seed,
+                systemPrompt = auditSystemPrompt,
+                userPrompt = auditUserPrompt,
+                llmRawResponse = llmResponseText,
+                extractedPatch = realScore?.extractedPatch,
+                patchApplied = realScore?.patchApplied ?: false,
+                verificationCommand = realScore?.verificationCommand,
+                testStdoutTail = realScore?.testStdoutTail,
+                testExitCode = realScore?.testExitCode,
+                outcome = realScore?.outcome?.name ?: if (llmResponseText == null) "SYNTHETIC" else null,
+                outcomeMessage = realScore?.message
+            )
+            run.seedAudits = (run.seedAudits + audit).toList()
             entry(run, Category.RESULT,
                 "Seed $seed: ${if (seedResult.passed) "✓ PASS" else "✗ FAIL"} " +
                 "(${seedResult.testsPassed}/${seedResult.testsTotal} tests, ${seedResult.durationMs}ms)")
@@ -496,7 +555,11 @@ class BenchmarkRunService(
         val latencyMillis: Long,
         val contentLength: Int,
         /** Full assistant message text, JSON-decoded. */
-        val content: String
+        val content: String,
+        /** System message we sent — surfaced on the audit page. */
+        val systemPrompt: String,
+        /** User message we sent — surfaced on the audit page. */
+        val userPrompt: String
     )
 
     /**
@@ -576,7 +639,8 @@ class BenchmarkRunService(
             val content = rawContent
                 .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
                 .replace("\\\"", "\"").replace("\\\\", "\\")
-            LlmCallResult(promptTokens, completionTokens, ms, content.length, content)
+            LlmCallResult(promptTokens, completionTokens, ms, content.length, content,
+                systemPrompt = systemPrompt, userPrompt = userPrompt)
         } catch (e: Exception) {
             // Unwrap CompletableFuture's wrapping if present.
             val root = if (e is java.util.concurrent.ExecutionException) e.cause ?: e else e

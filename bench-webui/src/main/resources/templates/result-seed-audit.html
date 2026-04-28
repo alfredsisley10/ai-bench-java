@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Audit ' + ${runId} + ' seed ' + ${seedNumber}, ~{::main})}">
+<body>
+<main>
+    <p style="margin:0 0 0.6em 0">
+        <a th:href="'/results/' + ${runId}">← Back to run</a>
+    </p>
+
+    <h2>Seed audit
+        <span class="help-text" style="font-size:0.7em">·
+            run <code th:text="${runId}"></code> ·
+            seed <span th:text="${seedNumber}"></span>
+        </span>
+    </h2>
+
+    <div th:if="${run == null}" class="status-banner error">
+        <strong>Run not found.</strong>
+        Bench-webui keeps run state in memory only — restarting the
+        server clears prior runs. Launch a fresh run to populate this
+        view.
+    </div>
+
+    <div th:if="${run != null and audit == null}" class="status-banner">
+        <strong>No audit record for this seed yet.</strong>
+        Either the seed hasn't completed, or the run finished before
+        the audit-capture code was deployed. Older runs will remain
+        without audits until re-launched.
+    </div>
+
+    <!-- One-line summary chip — same shape as the row in the per-seed
+         table on /results/{runId} so the operator can confirm they're
+         on the right seed at a glance. -->
+    <section th:if="${seedResult != null}" class="card-row" style="margin-bottom:0.8em">
+        <span th:if="${seedResult.passed}" class="badge available">PASS</span>
+        <span th:unless="${seedResult.passed}" class="badge unavailable">FAIL</span>
+        &nbsp;<strong th:text="${seedResult.testsPassed} + ' / ' + ${seedResult.testsTotal}">tests</strong>
+        &nbsp;·&nbsp;
+        prompt <span th:text="${seedResult.promptTokens}"></span> tok
+        &nbsp;·&nbsp;
+        completion <span th:text="${seedResult.completionTokens}"></span> tok
+        &nbsp;·&nbsp;
+        duration <span th:text="${seedResult.durationMs}"></span> ms
+    </section>
+
+    <!-- ============== (a) Bug description / metadata ================ -->
+    <details open style="margin-bottom:0.6em">
+        <summary><h3 style="display:inline; margin:0">Bug description shown to the solver</h3></summary>
+        <div th:if="${bug == null}" class="status-banner">
+            <strong>Bug metadata not loaded.</strong>
+            The launcher couldn't locate <code>bugs/<span th:text="${run?.issueId}"></span>.yaml</code>
+            on disk. Check that the harness's <code>bugs/</code> directory is a
+            sibling of <code>banking-app/</code>.
+        </div>
+        <div th:if="${bug != null}">
+            <table>
+                <tr><th>ID</th><td><code th:text="${bug.id}"></code></td></tr>
+                <tr><th>Title</th><td th:text="${bug.title}"></td></tr>
+                <tr><th>Module</th><td><code th:text="${bug.module}"></code></td></tr>
+                <tr><th>Difficulty / Category</th>
+                    <td><span th:text="${bug.difficulty}"></span> / <span th:text="${bug.category}"></span></td></tr>
+                <tr><th>Tags</th>
+                    <td><code th:text="${#strings.listJoin(bug.tags, ', ')}"></code></td></tr>
+                <tr><th>Break commit / branch</th>
+                    <td><code th:text="${bug.breakCommit}"></code></td></tr>
+                <tr><th>Reference fix branch</th>
+                    <td><code th:text="${bug.fixCommit}"></code></td></tr>
+                <tr><th>Files touched</th>
+                    <td><code th:each="f : ${bug.filesTouched}" th:text="${f}" style="display:block"></code></td></tr>
+                <tr th:if="${bug.hiddenTestClass != null}">
+                    <th>Hidden verification test</th>
+                    <td>
+                        <code th:text="${bug.hiddenTestClass} + '::' + ${bug.hiddenTestMethod}"></code><br>
+                        <code th:text="${bug.hiddenTestFile}"></code>
+                    </td>
+                </tr>
+            </table>
+            <h4>Problem statement</h4>
+            <pre class="snippet" th:text="${bug.problemStatement}"></pre>
+            <h4 th:if="${!bug.hints.isEmpty()}">Hints</h4>
+            <ul th:if="${!bug.hints.isEmpty()}">
+                <li th:each="h : ${bug.hints}" th:text="${h}"></li>
+            </ul>
+        </div>
+    </details>
+
+    <!-- ============== (b) Buggy source code shown to solver ============= -->
+    <details style="margin-bottom:0.6em" th:if="${!buggyFiles.isEmpty()}">
+        <summary><h3 style="display:inline; margin:0">Buggy source code (break branch)</h3>
+            <span class="help-text">— files exactly as the solver received them</span>
+        </summary>
+        <div th:each="f : ${buggyFiles}" style="margin-top:0.6em">
+            <p style="margin:0 0 0.3em 0">
+                <code th:text="${f.path}"></code>
+                <span class="help-text">@ <code th:text="${f.ref}"></code></span>
+            </p>
+            <pre th:if="${f.error != null}" class="snippet error" th:text="${f.error}"></pre>
+            <pre th:if="${f.content != null}" class="code-block" th:text="${f.content}"></pre>
+        </div>
+    </details>
+
+    <!-- ============== (c) Prompts sent to the LLM ===================== -->
+    <details style="margin-bottom:0.6em" th:if="${audit != null}">
+        <summary><h3 style="display:inline; margin:0">Prompts sent to the LLM</h3>
+            <span class="help-text">— exact system + user messages forwarded to the bridge</span>
+        </summary>
+        <div th:if="${audit.systemPrompt == null and audit.userPrompt == null}" class="help-text">
+            No prompts captured for this seed (the bridge call never
+            ran — typical when the bridge wasn't reachable at run time).
+        </div>
+        <div th:if="${audit.systemPrompt != null}">
+            <h4>System message</h4>
+            <pre class="code-block" th:text="${audit.systemPrompt}"></pre>
+        </div>
+        <div th:if="${audit.userPrompt != null}">
+            <h4>User message</h4>
+            <pre class="code-block" th:text="${audit.userPrompt}"></pre>
+        </div>
+    </details>
+
+    <!-- ============== (d) Raw LLM completion ========================== -->
+    <details style="margin-bottom:0.6em" th:if="${audit != null}">
+        <summary><h3 style="display:inline; margin:0">Raw LLM response</h3>
+            <span class="help-text">— full assistant message before patch extraction</span>
+        </summary>
+        <div th:if="${audit.llmRawResponse == null}" class="help-text">
+            No response captured (bridge call failed or seed ran in
+            synthetic mode).
+        </div>
+        <pre th:if="${audit.llmRawResponse != null}" class="code-block"
+             th:text="${audit.llmRawResponse}"></pre>
+    </details>
+
+    <!-- ============== (f) Extracted patch =============================== -->
+    <details style="margin-bottom:0.6em" th:if="${audit != null}">
+        <summary><h3 style="display:inline; margin:0">Extracted patch</h3>
+            <span class="help-text">— exact bytes piped into <code>git apply</code></span>
+        </summary>
+        <div th:if="${audit.extractedPatch == null}" class="help-text">
+            No patch was extracted from the LLM response. This is what
+            <code>FAILED_NO_PATCH</code> looks like — the model
+            returned prose only, not a unified diff. Re-prompt with a
+            stricter "respond with a unified-diff inside a ```diff
+            fenced block" instruction.
+        </div>
+        <p th:if="${audit.extractedPatch != null}" class="help-text" style="margin:0 0 0.3em 0">
+            Patch is <span th:text="${audit.extractedPatch.length()}"></span> chars;
+            <span th:if="${audit.patchApplied}" style="color:#28a745">✓ applied cleanly</span>
+            <span th:unless="${audit.patchApplied}" style="color:#dc3545">✗ not applied (see outcome below)</span>
+        </p>
+        <pre th:if="${audit.extractedPatch != null}" class="code-block diff"
+             th:text="${audit.extractedPatch}"></pre>
+    </details>
+
+    <!-- ============== (e) Verification test source ====================== -->
+    <details style="margin-bottom:0.6em" th:if="${hiddenTestSnapshot != null}">
+        <summary><h3 style="display:inline; margin:0">Verification test (hidden)</h3>
+            <span class="help-text">— the JUnit case the solver's patch was graded against</span>
+        </summary>
+        <p style="margin:0 0 0.3em 0">
+            <code th:text="${hiddenTestSnapshot.path}"></code>
+            <span class="help-text">@ <code th:text="${hiddenTestSnapshot.ref}"></code></span>
+        </p>
+        <pre th:if="${hiddenTestSnapshot.error != null}" class="snippet error" th:text="${hiddenTestSnapshot.error}"></pre>
+        <pre th:if="${hiddenTestSnapshot.content != null}" class="code-block"
+             th:text="${hiddenTestSnapshot.content}"></pre>
+    </details>
+
+    <!-- ============== (g) Test command + output ========================= -->
+    <details style="margin-bottom:0.6em" th:if="${audit != null}">
+        <summary><h3 style="display:inline; margin:0">Test verification</h3>
+            <span class="help-text">— gradle command + tail of stdout/stderr</span>
+        </summary>
+        <table th:if="${audit.verificationCommand != null or audit.testExitCode != null}">
+            <tr th:if="${audit.verificationCommand != null}">
+                <th>Command</th>
+                <td><code th:text="${audit.verificationCommand}"></code></td>
+            </tr>
+            <tr th:if="${audit.testExitCode != null}">
+                <th>Exit code</th>
+                <td><code th:text="${audit.testExitCode}"></code>
+                    <span class="help-text" th:if="${audit.testExitCode == 0}"> (PASS)</span>
+                    <span class="help-text" th:if="${audit.testExitCode != 0}"> (FAIL)</span>
+                </td>
+            </tr>
+            <tr th:if="${audit.outcome != null}">
+                <th>Outcome</th>
+                <td><code th:text="${audit.outcome}"></code> &nbsp;
+                    <span class="help-text" th:if="${audit.outcomeMessage != null}" th:text="${audit.outcomeMessage}"></span>
+                </td>
+            </tr>
+        </table>
+        <h4 th:if="${audit.testStdoutTail != null}">stdout/stderr (tail, ~16KB)</h4>
+        <pre th:if="${audit.testStdoutTail != null}" class="log-tail"
+             th:text="${audit.testStdoutTail}"></pre>
+        <p th:if="${audit.testStdoutTail == null}" class="help-text">
+            No test output captured for this seed. Test step didn't
+            run (patch extraction or apply failed earlier).
+        </p>
+    </details>
+
+    <!-- ============== Reference (fix) source for comparison ============= -->
+    <details style="margin-bottom:0.6em" th:if="${!fixedFiles.isEmpty()}">
+        <summary><h3 style="display:inline; margin:0">Reference fix source</h3>
+            <span class="help-text">— the canonical fix shipped with the bug, for diff comparison</span>
+        </summary>
+        <div th:each="f : ${fixedFiles}" style="margin-top:0.6em">
+            <p style="margin:0 0 0.3em 0">
+                <code th:text="${f.path}"></code>
+                <span class="help-text">@ <code th:text="${f.ref}"></code></span>
+            </p>
+            <pre th:if="${f.error != null}" class="snippet error" th:text="${f.error}"></pre>
+            <pre th:if="${f.content != null}" class="code-block" th:text="${f.content}"></pre>
+        </div>
+    </details>
+
+    <style>
+        pre.code-block {
+            background:#0f172a; color:#e2e8f0;
+            padding:10px 12px; border-radius:4px;
+            font-size:0.78em; line-height:1.4;
+            max-height: 480px; overflow:auto;
+            white-space: pre;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        pre.code-block.diff { background:#0a0a0a; }
+        pre.snippet.error { color:#7f1d1d; background:#fef2f2; padding:8px 12px; border-radius:4px; }
+        pre.log-tail {
+            background:#212529; color:#e9ecef; padding:10px;
+            font-size:0.78em; max-height:480px; overflow:auto;
+            white-space: pre-wrap;
+        }
+        details { padding:6px 10px; border:1px solid #d0d7de;
+            border-radius:4px; background:#fff; }
+        details > summary { cursor:pointer; }
+        details > summary > h3 { cursor:pointer; }
+    </style>
+</main>
+</body>
+</html>
