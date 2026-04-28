@@ -18,7 +18,7 @@ class AppMapController(private val appmaps: AppMapService) {
     @GetMapping("/demo/appmap")
     fun list(
         @RequestParam(defaultValue = "1") page: Int,
-        @RequestParam(defaultValue = "25") pageSize: Int,
+        @RequestParam(defaultValue = "10") pageSize: Int,
         model: Model,
         session: HttpSession
     ): String {
@@ -32,7 +32,7 @@ class AppMapController(private val appmaps: AppMapService) {
         // hand-edited URL can't blow out memory by requesting a giant
         // single page.
         val allowedPageSizes = listOf(10, 25, 50, 100)
-        val safePageSize = if (pageSize in allowedPageSizes) pageSize else 25
+        val safePageSize = if (pageSize in allowedPageSizes) pageSize else 10
         val total = allTraces.size
         val totalPages = if (total == 0) 1 else (total + safePageSize - 1) / safePageSize
         val safePage = page.coerceIn(1, totalPages)
