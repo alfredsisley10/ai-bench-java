@@ -85,6 +85,14 @@ interface ServerArgs {
     pickModel: (req: { model?: string }) => Promise<vscode.LanguageModelChat | undefined>;
     enumerateModels: () => Promise<Array<{ id: string }>>;
     tracker: UsageTracker;
+    /** Per-request stage logger from extension.ts. Wraps an async fn
+     *  with start/finish + 10-second heartbeat lines so the operator
+     *  can see WHICH stage is hung when a chat request stalls. */
+    logStage: <T>(reqId: string, stage: string, fn: () => Promise<T>) => Promise<T>;
+    /** Plain log line, same OutputChannel as logStage uses. */
+    log: (msg: string) => void;
+    /** Mint a per-request id for correlating log lines. */
+    newReqId: () => string;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -186,10 +194,14 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
             }
 
             if (req.method === 'POST' && (url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions')) {
+                const reqId = args.newReqId();
+                const runIdHeader = req.headers['x-run-id'] != null ? String(req.headers['x-run-id']) : '-';
+                args.log(`[${reqId}] ← HTTP /v1/chat/completions client=${client} runId=${runIdHeader}`);
                 const raw = await readBody(req);
                 const body = raw ? JSON.parse(raw) : {};
-                const model = await args.pickModel({ model: body.model });
+                const model = await args.logStage(reqId, 'pickModel', () => args.pickModel({ model: body.model }));
                 if (!model) {
+                    args.log(`[${reqId}] ✗ no model available`);
                     return send(res, 503, {
                         error: { message: 'no Copilot model available — start the bridge and grant consent', type: 'no_model' }
                     });
@@ -200,11 +212,16 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                         ? vscode.LanguageModelChatMessage.Assistant(m.content)
                         : vscode.LanguageModelChatMessage.User(m.content));
                 const promptText = (body.messages ?? []).map((m: any) => String(m.content ?? '')).join('\n');
+                args.log(`[${reqId}] selected model=${model.id} (${model.name}); ${inputMessages.length} message(s), ${promptText.length} prompt chars`);
 
                 const token = new vscode.CancellationTokenSource().token;
-                const resp = await model.sendRequest(inputMessages, {}, token);
+                const resp = await args.logStage(reqId, `model.sendRequest(${model.id})`,
+                    () => model.sendRequest(inputMessages, {}, token));
                 let content = '';
-                for await (const frag of resp.text) content += frag;
+                let frags = 0;
+                await args.logStage(reqId, 'stream response.text',
+                    async () => { for await (const frag of resp.text) { content += frag; frags++; } });
+                args.log(`[${reqId}] streamed ${frags} fragments, ${content.length} chars total → response sent`);
 
                 args.tracker.record({
                     modelId: model.id, client,

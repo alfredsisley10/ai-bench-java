@@ -63,6 +63,40 @@ function logError(prefix: string, e: unknown): void {
     log(`ERROR ${prefix}: ${err?.message ?? err}\n${stack}`);
 }
 
+/** Per-request id for correlating log lines across stages. Monotonic
+ *  counter; resets every extension-host launch. */
+let nextRequestId = 1;
+function newReqId(): string { return `r${nextRequestId++}`; }
+
+/**
+ * Run an async stage with start/finish + 10-second heartbeat
+ * logging. The heartbeat is the key diagnostic for the
+ * "bridge accepted but never replied" failure mode: every stage
+ * emits a [reqId] still running after Ns line every 10 seconds
+ * it's blocked, so the operator can pinpoint exactly which stage
+ * is stuck (model.sendRequest stalling on Copilot vs. response
+ * streaming hung on the SSE side, etc.) just from View -> Output
+ * -> ai-bench Copilot Bridge.
+ */
+async function logStage<T>(reqId: string, stage: string, fn: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    log(`[${reqId}] → ${stage}`);
+    const heartbeat = setInterval(() => {
+        const elapsed = Math.round((Date.now() - start) / 1000);
+        log(`[${reqId}] … ${stage} still running after ${elapsed}s`);
+    }, 10000);
+    try {
+        const result = await fn();
+        clearInterval(heartbeat);
+        log(`[${reqId}] ✓ ${stage} done in ${Date.now() - start}ms`);
+        return result;
+    } catch (e: any) {
+        clearInterval(heartbeat);
+        log(`[${reqId}] ✗ ${stage} threw after ${Date.now() - start}ms: ${e?.message ?? e}`);
+        throw e;
+    }
+}
+
 // Re-entry guard for notifyStateChanged. Cheap insurance against a
 // future accidental cycle (such as the one that was just fixed).
 let inNotify = false;
@@ -117,25 +151,30 @@ async function pickModel(req: { model?: string }): Promise<vscode.LanguageModelC
 }
 
 async function handleSocketRequest(raw: string, socket: net.Socket): Promise<void> {
+    const reqId = newReqId();
     let req: any;
     try { req = JSON.parse(raw); } catch (e: any) {
+        log(`[${reqId}] ✗ rejected on JSON parse: ${e.message}`);
         socket.write(JSON.stringify({ ok: false, error: 'invalid JSON: ' + e.message }) + '\n');
         return;
     }
     try {
         const op = req.op ?? 'chat';
         const client = String(req.client ?? socket.remoteAddress ?? 'socket-anonymous');
+        log(`[${reqId}] ← TCP op=${op} client=${client} runId=${req.runId ?? '-'} model=${req.model ?? 'auto'}`);
         switch (op) {
             case 'list-models': {
-                const models = await enumerateModels();
+                const models = await logStage(reqId, 'enumerateModels', () => enumerateModels());
                 socket.write(JSON.stringify({
                     ok: true, models, auto: models[0]?.id ?? null, count: models.length
                 }) + '\n');
+                log(`[${reqId}] → response sent (${models.length} models)`);
                 return;
             }
             case 'chat': {
-                const model = await pickModel(req);
+                const model = await logStage(reqId, 'pickModel', () => pickModel(req));
                 if (!model) {
+                    log(`[${reqId}] ✗ no model available`);
                     socket.write(JSON.stringify({ ok: false,
                         error: 'no Copilot model available — check that the GitHub Copilot Chat extension is installed and you are signed in'
                     }) + '\n');
@@ -146,11 +185,16 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
                         ? vscode.LanguageModelChatMessage.Assistant(m.content)
                         : vscode.LanguageModelChatMessage.User(m.content));
                 const promptText = (req.messages ?? []).map((m: any) => String(m.content ?? '')).join('\n');
+                log(`[${reqId}] selected model=${model.id} (${model.name}); ${inputMessages.length} message(s), ${promptText.length} prompt chars`);
 
                 const tok = new vscode.CancellationTokenSource().token;
-                const resp = await model.sendRequest(inputMessages, {}, tok);
+                const resp = await logStage(reqId, `model.sendRequest(${model.id})`,
+                    () => model.sendRequest(inputMessages, {}, tok));
                 let content = '';
-                for await (const frag of resp.text) content += frag;
+                let frags = 0;
+                await logStage(reqId, 'stream response.text',
+                    async () => { for await (const frag of resp.text) { content += frag; frags++; } });
+                log(`[${reqId}] streamed ${frags} fragments, ${content.length} chars total`);
 
                 tracker?.record({
                     modelId: model.id, client, promptText, completionText: content, via: 'socket',
@@ -166,6 +210,7 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
                 socket.write(JSON.stringify({
                     ok: true, content, modelId: model.id, modelName: model.name
                 }) + '\n');
+                log(`[${reqId}] → response sent (${content.length} chars)`);
                 return;
             }
             // Query usage stats scoped to a specific runId. Lets the
@@ -202,6 +247,7 @@ async function handleSocketRequest(raw: string, socket: net.Socket): Promise<voi
                     error: `unknown op '${op}' — expected 'chat', 'list-models', or 'query-activity'` }) + '\n');
         }
     } catch (e: any) {
+        logError(`[${reqId}] handler threw`, e);
         socket.write(JSON.stringify({ ok: false, error: String(e?.message ?? e) }) + '\n');
     }
 }
@@ -360,6 +406,12 @@ async function startOpenAiFromConfig(): Promise<void> {
         pickModel,
         enumerateModels: async () => (await enumerateModels()).map(m => ({ id: m.id })),
         tracker: tracker!,
+        // Per-request stage logging passed in so the HTTP shim's logs
+        // land on the same OutputChannel as the TCP socket's, with
+        // the same [reqId] correlation format.
+        logStage,
+        log,
+        newReqId,
     });
     notifyStateChanged();
 }
