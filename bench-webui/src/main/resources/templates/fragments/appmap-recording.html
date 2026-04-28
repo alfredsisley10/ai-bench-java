@@ -73,16 +73,34 @@
                 </strong>
                 — reloading page to refresh the trace list…
             </span>
-            <!-- When the recording transitions to SUCCEEDED the inner
-                 fragment swap brings in this script; auto-reload the
-                 whole /demo/appmap page so the available-traces table
-                 shows the newly written files. Guarded so it only fires
-                 the first time, not on every subsequent poll. -->
-            <script th:if="${rec.status.name() == 'SUCCEEDED'}">
-                if (!window.__appmapReloadFired) {
+            <!-- When the recording flips to SUCCEEDED, auto-reload the
+                 page ONCE so the trace list reflects the new files.
+                 Two guards prevent the previous infinite-reload bug:
+                   1. window.__appmapReloadFired blocks a second
+                      setTimeout in the same window if the htmx poll
+                      re-renders this fragment before the reload fires.
+                   2. sessionStorage 'appmapReloadedFor:<id>' blocks
+                      re-reload AFTER the page has actually loaded
+                      against this same recording id. Without (2) the
+                      page kept reloading every 1.5s forever because
+                      the recording stays SUCCEEDED indefinitely and
+                      every fresh window resets the in-memory flag. -->
+            <script th:if="${rec.status.name() == 'SUCCEEDED'}"
+                    th:inline="javascript">
+                (function () {
+                    var recId = /*[[${rec.id}]]*/ '';
+                    if (!recId) return;
+                    var key = 'appmapReloadedFor:' + recId;
+                    try {
+                        if (sessionStorage.getItem(key) === '1') return;
+                    } catch (_) {}
+                    if (window.__appmapReloadFired) return;
                     window.__appmapReloadFired = true;
-                    setTimeout(function () { window.location.reload(); }, 1500);
-                }
+                    setTimeout(function () {
+                        try { sessionStorage.setItem(key, '1'); } catch (_) {}
+                        window.location.reload();
+                    }, 1500);
+                })();
             </script>
             <span th:if="${rec.status.name() == 'FAILED'}" class="status-banner error"
                   style="display:inline-block; padding:4px 8px">
