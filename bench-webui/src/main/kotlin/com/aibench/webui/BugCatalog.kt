@@ -42,6 +42,14 @@ class BugCatalog(
         }.getOrNull()
     }
 
+    /** Count of available BUG-*.yaml files. Used by the dashboard's
+     *  Bugs tile so the count tracks the same resolution rules as
+     *  getBug() -- the previous user.dir-walk implementation broke
+     *  whenever bench-webui ran from a directory that didn't have
+     *  bugs/ as a child. */
+    fun count(): Int =
+        bugsDir?.listFiles { f -> f.isFile && f.name.endsWith(".yaml") }?.size ?: 0
+
     /** Bug metadata as the operator sees it on the run-detail audit. */
     data class BugMetadata(
         val id: String,

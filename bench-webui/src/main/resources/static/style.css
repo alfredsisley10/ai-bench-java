@@ -47,6 +47,15 @@ button:hover { background: #163d6f; }
 .btn-secondary:hover { background: #2d3748; }
 .btn-danger { background: #b91c1c; color: white; border: none; padding: 0.3em 0.8em; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
 .btn-danger:hover { background: #991b1b; }
+/* Disabled state: dim the colour + show a not-allowed cursor so a
+   completed run's "Cancel run" button is unmistakably non-actionable.
+   Without this rule a disabled .btn-danger looked identical to an
+   enabled one and operators tried to click it. */
+.btn-danger:disabled,
+.btn-danger[disabled] { background: #9ca3af; color: #f3f4f6; cursor: not-allowed; opacity: 0.7; }
+.btn-danger:disabled:hover,
+.btn-danger[disabled]:hover { background: #9ca3af; }
+button:disabled, button[disabled] { cursor: not-allowed; }
 .btn-sm, a.btn-sm { font-size: 0.8em; padding: 0.3em 0.8em; }
 a.btn-sm, a.btn-link { display: inline-block; background: #0b2545; color: white; border: none; border-radius: 4px; text-decoration: none; cursor: pointer; }
 a.btn-sm { font-size: 0.8em; padding: 0.3em 0.8em; margin-top: 0.5em; }

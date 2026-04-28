@@ -6,7 +6,6 @@ import org.springframework.ui.Model
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestParam
-import java.io.File
 
 /**
  * Combined dashboard + results page. Was two separate routes (`/`
@@ -20,7 +19,8 @@ import java.io.File
 @Controller
 class DashboardController(
     private val benchmarkRuns: BenchmarkRunService,
-    private val registeredModels: RegisteredModelsRegistry
+    private val registeredModels: RegisteredModelsRegistry,
+    private val bugCatalog: BugCatalog
 ) {
 
     @GetMapping("/")
@@ -38,7 +38,11 @@ class DashboardController(
         model.addAttribute("solvers", registeredModels.availableProviders(session))
         model.addAttribute("runs", runs)
         model.addAttribute("connectedRepos", 0)
-        model.addAttribute("availableBugs", countBugs())
+        // BugCatalog already resolves bugs/ as a sibling of the
+        // BankingAppManager-located banking-app/ -- same path getBug()
+        // uses for per-bug yaml lookups, so the tile and the per-run
+        // audit page can never disagree on whether bugs/ is reachable.
+        model.addAttribute("availableBugs", bugCatalog.count())
         // Surface delete-result toast — set by deleteRuns() before
         // redirecting back here so the table re-renders with a one-
         // shot summary message.
@@ -80,21 +84,4 @@ class DashboardController(
         return "redirect:/"
     }
 
-    /**
-     * Count `BUG-*.yaml` files in the repo's bugs/ directory. Walks up
-     * from the working directory the same way BankingAppManager locates
-     * banking-app/, so the dashboard works whether the WebUI is
-     * launched from the repo root or from a subdirectory.
-     */
-    private fun countBugs(): Int {
-        var dir: File? = File(System.getProperty("user.dir"))
-        repeat(4) {
-            val bugs = dir?.resolve("bugs")
-            if (bugs != null && bugs.isDirectory) {
-                return bugs.listFiles { f -> f.isFile && f.name.endsWith(".yaml") }?.size ?: 0
-            }
-            dir = dir?.parentFile
-        }
-        return 0
-    }
 }
