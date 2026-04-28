@@ -13,4 +13,13 @@ class DocsController {
 
     @GetMapping("/docs/operations-guide")
     fun operationsGuide(): String = "operations-guide"
+
+    /**
+     * Standalone Swagger UI page. Replaces the iframe that used to live
+     * at the bottom of /demo. Lifted out so it gets its own admin-nav
+     * entry and can host both the `demo` and `internal` OpenAPI groups
+     * (the embedded version was hard-pinned to `demo` only).
+     */
+    @GetMapping("/api-docs")
+    fun apiDocs(): String = "api-docs"
 }

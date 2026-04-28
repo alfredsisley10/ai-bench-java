@@ -708,32 +708,10 @@ java -jar $HOME\ai-bench\bench-webui-0.1.0-SNAPSHOT.jar</pre>
         <p class="help-text">The script checks out the break branch, runs failing tests, then checks out the fix branch and verifies tests pass.</p>
     </section>
 
-    <section>
-        <h3>API access</h3>
-        <p class="help-text">
-            Interactive OpenAPI 3 spec for the demo REST API, generated
-            from the live controller annotations by springdoc — always
-            in sync with the running webui (no hand-maintained table to
-            drift). Use the <em>Try it out</em> button on any endpoint
-            to call it directly with the current session.
-        </p>
-        <div style="margin:0.4em 0">
-            <a href="/swagger-ui/index.html?urls.primaryName=demo"
-               target="_blank" rel="noopener" class="btn-sm btn-link"
-               style="display:inline-block; padding:0.3em 0.8em">
-                Open Swagger UI in a new tab
-            </a>
-            <a href="/v3/api-docs/demo" target="_blank" rel="noopener"
-               class="help-text" style="margin-left:0.5em">
-                Raw OpenAPI JSON
-            </a>
-        </div>
-        <iframe src="/swagger-ui/index.html?urls.primaryName=demo"
-                title="Swagger UI for ai-bench Demo API"
-                style="width:100%; height:600px; border:1px solid #d1d5db;
-                       border-radius:4px; background:white"
-                loading="lazy"></iframe>
-    </section>
+    <p class="help-text" style="margin-top:1em">
+        Interactive OpenAPI 3 spec moved to its own admin page —
+        <a href="/api-docs">API docs</a>.
+    </p>
 </main>
 </body>
 </html>
