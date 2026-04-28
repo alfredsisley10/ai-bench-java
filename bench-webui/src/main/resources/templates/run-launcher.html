@@ -130,9 +130,19 @@
                  double-count and inflate prompt tokens). -->
             <label>Context provider:
                 <select name="contextProvider" id="rlContextProvider"
-                        onchange="syncRlAppmapMode()">
+                        onchange="syncRlAppmapMode();">
                     <option value="none"
-                            th:selected="${defaultContextProvider == 'none'}">None — harness default packer</option>
+                            th:selected="${defaultContextProvider == 'none'}">None — problem statement only (no source)</option>
+                    <option value="oracle"
+                            th:selected="${defaultContextProvider == 'oracle'}">Oracle — bug's curated filesTouched (best case)</option>
+                    <option value="bm25"
+                            th:selected="${defaultContextProvider == 'bm25'}">BM25 — TF-IDF retrieval over banking-app sources</option>
+                    <option value="agentic" disabled>
+                        Agentic — LLM picks files via tool-use (preview, falls back to Oracle)
+                    </option>
+                    <option value="bm25+agentic" disabled>
+                        BM25 + Agentic — BM25 seeds an agentic refinement (preview, falls back to Oracle)
+                    </option>
                     <option th:if="${navieAvailable}" value="appmap-navie"
                             th:selected="${defaultContextProvider == 'appmap-navie'}">
                         AppMap Navie — vector-search AppMaps + forward to selected LLM
@@ -142,13 +152,29 @@
                     </option>
                 </select>
             </label>
-            <p class="help-text">
-                Sits between the harness and the LLM and decides which
-                code/trace excerpts get included in the prompt. Does
-                <strong>not</strong> change which LLM is called — that's
-                still the model selected above. Configure Navie on the
-                <a href="/appmap-navie">AppMap setup page</a>.
+            <p class="help-text" id="rlContextHelp">
+                Picks how the harness chooses which source files to ship in the
+                prompt. Does <strong>not</strong> change which LLM is called.
             </p>
+            <ul class="help-text" style="margin:0.25em 0 0.5em 1.2em">
+                <li><strong>None:</strong> problem statement only — measures
+                    how much the model can fix without seeing any code (worst-
+                    case baseline).</li>
+                <li><strong>Oracle:</strong> hand-curated <code>filesTouched</code>
+                    list from the bug's YAML — guarantees the right file is in
+                    the prompt (best-case ceiling).</li>
+                <li><strong>BM25:</strong> TF-IDF retrieval over every
+                    <code>*.java</code> in banking-app, ranked by terms drawn
+                    from the problem statement; top 5 files. No ground-truth
+                    leak — closest to a real-world repo search workflow.</li>
+                <li><strong>Agentic / BM25 + Agentic:</strong> the LLM iteratively
+                    requests files via tool-use. Both are <em>preview-only</em>
+                    today — selecting them falls back to Oracle and writes a
+                    fallback note on the audit page.</li>
+                <li><strong>AppMap Navie:</strong> Navie's AppMap-driven
+                    retrieval, configured on the <a href="/appmap-navie">AppMap
+                    setup page</a>.</li>
+            </ul>
 
             <label>AppMap mode:
                 <select name="appmapMode" id="rlAppmapMode" required>

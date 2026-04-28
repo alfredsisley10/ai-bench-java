@@ -38,20 +38,24 @@
                                           margin:0.4em 0 0.8em 0">
         </div>
 
-        <!-- Summary banner -- recolors green/red on terminal status -->
+        <!-- Summary banner -- server-renders the current state at page-
+             load time so a completed run never shows stuck-at-QUEUED
+             when JS polling fails (network blip, blocked extension,
+             session expiry). JS render() takes over for live updates
+             and overrides these defaults on every poll tick. -->
         <div id="runSummary" class="status-banner"
              style="padding:0.5em 0.7em; border-radius:4px;
                     background:#f3f4f6; border:1px solid #d4d4d4;
                     margin:0.4em 0 0.8em 0">
             <strong>
-                <span id="runStatusBadge">QUEUED</span> ·
-                <code id="runPhase">queued</code>
+                <span id="runStatusBadge" th:text="${run.status.name()}">QUEUED</span> ·
+                <code id="runPhase" th:text="${run.phase}">queued</code>
             </strong>
-            <span class="help-text" id="runMeta" style="margin-left:0.5em"></span>
+            <span class="help-text" id="runMeta" style="margin-left:0.5em"
+                  th:text="'· runtime ' + (${run.durationMs} / 1000) + 's · started ' + ${#temporals.format(run.startedAt, 'HH:mm:ss')}"></span>
             <div style="height:6px; background:#e5e7eb; border-radius:3px;
                         margin-top:0.5em; overflow:hidden">
-                <div id="runProgress" style="height:100%; width:0%;
-                                              background:#0ea5e9; transition:width 250ms"></div>
+                <div id="runProgress" th:style="'height:100%; width:' + ${run.percent} + '%; background:#0ea5e9; transition:width 250ms'"></div>
             </div>
         </div>
 
@@ -77,24 +81,33 @@
             </div>
             <div class="card"><span class="label">Seeds</span>
                 <span class="value">
-                    <span id="runSeedProgress">0 / </span><span th:text="${run.seeds}"></span>
+                    <span id="runSeedProgress" th:text="${run.currentSeed} + ' / '">0 / </span><span th:text="${run.seeds}"></span>
                 </span>
             </div>
         </div>
 
-        <!-- Live stats. Numeric values are filled from the polled
-             /demo/run/{id}/status JSON and update every tick. -->
+        <!-- Stats. Server-rendered initial values from the run's stats
+             snapshot; the JS poller overrides on each tick for in-flight
+             runs. Completed runs render their final values on first
+             paint without depending on JS. -->
         <h3 style="margin-bottom:0.2em">Stats</h3>
         <div class="cards" style="margin-bottom:0.6em">
-            <div class="card"><span class="label">Prompt tokens</span><span class="value" id="statPrompt">0</span></div>
-            <div class="card"><span class="label">Completion tokens</span><span class="value" id="statCompletion">0</span></div>
-            <div class="card"><span class="label">Est. cost (USD)</span><span class="value" id="statCost">$0.000000</span></div>
-            <div class="card"><span class="label">Traces submitted</span><span class="value" id="statTraces">0</span></div>
+            <div class="card"><span class="label">Prompt tokens</span>
+                <span class="value" id="statPrompt" th:text="${#numbers.formatInteger(run.stats.totalPromptTokens, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Completion tokens</span>
+                <span class="value" id="statCompletion" th:text="${#numbers.formatInteger(run.stats.totalCompletionTokens, 1, 'COMMA')}">0</span></div>
+            <div class="card"><span class="label">Est. cost (USD)</span>
+                <span class="value" id="statCost" th:text="${'$' + #numbers.formatDecimal(run.stats.estimatedCostUsd, 1, 6, 'POINT')}">$0.000000</span></div>
+            <div class="card"><span class="label">Traces submitted</span>
+                <span class="value" id="statTraces" th:text="${run.stats.tracesSubmitted} + ' of ' + ${run.stats.tracesRecorded} + ' recorded'">0</span></div>
         </div>
 
-        <!-- Cancel + actions row. Disabled at terminal status. -->
+        <!-- Cancel + actions row. Server-renders disabled when the run
+             is already in a terminal state so a completed run doesn't
+             flicker the cancel affordance before JS resolves. -->
         <div class="row" style="gap:0.5em; margin-bottom:0.6em; align-items:center">
-            <button id="cancelBtn" class="btn-danger btn-sm" disabled>Cancel run</button>
+            <button id="cancelBtn" class="btn-danger btn-sm"
+                    th:disabled="${run.status.name() != 'QUEUED' and run.status.name() != 'RUNNING'}">Cancel run</button>
             <button id="refreshBtn" class="btn-secondary btn-sm">Refresh now</button>
             <span class="help-text" style="margin-left:auto">
                 Polling every <span id="pollInterval">1500</span> ms ·
@@ -115,7 +128,27 @@
                     <th>Audit</th>
                 </tr>
                 </thead>
-                <tbody><!-- filled by JS --></tbody>
+                <tbody>
+                    <!-- Server-rendered initial rows so completed runs
+                         show their seed table without JS. JS render()
+                         replaces this body on every tick for in-flight
+                         runs. -->
+                    <tr th:each="sr : ${run.seedResults}">
+                        <td th:text="${sr.seed}"></td>
+                        <td>
+                            <span th:if="${sr.passed}" style="color:#16a34a">✓ PASS</span>
+                            <span th:unless="${sr.passed}" style="color:#dc2626">✗ FAIL</span>
+                        </td>
+                        <td th:text="${sr.testsPassed} + ' / ' + ${sr.testsTotal}"></td>
+                        <td class="num" th:text="${#numbers.formatInteger(sr.promptTokens, 1, 'COMMA')}"></td>
+                        <td class="num" th:text="${#numbers.formatInteger(sr.completionTokens, 1, 'COMMA')}"></td>
+                        <td th:text="${sr.durationMs} + 'ms'"></td>
+                        <td><a th:href="'/results/' + ${run.id} + '/seed/' + ${sr.seed} + '/audit'">Inspect</a></td>
+                    </tr>
+                    <tr th:if="${run.seedResults.isEmpty()}">
+                        <td colspan="7" class="help-text">No seeds completed yet.</td>
+                    </tr>
+                </tbody>
             </table>
         </details>
 
@@ -133,7 +166,29 @@
                         border-radius:4px; padding:0.5em;
                         font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
                         font-size:0.82em; line-height:1.4em">
-                <div class="help-text" style="color:#9ca3af">Loading…</div>
+                <!-- Server-rendered last 80 entries so a completed
+                     run shows its log buffer without JS. The JS
+                     poller replaces this on each tick for in-flight
+                     runs. Empty-run case shows an explainer. -->
+                <div th:if="${run.logEntries.isEmpty()}" class="help-text" style="color:#9ca3af">
+                    No log entries yet.
+                </div>
+                <div th:each="e : ${run.logEntries}"
+                     th:if="${!run.logEntries.isEmpty()}"
+                     style="white-space: pre-wrap; word-break: break-word">
+                    <span th:text="${#temporals.format(e.ts, 'HH:mm:ss')}" style="color:#9ca3af"></span>
+                    <span th:text="${'[' + e.category.name() + '] '}"
+                          th:style="'color:' +
+                            (${e.category.name()} == 'ERROR'   ? '#ef4444' :
+                             ${e.category.name()} == 'RESULT'  ? '#10b981' :
+                             ${e.category.name()} == 'LLM'     ? '#f472b6' :
+                             ${e.category.name()} == 'CONTEXT' ? '#60a5fa' :
+                             ${e.category.name()} == 'TRACE'   ? '#34d399' :
+                             ${e.category.name()} == 'TEST'    ? '#fbbf24' :
+                             ${e.category.name()} == 'PHASE'   ? '#a78bfa' :
+                             '#9ca3af')"></span>
+                    <span th:text="${e.message}"></span>
+                </div>
             </div>
         </details>
     </div>

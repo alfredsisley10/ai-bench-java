@@ -25,7 +25,8 @@ import java.util.concurrent.Executors
 class BenchmarkRunService(
     private val priceCatalog: ModelPriceCatalog,
     private val realExecutor: RealBenchmarkExecutor,
-    private val bugCatalog: BugCatalog
+    private val bugCatalog: BugCatalog,
+    private val contextProvider: ContextProvider
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -70,6 +71,15 @@ class BenchmarkRunService(
      * stdout are kept here so the audit doesn't depend on the bridge's
      * own per-call records (which are scoped to bridge lifetime).
      */
+    /** Per-context-file detail captured on the SeedAudit so the audit
+     *  page can list every file the provider shipped to the LLM. */
+    data class AuditContextFile(
+        val path: String,
+        val ref: String?,
+        val sizeChars: Int,
+        val score: Double?
+    )
+
     data class SeedAudit(
         val seed: Int,
         val systemPrompt: String? = null,
@@ -81,7 +91,15 @@ class BenchmarkRunService(
         val testStdoutTail: String? = null,
         val testExitCode: Int? = null,
         val outcome: String? = null,
-        val outcomeMessage: String? = null
+        val outcomeMessage: String? = null,
+        // ---- Context-provider audit (which retrieval strategy ran +
+        //      which files it shipped + why). Lets the operator
+        //      reproduce the run by re-running the same provider.
+        val contextProvider: String? = null,
+        val effectiveContextProvider: String? = null,
+        val contextRationale: String? = null,
+        val contextFellBack: Boolean = false,
+        val contextFiles: List<AuditContextFile> = emptyList()
     )
 
     data class RunStats(
@@ -393,6 +411,7 @@ class BenchmarkRunService(
             // into a SeedAudit record at the bottom of the iteration.
             var auditSystemPrompt: String? = null
             var auditUserPrompt: String? = null
+            var auditContext: ContextProvider.Resolved? = null
             val completion: Int = if (bridgeLive) {
                 val realResp = realLlmCall(run, seed, totalPromptTokens)
                 if (realResp != null) {
@@ -402,6 +421,7 @@ class BenchmarkRunService(
                     llmResponseText = realResp.content
                     auditSystemPrompt = realResp.systemPrompt
                     auditUserPrompt = realResp.userPrompt
+                    auditContext = realResp.resolvedContext
                     run.usedRealLlm = true
                     realResp.completionTokens
                 } else {
@@ -445,13 +465,23 @@ class BenchmarkRunService(
                 // Outcome PASSED, FAILED_TESTS, FAILED_PATCH_APPLY, and
                 // FAILED_NO_PATCH all mean the real path actually ran;
                 // only NO_BRANCH and GRADLE_ERROR are fall-through.
-                val ranRealScoring = real.outcome != RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH &&
-                                     real.outcome != RealBenchmarkExecutor.Outcome.FAILED_GRADLE_ERROR
+                // FAILED_NO_BRANCH is the only outcome where the bug
+                // can't be scored at all (the bug branch wasn't seeded
+                // -- a setup issue, not a model failure). Everything
+                // else (PASSED, FAILED_TESTS, FAILED_PATCH_APPLY,
+                // FAILED_NO_PATCH, FAILED_GRADLE_ERROR) is a real
+                // attempt and should be reported as a real fail rather
+                // than masked by a Math.random() synthetic PASS --
+                // earlier logic flipped FAILED_GRADLE_ERROR through a
+                // 55%-chance synthetic PASS, which produced false-
+                // positive PASSED runs in the dashboard despite gradle
+                // exiting non-zero.
+                val ranRealScoring = real.outcome != RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH
                 if (ranRealScoring) run.usedRealScoring = true
-                if (real.outcome == RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH ||
-                    real.outcome == RealBenchmarkExecutor.Outcome.FAILED_GRADLE_ERROR) {
+                if (real.outcome == RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH) {
                     entry(run, Category.INFO,
-                        "Seed $seed: real scoring degraded → ${real.message}. Falling back to synthetic outcome.")
+                        "Seed $seed: real scoring not possible -> ${real.message}. " +
+                        "Falling back to synthetic outcome (bug branch not seeded).")
                     val total = failingTests.size + (3..6).random()
                     val passed = if (Math.random() > 0.45) total
                         else (failingTests.size - (1..failingTests.size).random()).coerceAtLeast(0) + (3..5).random()
@@ -494,7 +524,14 @@ class BenchmarkRunService(
                 testStdoutTail = realScore?.testStdoutTail,
                 testExitCode = realScore?.testExitCode,
                 outcome = realScore?.outcome?.name ?: if (llmResponseText == null) "SYNTHETIC" else null,
-                outcomeMessage = realScore?.message
+                outcomeMessage = realScore?.message,
+                contextProvider = run.contextProvider,
+                effectiveContextProvider = auditContext?.effectiveProvider,
+                contextRationale = auditContext?.rationale,
+                contextFellBack = auditContext?.fellBack ?: false,
+                contextFiles = auditContext?.files?.map {
+                    AuditContextFile(it.path, it.ref, it.content?.length ?: 0, it.score)
+                } ?: emptyList()
             )
             run.seedAudits = (run.seedAudits + audit).toList()
             entry(run, Category.RESULT,
@@ -592,9 +629,22 @@ class BenchmarkRunService(
      * caller's path still generates a valid bridge request, the seed
      * just falls into FAILED_NO_PATCH downstream.
      */
-    private fun buildSolverPrompt(run: BenchmarkRun, seed: Int): Pair<String, String> {
+    /** Bundle returned by buildSolverPrompt so the seed loop can stash
+     *  context-provider details on the SeedAudit (for the audit page). */
+    private data class SolverPrompt(
+        val systemPrompt: String,
+        val userPrompt: String,
+        val resolvedContext: ContextProvider.Resolved
+    )
+
+    private fun buildSolverPrompt(run: BenchmarkRun, seed: Int): SolverPrompt {
         val bug = bugCatalog.getBug(run.issueId)
-        if (bug == null || bug.filesTouched.isEmpty()) {
+        // Resolve the context provider regardless of bug-presence; it
+        // returns a graceful 'no source' Resolved when the bug isn't in
+        // the catalog so the prompt still has SOMETHING to send.
+        val ctx = contextProvider.resolve(run.issueId, run.contextProvider)
+
+        if (bug == null) {
             val sys = "You are a senior Java engineer triaging a banking-app bug. " +
                 "Suggest a focused approach to investigate. Keep it under 6 bullet points; " +
                 "no preamble, no apologies, just actionable steps."
@@ -602,8 +652,9 @@ class BenchmarkRunService(
                 "Provider: ${run.provider}, model: ${run.modelId}, " +
                 "context provider: ${run.contextProvider}, seed: $seed.\n" +
                 "(Bug metadata not loaded -- diff response format won't extract.)"
-            return sys to usr
+            return SolverPrompt(sys, usr, ctx)
         }
+
         val systemPrompt = """
             You are a senior Java engineer fixing a single bug in a banking
             application. Respond with ONLY a unified diff in a fenced ```diff
@@ -619,21 +670,22 @@ class BenchmarkRunService(
             respond with a diff that takes a best-effort approach. A chat
             reply that isn't a diff will be rejected.
         """.trimIndent()
-        // Read each file at the break commit so the LLM sees exactly what
-        // RealBenchmarkExecutor will hand to `git apply`. Truncate is on
-        // the BugCatalog side (256KB cap) so what the operator sees on
-        // the audit page matches what the LLM saw.
-        val sources = bug.filesTouched.joinToString("\n\n") { path ->
-            val snap = bugCatalog.readFileAtRef(bug.breakCommit, path)
-            if (snap.content == null) {
-                "[unable to read $path at ${bug.breakCommit}: ${snap.error ?: "unknown error"}]"
-            } else {
-                buildString {
-                    append("File: ").append(path).append("\n")
-                    append("```java\n")
-                    append(snap.content)
-                    if (!snap.content.endsWith("\n")) append('\n')
-                    append("```")
+        val sources = if (ctx.files.isEmpty()) {
+            "[no source code provided -- context provider '${ctx.effectiveProvider}' " +
+                "shipped the problem statement only]"
+        } else {
+            ctx.files.joinToString("\n\n") { f ->
+                if (f.content == null) {
+                    "[unable to read ${f.path} at ${f.ref ?: "?"}: ${f.error ?: "unknown error"}]"
+                } else {
+                    buildString {
+                        append("File: ").append(f.path)
+                        f.score?.let { append("  (BM25 score: %.3f)".format(it)) }
+                        append("\n```java\n")
+                        append(f.content)
+                        if (!f.content.endsWith("\n")) append('\n')
+                        append("```")
+                    }
                 }
             }
         }
@@ -645,8 +697,7 @@ class BenchmarkRunService(
             Problem statement:
             ${bug.problemStatement}$hintsBlock
 
-            Source code that may need modification (the file(s) listed in the
-            bug's filesTouched, read off the bug-break branch):
+            Source code retrieved by the '${ctx.effectiveProvider}' context provider:
 
             $sources
 
@@ -654,7 +705,7 @@ class BenchmarkRunService(
             changes. The diff will be piped directly into `git apply` against
             a worktree at the bug-break commit.
         """.trimIndent()
-        return systemPrompt to userPrompt
+        return SolverPrompt(systemPrompt, userPrompt, ctx)
     }
 
     /**
@@ -679,7 +730,9 @@ class BenchmarkRunService(
         /** System message we sent — surfaced on the audit page. */
         val systemPrompt: String,
         /** User message we sent — surfaced on the audit page. */
-        val userPrompt: String
+        val userPrompt: String,
+        /** Context-provider resolution snapshot for this seed. */
+        val resolvedContext: ContextProvider.Resolved? = null
     )
 
     /**
@@ -698,7 +751,23 @@ class BenchmarkRunService(
      * so the run still produces a token-count without crashing.
      */
     private fun realLlmCall(run: BenchmarkRun, seed: Int, contextTokens: Int): LlmCallResult? {
-        val (systemPrompt, userPrompt) = buildSolverPrompt(run, seed)
+        val solver = buildSolverPrompt(run, seed)
+        val systemPrompt = solver.systemPrompt
+        val userPrompt = solver.userPrompt
+        // Surface what the context provider produced in the run's log so
+        // the operator can confirm "I picked BM25, here are the 5 files
+        // it ranked." Files-list goes to the audit page on the SeedAudit
+        // record below.
+        entry(run, Category.CONTEXT,
+            "Seed $seed: context=${solver.resolvedContext.effectiveProvider} -- " +
+            solver.resolvedContext.rationale +
+            (if (solver.resolvedContext.fellBack) " [fallback]" else ""))
+        for (f in solver.resolvedContext.files) {
+            val sc = f.score?.let { " score=%.3f".format(it) } ?: ""
+            entry(run, Category.CONTEXT,
+                "Seed $seed:   file ${f.path}@${f.ref ?: "?"}$sc " +
+                "(${f.content?.length ?: 0} chars)")
+        }
         // Send the vendor-side identifier (e.g. "gpt-4.1"), NOT the
         // registry-prefixed id. Copilot's bridge doesn't recognise the
         // "copilot-" prefix and silently falls back to whatever the
@@ -769,7 +838,8 @@ class BenchmarkRunService(
                 .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
                 .replace("\\\"", "\"").replace("\\\\", "\\")
             LlmCallResult(promptTokens, completionTokens, ms, content.length, content,
-                systemPrompt = systemPrompt, userPrompt = userPrompt)
+                systemPrompt = systemPrompt, userPrompt = userPrompt,
+                resolvedContext = solver.resolvedContext)
         } catch (e: Exception) {
             // Unwrap CompletableFuture's wrapping if present.
             val root = if (e is java.util.concurrent.ExecutionException) e.cause ?: e else e

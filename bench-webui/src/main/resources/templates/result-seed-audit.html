@@ -104,6 +104,50 @@
         </div>
     </details>
 
+    <!-- ============== Context provider — what + why =================== -->
+    <details open style="margin-bottom:0.6em" th:if="${audit != null and audit.contextProvider != null}">
+        <summary><h3 style="display:inline; margin:0">Context provider</h3>
+            <span class="help-text">— how the source files in the prompt were chosen</span>
+        </summary>
+        <table style="width:auto">
+            <tr><th>Picked on launcher</th>
+                <td><code th:text="${audit.contextProvider}"></code></td></tr>
+            <tr th:if="${audit.effectiveContextProvider != null}">
+                <th>Provider that ran</th>
+                <td>
+                    <code th:text="${audit.effectiveContextProvider}"></code>
+                    <span th:if="${audit.contextFellBack}" class="help-text"
+                          style="margin-left:0.4em; color:#92400e">(fallback)</span>
+                </td>
+            </tr>
+            <tr th:if="${audit.contextRationale != null}">
+                <th>Why these files</th>
+                <td th:text="${audit.contextRationale}"></td>
+            </tr>
+        </table>
+        <h4 th:if="${!audit.contextFiles.isEmpty()}" style="margin-top:0.6em">Files shipped to the LLM</h4>
+        <table th:if="${!audit.contextFiles.isEmpty()}">
+            <thead><tr>
+                <th>Path</th><th>Ref</th>
+                <th class="num">Size (chars)</th>
+                <th class="num">Score</th>
+            </tr></thead>
+            <tbody>
+                <tr th:each="cf : ${audit.contextFiles}">
+                    <td><code th:text="${cf.path}"></code></td>
+                    <td><code th:text="${cf.ref}"></code></td>
+                    <td class="num" th:text="${cf.sizeChars}"></td>
+                    <td class="num" th:text="${cf.score == null ? '—' : #numbers.formatDecimal(cf.score, 1, 3, 'POINT')}"></td>
+                </tr>
+            </tbody>
+        </table>
+        <p th:if="${audit.contextFiles.isEmpty()}" class="help-text">
+            No source files shipped — the LLM saw only the problem statement.
+            (Provider <code th:text="${audit.effectiveContextProvider ?: audit.contextProvider}"></code>
+            is a "no source" provider, OR fell back from a preview provider.)
+        </p>
+    </details>
+
     <!-- ============== (b) Buggy source code shown to solver ============= -->
     <details style="margin-bottom:0.6em" th:if="${!buggyFiles.isEmpty()}">
         <summary><h3 style="display:inline; margin:0">Buggy source code (break branch)</h3>
