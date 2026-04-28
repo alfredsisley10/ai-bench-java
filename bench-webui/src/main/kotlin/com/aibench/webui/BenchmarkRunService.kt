@@ -286,6 +286,18 @@ class BenchmarkRunService(
         // Phase 5: per-seed solve + score loop
         var totalCompletion = 0
         val seedResults = mutableListOf<SeedResult>()
+        // Detect whether the Copilot bridge's OpenAI shim is actually
+        // reachable. If yes, this run becomes "real LLM, synthetic
+        // scoring" -- the per-seed call goes to 127.0.0.1:11434 and
+        // captures real prompt/completion token counts. If no, fall
+        // back to the original simulator's randomized counts so demos
+        // without a bridge installed still produce a complete run shape.
+        val bridgeLive = isCopilotBridgeReachable()
+        if (bridgeLive) {
+            entry(run, Category.INFO, "Copilot bridge reachable on 127.0.0.1:11434 — making real LLM calls (token counts authoritative).")
+        } else {
+            entry(run, Category.INFO, "Copilot bridge NOT reachable on 127.0.0.1:11434 — using simulated token counts. Start the VSCode Copilot bridge to capture real LLM activity.")
+        }
         for (seed in 1..run.seeds) {
             run.currentSeed = seed
 
@@ -295,14 +307,26 @@ class BenchmarkRunService(
             } else {
                 entry(run, Category.LLM, "Seed $seed → request: ${run.provider} model=${run.modelId}, prompt=${totalPromptTokens} tokens")
             }
-            sleep(1400)
-            // Navie tends to return shorter, surgical patches because
-            // it has already trimmed irrelevant context client-side.
-            val completion = if (isNavie) (700..2200).random() else (1200..4500).random()
-            if (isNavie) {
-                entry(run, Category.LLM, "Seed $seed ← Navie response: $completion completion tokens, patch ~${completion * 4} chars (surgical)")
+            val completion: Int = if (bridgeLive) {
+                val realResp = realLlmCall(run, seed, totalPromptTokens)
+                if (realResp != null) {
+                    entry(run, Category.LLM,
+                        "Seed $seed ← real response: ${realResp.completionTokens} completion tokens " +
+                        "in ${realResp.latencyMillis}ms, patch ~${realResp.contentLength} chars")
+                    realResp.completionTokens
+                } else {
+                    entry(run, Category.LLM, "Seed $seed ← bridge call FAILED, falling back to simulated count for this seed")
+                    if (isNavie) (700..2200).random() else (1200..4500).random()
+                }
             } else {
-                entry(run, Category.LLM, "Seed $seed ← response: $completion completion tokens, patch ~${completion * 4} chars")
+                sleep(1400)
+                val sim = if (isNavie) (700..2200).random() else (1200..4500).random()
+                if (isNavie) {
+                    entry(run, Category.LLM, "Seed $seed ← simulated response: $sim completion tokens, patch ~${sim * 4} chars (surgical)")
+                } else {
+                    entry(run, Category.LLM, "Seed $seed ← simulated response: $sim completion tokens, patch ~${sim * 4} chars")
+                }
+                sim
             }
             totalCompletion += completion
 
@@ -393,5 +417,99 @@ class BenchmarkRunService(
 
     private fun sleep(ms: Long) {
         try { Thread.sleep(ms) } catch (_: InterruptedException) { /* canceled */ }
+    }
+
+    /**
+     * Reachability check for the Copilot bridge's OpenAI shim. One TCP
+     * connect with 500ms timeout; called once per run, not per seed.
+     */
+    private fun isCopilotBridgeReachable(): Boolean = runCatching {
+        java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress("127.0.0.1", 11434), 500)
+            true
+        }
+    }.getOrDefault(false)
+
+    /** Real LLM call response details captured from the OpenAI-shape JSON. */
+    private data class LlmCallResult(
+        val promptTokens: Int,
+        val completionTokens: Int,
+        val latencyMillis: Long,
+        val contentLength: Int
+    )
+
+    /**
+     * One real chat-completion request to the Copilot bridge, scoped
+     * with the run id so the bridge's activity panel groups requests
+     * under this BenchmarkRun. Prompt is intentionally minimal -- we're
+     * exercising the wiring + capturing real token counts, not (yet)
+     * trying to actually solve the bug, since that needs the full source
+     * tree + patch-apply + test-runner harness which is a larger task.
+     */
+    private fun realLlmCall(run: BenchmarkRun, seed: Int, contextTokens: Int): LlmCallResult? {
+        val systemPrompt =
+            "You are a senior Java engineer triaging a banking-app bug. " +
+            "Suggest a focused approach to investigate. Keep it under 6 bullet points; " +
+            "no preamble, no apologies, just actionable steps."
+        val userPrompt = "Issue: ${run.issueId} — ${run.issueTitle}.\n" +
+            "Provider: ${run.provider}, model: ${run.modelId}, " +
+            "context provider: ${run.contextProvider}, seed: $seed."
+        val body = """{"model":${jsonStr(run.modelId)},"temperature":0.2,"messages":[""" +
+            """{"role":"system","content":${jsonStr(systemPrompt)}},""" +
+            """{"role":"user","content":${jsonStr(userPrompt)}}""" +
+            """]}"""
+        val start = System.currentTimeMillis()
+        return try {
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create("http://127.0.0.1:11434/v1/chat/completions"))
+                .timeout(java.time.Duration.ofSeconds(60))
+                .header("Content-Type", "application/json")
+                // Scope this request to the BenchmarkRun so the bridge's
+                // /llm activity panel can filter by runId. The harness
+                // module's CopilotSocketClient propagates this same id;
+                // we mirror it on the HTTP shim path here.
+                .header("X-Run-Id", run.id)
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                .build()
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(3)).build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            val ms = System.currentTimeMillis() - start
+            if (resp.statusCode() !in 200..299) {
+                entry(run, Category.ERROR,
+                    "Bridge returned HTTP ${resp.statusCode()}: ${resp.body().take(200)}")
+                return null
+            }
+            val payload = resp.body()
+            val promptTokens = Regex("\"prompt_tokens\"\\s*:\\s*(\\d+)")
+                .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: contextTokens
+            val completionTokens = Regex("\"completion_tokens\"\\s*:\\s*(\\d+)")
+                .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val content = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+                .find(payload)?.groupValues?.get(1) ?: ""
+            LlmCallResult(promptTokens, completionTokens, ms, content.length)
+        } catch (e: Exception) {
+            entry(run, Category.ERROR,
+                "Bridge call threw ${e.javaClass.simpleName}: ${e.message ?: ""}")
+            null
+        }
+    }
+
+    /** Encode a string as a JSON string literal. */
+    private fun jsonStr(s: String): String {
+        val sb = StringBuilder().append('"')
+        for (c in s) {
+            when (c) {
+                '\\' -> sb.append("\\\\")
+                '"'  -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                '' -> sb.append("\\f")
+                else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
+            }
+        }
+        return sb.append('"').toString()
     }
 }
