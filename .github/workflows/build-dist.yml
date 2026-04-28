@@ -150,6 +150,18 @@ jobs:
           unzip -l dist/bench-webui-*.jar | grep copilot-bridge.vsix
 
       - name: Commit + push if dist/ actually changed
+        # Pass the triggering commit message through an env var rather
+        # than YAML-interpolating it straight into the shell command.
+        # Inline ${{ github.event.head_commit.message }} fails when the
+        # source message contains embedded double quotes -- GitHub
+        # substitutes raw text, breaking shell quoting and turning every
+        # word after the broken quote into a positional pathspec
+        # ("error: pathspec 'not' did not match any file(s)…"). The env
+        # form is also the documented way to neutralize a hostile
+        # commit-message-as-shell-injection vector.
+        env:
+          TRIGGER_MSG: ${{ github.event.head_commit.message }}
+          TRIGGER_SHA: ${{ github.sha }}
         run: |
           git config user.name "ai-bench-build-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -158,9 +170,7 @@ jobs:
             echo "No dist/ changes — nothing to commit."
             exit 0
           fi
-          # Both shortlog of stat (for human readers) and a marker line
-          # (for grep-based audit) go in the commit body.
           git commit -m "ci: rebuild dist/ artifacts [skip ci]" \
-                     -m "Source SHA: ${{ github.sha }}" \
-                     -m "Triggering commit: ${{ github.event.head_commit.message }}"
+                     -m "Source SHA: $TRIGGER_SHA" \
+                     -m "Triggering commit: $TRIGGER_MSG"
           git push origin HEAD:main
