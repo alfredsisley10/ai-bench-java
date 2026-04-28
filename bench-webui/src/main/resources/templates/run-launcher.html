@@ -43,7 +43,8 @@
             <legend>Target</legend>
             <label>Target type:
                 <select name="targetType" id="targetType" required onchange="toggleTarget()">
-                    <option th:each="t : ${targetTypes}" th:value="${t.value}" th:text="${t.label}"></option>
+                    <option th:each="t : ${targetTypes}" th:value="${t.value}" th:text="${t.label}"
+                            th:selected="${t.value == defaultTargetType}"></option>
                 </select>
             </label>
             <p class="help-text">
@@ -55,7 +56,8 @@
                 <label>Bug ID:
                     <select name="bugId" id="bugId">
                         <option value="">-- select a bug --</option>
-                        <option th:each="b : ${availableBugs}" th:value="${b}" th:text="${b}"></option>
+                        <option th:each="b : ${availableBugs}" th:value="${b}" th:text="${b}"
+                                th:selected="${b == defaultBugId}"></option>
                     </select>
                 </label>
             </div>
@@ -96,7 +98,8 @@
                 <select name="provider" id="provider" required onchange="filterModels()"
                         th:disabled="${noProvidersVerified}">
                     <option value="">-- select provider --</option>
-                    <option th:each="p : ${providers}" th:value="${p}" th:text="${p}"></option>
+                    <option th:each="p : ${providers}" th:value="${p}" th:text="${p}"
+                            th:selected="${p == defaultProvider}"></option>
                 </select>
             </label>
             <p class="help-text">
@@ -109,7 +112,9 @@
                 <select name="modelId" id="modelId" required
                         th:disabled="${noProvidersVerified}">
                     <option value="">-- select provider first --</option>
-                    <option th:each="m : ${models}" th:value="${m.id}" th:text="${m.name}" th:attr="data-provider=${m.provider}"></option>
+                    <option th:each="m : ${models}" th:value="${m.id}" th:text="${m.name}"
+                            th:attr="data-provider=${m.provider}"
+                            th:selected="${m.id == defaultModelId}"></option>
                 </select>
             </label>
             <p class="help-text">Specific model to use. Configure models in <a href="/llm">LLM settings</a>.</p>
@@ -126,8 +131,10 @@
             <label>Context provider:
                 <select name="contextProvider" id="rlContextProvider"
                         onchange="syncRlAppmapMode()">
-                    <option value="none" selected>None — harness default packer</option>
-                    <option th:if="${navieAvailable}" value="appmap-navie">
+                    <option value="none"
+                            th:selected="${defaultContextProvider == 'none'}">None — harness default packer</option>
+                    <option th:if="${navieAvailable}" value="appmap-navie"
+                            th:selected="${defaultContextProvider == 'appmap-navie'}">
                         AppMap Navie — vector-search AppMaps + forward to selected LLM
                     </option>
                     <option th:unless="${navieAvailable}" value="appmap-navie" disabled>
@@ -145,9 +152,12 @@
 
             <label>AppMap mode:
                 <select name="appmapMode" id="rlAppmapMode" required>
-                    <option value="OFF">OFF — No runtime traces collected</option>
-                    <option value="ON_RECOMMENDED" selected>ON_RECOMMENDED — Traces for test cases most relevant to the bug</option>
-                    <option value="ON_ALL">ON_ALL — Full trace collection for all test executions</option>
+                    <option value="OFF"
+                            th:selected="${defaultAppmapMode == 'OFF'}">OFF — No runtime traces collected</option>
+                    <option value="ON_RECOMMENDED"
+                            th:selected="${defaultAppmapMode == 'ON_RECOMMENDED'}">ON_RECOMMENDED — Traces for test cases most relevant to the bug</option>
+                    <option value="ON_ALL"
+                            th:selected="${defaultAppmapMode == 'ON_ALL'}">ON_ALL — Full trace collection for all test executions</option>
                 </select>
                 <span class="help-text" id="rlAppmapModeHint" style="margin-left:0.5em"></span>
             </label>
@@ -186,7 +196,7 @@
             </p>
 
             <label>Seeds:
-                <input name="seeds" type="number" value="3" min="1" max="10" required>
+                <input name="seeds" type="number" th:value="${defaultSeeds}" min="1" max="10" required>
             </label>
             <p class="help-text">
                 Number of independent solver attempts per bug. Multiple seeds measure consistency (pass@k).
@@ -205,15 +215,32 @@
             document.getElementById('enterpriseFields').style.display = type === 'enterprise' ? 'block' : 'none';
         }
 
-        function filterModels() {
+        function filterModels(preserveSelection) {
             var provider = document.getElementById('provider').value;
             var modelSelect = document.getElementById('modelId');
             var options = modelSelect.querySelectorAll('option[data-provider]');
-            modelSelect.value = '';
+            var prev = modelSelect.value;
+            if (!preserveSelection) modelSelect.value = '';
             options.forEach(function(opt) {
                 opt.style.display = (!provider || opt.getAttribute('data-provider') === provider) ? '' : 'none';
             });
+            // When called from page-load (preserveSelection=true), keep
+            // the server-rendered default model so the operator doesn't
+            // see "select provider first" after a default is in place --
+            // but only if its provider still matches what's currently
+            // picked (otherwise the option is hidden anyway).
+            if (preserveSelection && prev) {
+                var keepOpt = modelSelect.querySelector('option[value="' + prev + '"]');
+                if (keepOpt && keepOpt.getAttribute('data-provider') === provider) {
+                    modelSelect.value = prev;
+                }
+            }
         }
+        // Apply the default provider's filter once on page load so the
+        // model dropdown only shows the active provider's options. Without
+        // this, all providers' models are visible until the operator
+        // touches the provider select.
+        filterModels(true);
 
         document.getElementById('launchForm').addEventListener('submit', function(e) {
             var type = document.getElementById('targetType').value;

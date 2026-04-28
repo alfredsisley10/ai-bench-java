@@ -78,6 +78,33 @@ class RunLauncherController(
         }
         model.addAttribute("models", modelRows)
 
+        // Form defaults — pre-select the operator's most-common picks so
+        // launching a benchmark needs only a couple of clicks. Each
+        // default is *conditional*: it only takes effect when the value
+        // actually exists in the rendered dropdown for the current
+        // session, so a Copilot-less environment doesn't end up with
+        // "copilot" pre-selected and then "no model available" below.
+        val preferredProvider = "copilot"
+        val preferredModelId = "copilot-gpt-4-1"
+        val defaultProvider =
+            if (verifiedProviders.contains(preferredProvider)) preferredProvider else ""
+        val defaultModelId =
+            if (modelRows.any { it["id"] == preferredModelId && it["provider"] == defaultProvider })
+                preferredModelId else ""
+        val defaultContextProvider =
+            if (allModels.any { it.provider == "appmap-navie" }) "appmap-navie" else "none"
+        model.addAttribute("defaultTargetType", "omnibank")
+        model.addAttribute("defaultBugId", "BUG-0001")
+        model.addAttribute("defaultProvider", defaultProvider)
+        model.addAttribute("defaultModelId", defaultModelId)
+        model.addAttribute("defaultContextProvider", defaultContextProvider)
+        // appmapMode=OFF + seeds=1 are the right defaults for the
+        // "I just want to validate the launcher works" case. ON_*
+        // modes pay AppMap's recording cost which most operators only
+        // want once they've confirmed the basic chain works.
+        model.addAttribute("defaultAppmapMode", "OFF")
+        model.addAttribute("defaultSeeds", 1)
+
         return "run-launcher"
     }
 
@@ -101,11 +128,25 @@ class RunLauncherController(
         // restart and the form submitted with modelId="" -- they had
         // no idea which field was missing. Now each missing field
         // bounces back to the form with a specific named error.
+        // appmapMode is implicit OFF whenever the operator picked
+        // AppMap Navie as the context provider — Navie does its own
+        // map selection and the harness packer must stay out of the
+        // way (matching /demo's auto-OFF behavior). The form's JS
+        // disables the AppMap-mode select in that case, which
+        // *removes the field from the POST body* (HTML quirk: disabled
+        // controls don't submit), so we treat the missing value as OFF
+        // here. Without this coercion the launch failed with
+        // "Missing required field(s): appmapMode" right after the
+        // Navie + OFF combo got picked.
+        val effectiveAppmapMode =
+            if (contextProvider == "appmap-navie" && appmapMode.isNullOrBlank()) "OFF"
+            else appmapMode
+
         val missing = buildList<String> {
             if (targetType.isNullOrBlank())  add("targetType")
             if (provider.isNullOrBlank())    add("provider")
             if (modelId.isNullOrBlank())     add("modelId")
-            if (appmapMode.isNullOrBlank())  add("appmapMode")
+            if (effectiveAppmapMode.isNullOrBlank()) add("appmapMode")
         }
         if (missing.isNotEmpty()) {
             val encoded = java.net.URLEncoder.encode(missing.joinToString(","), "UTF-8")
@@ -115,7 +156,7 @@ class RunLauncherController(
         val targetTypeNN = targetType!!
         val providerNN = provider!!
         val modelIdNN = modelId!!
-        val appmapModeNN = appmapMode!!
+        val appmapModeNN = effectiveAppmapMode!!
         // Defense-in-depth: even though the dropdown only surfaces
         // verified providers, the form could be POSTed by hand with
         // anything. Re-check the chosen provider/model is still in the

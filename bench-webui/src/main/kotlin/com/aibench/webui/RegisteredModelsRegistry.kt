@@ -23,7 +23,35 @@ import org.springframework.stereotype.Component
  * what's available.
  */
 @Component
-class RegisteredModelsRegistry {
+class RegisteredModelsRegistry(
+    private val priceCatalog: ModelPriceCatalog
+) {
+
+    /**
+     * Enrich a freshly-built ModelInfo with prices from the public
+     * model-reference catalog when the registry id matches. Auto-
+     * discovered Copilot entries (copilot-gpt-4-1, copilot-claude-...,
+     * etc.) come back from the bridge with no pricing attached, which
+     * left the Registered models table showing $0.000000 for every row
+     * even though the catalog below it had real per-1K rates. Joining
+     * the two by id surfaces the rates inline.
+     *
+     * <p>The catalog's Copilot entries are deliberately set to the
+     * underlying vendor's direct per-token rate (OpenAI / Anthropic /
+     * Google) rather than $0 -- Copilot is seat-priced so the actual
+     * billed amount is $0, but operators want a chargeback estimate
+     * for cost-comparison purposes ("what would this run cost if
+     * billed direct?"). Per-row notes in the catalog explain this.
+     */
+    private fun LlmConfigController.ModelInfo.withCatalogPrice(): LlmConfigController.ModelInfo {
+        if (costPer1kPrompt > 0.0 || costPer1kCompletion > 0.0) return this
+        val price = priceCatalog.catalog.firstOrNull { it.id == this.id }
+            ?: return this
+        return copy(
+            costPer1kPrompt = price.costPer1kPrompt,
+            costPer1kCompletion = price.costPer1kCompletion ?: 0.0
+        )
+    }
 
     /** Path under {@code ~/.ai-bench/} the harness writes its config to. */
     private val corpConfigPath: String =
@@ -169,7 +197,12 @@ class RegisteredModelsRegistry {
         for (m in sessionModels) {
             if (seenIds.add(m.id)) merged += m
         }
-        return merged
+        // Last pass: fill in per-1K pricing from the public catalog for
+        // any entry that's still at $0 / $0 (Copilot auto-discovery
+        // never carries pricing). withCatalogPrice() is a no-op when
+        // the entry already has prices set (manual registration via
+        // the Add Model form).
+        return merged.map { it.withCatalogPrice() }
     }
 
     /** Convenience: distinct provider names from the merged list. */

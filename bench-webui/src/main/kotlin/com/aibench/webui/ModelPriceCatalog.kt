@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component
 class ModelPriceCatalog {
 
     /** ISO-8601 date the prices below were last cross-referenced. */
-    val lastUpdated: String = "2026-01-15"
+    val lastUpdated: String = "2026-04-28"
 
     /**
      * Where to verify or update the per-1K-token rates. Listed by
@@ -175,6 +175,46 @@ class ModelPriceCatalog {
         ModelPrice("copilot-gemini-2-0-flash", "Gemini 2.0 Flash (via Copilot)", "copilot", "gemini-2.0-flash",
                    0.00010, 0.00040, "chat",
                    notes = "Copilot seat-priced; rates mirror Google direct"),
+        // --- Newer Copilot routes added since the 2026-01 snapshot ----
+        // Copilot's catalog now surfaces Claude Sonnet 4.5/4.6,
+        // GPT-5.x, Gemini 3.x preview, and a couple of router aliases
+        // (copilot-default, copilot-auto, copilot-fast). Per-1K rates
+        // below mirror the underlying vendor's direct API price (or a
+        // best-effort estimate when only preview pricing is published).
+        // Estimates are flagged in `notes` so operators can see at a
+        // glance which numbers are authoritative vs. provisional.
+        ModelPrice("copilot-claude-sonnet-4-5", "Claude Sonnet 4.5 (via Copilot)", "copilot", "claude-sonnet-4.5",
+                   0.003, 0.015, "chat",
+                   notes = "Copilot seat-priced; rates mirror Anthropic Claude Sonnet direct (0.003/0.015 per 1K is the published 4.x Sonnet rate)"),
+        ModelPrice("copilot-claude-sonnet-4-6", "Claude Sonnet 4.6 (via Copilot)", "copilot", "claude-sonnet-4.6",
+                   0.003, 0.015, "chat",
+                   notes = "Copilot seat-priced; rates mirror Anthropic Claude Sonnet direct"),
+        ModelPrice("copilot-gpt-5-2", "GPT-5.2 (via Copilot)", "copilot", "gpt-5.2",
+                   0.005, 0.015, "chat",
+                   notes = "Copilot seat-priced; estimated rate based on OpenAI GPT-5 family — verify against openai.com/api/pricing when invoiced"),
+        ModelPrice("copilot-gpt-5-4", "GPT-5.4 (via Copilot)", "copilot", "gpt-5.4",
+                   0.005, 0.015, "chat",
+                   notes = "Copilot seat-priced; estimated rate based on OpenAI GPT-5 family"),
+        ModelPrice("copilot-gemini-3-1-pro-preview", "Gemini 3.1 Pro Preview (via Copilot)", "copilot", "gemini-3.1-pro-preview",
+                   0.00125, 0.005, "chat",
+                   notes = "Copilot seat-priced; preview — estimated rate matches Gemini 1.5 Pro direct (≤128K ctx)"),
+        ModelPrice("copilot-gemini-3-flash-preview", "Gemini 3 Flash Preview (via Copilot)", "copilot", "gemini-3-flash-preview",
+                   0.0001, 0.0004, "chat",
+                   notes = "Copilot seat-priced; preview — estimated rate matches Gemini 2.0 Flash direct"),
+        // Router aliases — Copilot picks an underlying model at request
+        // time. Listing them at gpt-4o's rate gives the cost estimator
+        // a sane default when the operator can't see what model Copilot
+        // resolved to; the run record's modelId is the alias, not the
+        // resolved model, so a single rate is the best we can offer.
+        ModelPrice("copilot-default", "Copilot (default model)", "copilot", "copilot",
+                   0.0025, 0.010, "chat",
+                   notes = "Copilot seat-priced; default route currently resolves to GPT-4o — rate shown is the GPT-4o direct rate"),
+        ModelPrice("copilot-auto", "Copilot Auto Router (via Copilot)", "copilot", "auto",
+                   0.0025, 0.010, "chat",
+                   notes = "Copilot seat-priced; router picks per request — rate estimated at the GPT-4o direct rate (most-common backend)"),
+        ModelPrice("copilot-copilot-fast", "Copilot Fast (via Copilot)", "copilot", "copilot-fast",
+                   0.00015, 0.0006, "chat",
+                   notes = "Copilot seat-priced; latency-optimised route — rate estimated at GPT-4o-mini's direct rate"),
 
         // --- AppMap Navie (rides on top of Copilot via the bridge) ----
         // No incremental per-token charge above what Copilot already
