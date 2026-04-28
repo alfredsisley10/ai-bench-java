@@ -122,10 +122,14 @@
                     <td th:text="${r.modelId}"></td>
                     <td th:text="${r.appmapMode}"></td>
                     <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
-                    <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
-                    <td class="num" th:text="${r.stats.totalPromptTokens}"></td>
-                    <td class="num" th:text="${r.stats.totalCompletionTokens}"></td>
-                    <td class="num" th:text="${r.durationMs / 1000}"></td>
+                    <!-- Display values use comma thousands separators for
+                         readability; the data-* attrs above stay raw so
+                         the sortable-table helper compares them as
+                         numbers, not formatted strings. -->
+                    <td th:text="${#numbers.formatInteger(r.seedResults.?[passed].size(), 1, 'COMMA')} + ' / ' + ${#numbers.formatInteger(r.seeds, 1, 'COMMA')}"></td>
+                    <td class="num" th:text="${#numbers.formatInteger(r.stats.totalPromptTokens, 1, 'COMMA')}"></td>
+                    <td class="num" th:text="${#numbers.formatInteger(r.stats.totalCompletionTokens, 1, 'COMMA')}"></td>
+                    <td class="num" th:text="${#numbers.formatInteger(r.durationMs / 1000, 1, 'COMMA')}"></td>
                 </tr>
                 </tbody>
             </table>
