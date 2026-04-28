@@ -12,7 +12,8 @@ import java.io.File
 @Controller
 class DemoController(
     private val bankingApp: BankingAppManager,
-    private val benchmarkRuns: BenchmarkRunService
+    private val benchmarkRuns: BenchmarkRunService,
+    private val connectionSettings: ConnectionSettings
 ) {
 
     data class VerificationStep(
@@ -559,6 +560,229 @@ class DemoController(
     @org.springframework.web.bind.annotation.ResponseBody
     fun appLog(@RequestParam(defaultValue = "80") lines: Int): String {
         return bankingApp.logTail(lines)
+    }
+
+    /**
+     * Self-healing diagnostic endpoint. Tails the banking-app startup
+     * log and runs the regex pattern catalogue (BankingAppDiagnostics)
+     * to surface known failure signatures. Each finding may carry a
+     * fixActionId the operator can click to apply an auto-recovery.
+     * Pure regex; the LLM-assisted analysis lives at /demo/app/diagnose-with-llm
+     * so that endpoint can be skipped when no LLM bridge is reachable.
+     */
+    @GetMapping("/demo/app/diagnostics")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun appDiagnostics(@RequestParam(defaultValue = "500") lines: Int): Map<String, Any> {
+        val log = bankingApp.logTail(lines)
+        val findings = BankingAppDiagnostics.analyze(log)
+        return mapOf(
+            "logLines" to lines,
+            "logBytes" to log.length,
+            "findings" to findings.map {
+                mapOf(
+                    "id" to it.id,
+                    "title" to it.title,
+                    "severity" to it.severity.name,
+                    "message" to it.message,
+                    "fixActionId" to it.fixActionId,
+                    "fixActionLabel" to it.fixActionLabel
+                )
+            },
+            "llmAvailable" to copilotBridgeReachable()
+        )
+    }
+
+    /**
+     * Optional LLM-assisted root cause. Only fires when the Copilot
+     * bridge's OpenAI shim is reachable on 127.0.0.1:11434. Sends the
+     * regex findings + the log tail as context, asks the LLM for any
+     * additional analysis the regex catalogue missed. Returns the LLM's
+     * raw text plus latency/token info.
+     */
+    @GetMapping("/demo/app/diagnose-with-llm")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun appDiagnoseWithLlm(
+        @RequestParam(defaultValue = "500") lines: Int
+    ): Map<String, Any> {
+        if (!copilotBridgeReachable()) {
+            return mapOf(
+                "ok" to false,
+                "reason" to "Copilot bridge not reachable at 127.0.0.1:11434. " +
+                    "Configure an LLM via the Copilot Bridge VSCode extension on /llm first."
+            )
+        }
+        val log = bankingApp.logTail(lines)
+        val findings = BankingAppDiagnostics.analyze(log)
+        val findingsBlock = if (findings.isEmpty()) "(none)"
+            else findings.joinToString("\n") { "- ${it.title}: ${it.message}" }
+
+        val systemPrompt = """
+            You are a senior Gradle / Spring Boot engineer triaging a
+            failed banking-app build on an enterprise developer box.
+            Bench-webui already ran a pattern-based diagnostic; your
+            job is to spot anything the regex catalogue missed -- a
+            specific stack trace, an unusual pattern, or a corp-network
+            symptom that needs human judgment.
+
+            Respond in 3-6 short bullet points. Be concrete: cite line
+            numbers from the log when possible, name the specific
+            command or config knob to fix, do NOT repeat what the
+            regex findings already cover. If the log doesn't reveal
+            anything beyond the regex findings, say so in one line.
+        """.trimIndent()
+
+        val userPrompt = """
+            Regex findings (already shown to the operator):
+            $findingsBlock
+
+            Last $lines lines of banking-app/tmp/bootRun.log:
+            ```
+            $log
+            ```
+        """.trimIndent()
+
+        val start = System.currentTimeMillis()
+        return try {
+            val body = """{"model":"copilot","temperature":0.1,"messages":[""" +
+                """{"role":"system","content":${jsonString(systemPrompt)}},""" +
+                """{"role":"user","content":${jsonString(userPrompt)}}""" +
+                """]}"""
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create("http://127.0.0.1:11434/v1/chat/completions"))
+                .timeout(java.time.Duration.ofSeconds(45))
+                .header("Content-Type", "application/json")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                .build()
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(3)).build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            val ms = System.currentTimeMillis() - start
+            if (resp.statusCode() !in 200..299) {
+                return mapOf(
+                    "ok" to false,
+                    "reason" to "LLM bridge returned HTTP ${resp.statusCode()}. " +
+                        "Body (first 200 chars): ${resp.body().take(200)}"
+                )
+            }
+            // Extract content with a regex rather than pulling kotlinx.serialization
+            // for one field; the OpenAI shim's response shape is stable enough.
+            val content = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+                .find(resp.body())?.groupValues?.get(1)
+                ?.replace("\\n", "\n")?.replace("\\\"", "\"")?.replace("\\\\", "\\")
+                ?: "(empty response)"
+            mapOf(
+                "ok" to true,
+                "analysis" to content,
+                "durationMs" to ms,
+                "model" to "copilot"
+            )
+        } catch (e: Exception) {
+            mapOf(
+                "ok" to false,
+                "reason" to "LLM call failed: ${e.javaClass.simpleName}: ${e.message ?: ""}"
+            )
+        }
+    }
+
+    /**
+     * Apply an operator-confirmed auto-fix. Each fix is intentionally
+     * narrow and idempotent -- safe to click twice, no irreversible
+     * destructive ops. The operator clicks Start banking app again
+     * after the fix; we don't auto-restart, since some fixes only
+     * paper over a failure mode that needs further investigation.
+     */
+    @org.springframework.web.bind.annotation.PostMapping("/demo/app/auto-fix")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun appAutoFix(@RequestParam fixActionId: String): Map<String, Any> {
+        return when (fixActionId) {
+            "regenerate-init" -> {
+                runCatching {
+                    // Re-fire the same writers a /proxy save would --
+                    // writeCorpInitScript + writeGradleProxyProperties
+                    // run inside ConnectionSettings.update(). No-op
+                    // settings change; only the side effects matter.
+                    val s = connectionSettings.settings
+                    connectionSettings.update(s)
+                }.fold(
+                    onSuccess = { mapOf(
+                        "ok" to true,
+                        "message" to "Regenerated ~/.gradle/init.d/corp-repos.gradle.kts " +
+                            "and ~/.gradle/gradle.properties from current /proxy settings. " +
+                            "Click Start banking app to retry."
+                    ) },
+                    onFailure = { mapOf("ok" to false, "message" to "Failed: ${it.message}") }
+                )
+            }
+            "clear-foojay-locks" -> {
+                val home = System.getProperty("user.home") ?: return mapOf(
+                    "ok" to false, "message" to "Could not resolve user home.")
+                val jdksDir = java.io.File(home, ".gradle/jdks")
+                if (!jdksDir.isDirectory) return mapOf(
+                    "ok" to true,
+                    "message" to "No ~/.gradle/jdks/ directory; nothing to clean.")
+                val locks = jdksDir.listFiles { f -> f.name.endsWith(".reserved.lock") }
+                    ?: emptyArray()
+                val deleted = locks.count { it.delete() }
+                mapOf(
+                    "ok" to true,
+                    "message" to "Deleted $deleted .reserved.lock file(s) from ~/.gradle/jdks/. " +
+                        "Click Start banking app to retry; foojay will re-attempt the JDK download cleanly."
+                )
+            }
+            "clear-build-cache" -> {
+                val home = System.getProperty("user.home") ?: return mapOf(
+                    "ok" to false, "message" to "Could not resolve user home.")
+                val cachesDir = java.io.File(home, ".gradle/caches")
+                if (!cachesDir.isDirectory) return mapOf(
+                    "ok" to true, "message" to "No ~/.gradle/caches/ directory; nothing to clean.")
+                // Only the build-cache-* subdirs (not the entire caches/, which
+                // would force a full re-download of every dependency).
+                val targets = cachesDir.listFiles { f ->
+                    f.isDirectory && f.name.startsWith("build-cache-")
+                } ?: emptyArray()
+                val cleaned = targets.count { it.deleteRecursively() }
+                mapOf(
+                    "ok" to true,
+                    "message" to "Cleared $cleaned local build-cache directory/ies. " +
+                        "Click Start banking app to retry."
+                )
+            }
+            else -> mapOf(
+                "ok" to false,
+                "message" to "Unknown fixActionId '$fixActionId'."
+            )
+        }
+    }
+
+    /**
+     * Cheap reachability check for the Copilot bridge HTTP shim --
+     * one TCP connect to 127.0.0.1:11434 with a 500ms timeout. Used
+     * to gate the /diagnose-with-llm endpoint and the corresponding
+     * UI button on the banking-app log viewer.
+     */
+    private fun copilotBridgeReachable(): Boolean = runCatching {
+        java.net.Socket().use { s ->
+            s.connect(java.net.InetSocketAddress("127.0.0.1", 11434), 500)
+            true
+        }
+    }.getOrDefault(false)
+
+    /** Encode a string as a JSON string literal. */
+    private fun jsonString(s: String): String {
+        val sb = StringBuilder().append('"')
+        for (c in s) {
+            when (c) {
+                '\\' -> sb.append("\\\\")
+                '"'  -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                '\u000c' -> sb.append("\\f")
+                else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
+            }
+        }
+        return sb.append('"').toString()
     }
 
     @PostMapping("/demo/prepare/{issueId}")

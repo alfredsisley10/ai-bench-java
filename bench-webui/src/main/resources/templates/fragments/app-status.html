@@ -75,6 +75,28 @@
      to the bottom when the user is pinned there, leaves position
      alone when they've scrolled up to read older output. -->
 <div th:fragment="appLogViewer" id="app-log-viewer" style="margin-top:0.5em">
+    <!-- Self-healing diagnostic panel. Operator clicks Diagnose; we
+         tail the log, run the regex catalogue, render findings, and
+         (if the Copilot bridge is reachable) offer an LLM-assisted
+         deeper analysis. Each finding may carry a "Try auto-fix"
+         button that POSTs /demo/app/auto-fix. -->
+    <div id="app-diagnostics-panel" style="margin-bottom:0.4em">
+        <button type="button" class="btn-sm" onclick="runAppDiagnostics()">
+            Diagnose startup failure
+        </button>
+        <span id="app-diag-status" class="help-text" style="margin-left:0.5em"></span>
+        <div id="app-diag-findings" style="margin-top:0.4em"></div>
+        <div id="app-diag-llm-section" style="display:none; margin-top:0.5em">
+            <button type="button" class="btn-sm btn-secondary" onclick="runAppLlmDiagnose(this)">
+                Run LLM-assisted analysis (Copilot bridge)
+            </button>
+            <span id="app-diag-llm-status" class="help-text" style="margin-left:0.5em"></span>
+            <div id="app-diag-llm-result" style="display:none; margin-top:0.4em;
+                 padding:0.6em 0.8em; background:#eef2ff; border:1px solid #c7d2fe;
+                 border-radius:4px; white-space:pre-wrap; font-size:0.9em"></div>
+        </div>
+    </div>
+
     <details id="app-log-details" style="margin-top:0.25em">
         <summary style="cursor:pointer; user-select:none">
             <strong>Banking app log</strong>
@@ -139,6 +161,126 @@
             // hammer the endpoint from a hidden tab.
             window.addEventListener('beforeunload', stopTailing);
         })();
+
+        // ---- Self-healing diagnostic ------------------------------
+        function runAppDiagnostics() {
+            var status = document.getElementById('app-diag-status');
+            var findingsDiv = document.getElementById('app-diag-findings');
+            var llmSection = document.getElementById('app-diag-llm-section');
+            status.textContent = 'Scanning log…';
+            status.style.color = '';
+            findingsDiv.innerHTML = '';
+            llmSection.style.display = 'none';
+            fetch('/demo/app/diagnostics?lines=500')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var findings = data.findings || [];
+                    if (findings.length === 0) {
+                        status.textContent = '✓ No known failure pattern detected in the last ' +
+                            data.logLines + ' log lines.';
+                        status.style.color = '#067647';
+                    } else {
+                        status.textContent = '⚠ ' + findings.length + ' issue(s) detected.';
+                        status.style.color = '#b45309';
+                        findings.forEach(function (f) {
+                            findingsDiv.appendChild(renderFinding(f));
+                        });
+                    }
+                    if (data.llmAvailable) llmSection.style.display = '';
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                });
+        }
+
+        function renderFinding(f) {
+            var card = document.createElement('div');
+            var sevColor = f.severity === 'ERROR' ? '#b91c1c'
+                : f.severity === 'WARN' ? '#b45309' : '#0369a1';
+            var sevBg = f.severity === 'ERROR' ? '#fef2f2'
+                : f.severity === 'WARN' ? '#fef9e7' : '#eff6ff';
+            card.style.cssText = 'margin:0.35em 0; padding:0.5em 0.7em; border-left:3px solid ' +
+                sevColor + '; background:' + sevBg + '; border-radius:4px';
+            var title = document.createElement('div');
+            title.style.cssText = 'font-weight:600; color:' + sevColor;
+            title.textContent = '[' + f.severity + '] ' + f.title;
+            card.appendChild(title);
+            var msg = document.createElement('div');
+            msg.style.cssText = 'margin-top:0.25em; font-size:0.9em';
+            msg.textContent = f.message;
+            card.appendChild(msg);
+            if (f.fixActionId) {
+                var fixWrap = document.createElement('div');
+                fixWrap.style.cssText = 'margin-top:0.4em';
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn-sm';
+                btn.textContent = f.fixActionLabel || ('Apply fix: ' + f.fixActionId);
+                btn.onclick = function () { applyAutoFix(f.fixActionId, btn, fixWrap); };
+                var fixStatus = document.createElement('span');
+                fixStatus.className = 'help-text';
+                fixStatus.style.marginLeft = '0.5em';
+                fixWrap.appendChild(btn);
+                fixWrap.appendChild(fixStatus);
+                card.appendChild(fixWrap);
+            }
+            return card;
+        }
+
+        function applyAutoFix(fixActionId, btn, wrap) {
+            var fixStatus = wrap.querySelector('.help-text');
+            btn.disabled = true;
+            fixStatus.textContent = 'Applying…';
+            fixStatus.style.color = '';
+            var body = 'fixActionId=' + encodeURIComponent(fixActionId);
+            fetch('/demo/app/auto-fix', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    fixStatus.textContent = (data.ok ? '✓ ' : '✗ ') + (data.message || '');
+                    fixStatus.style.color = data.ok ? '#067647' : '#b91c1c';
+                    btn.disabled = false;
+                })
+                .catch(function (e) {
+                    fixStatus.textContent = '✗ ' + ((e && e.message) || e);
+                    fixStatus.style.color = '#b91c1c';
+                    btn.disabled = false;
+                });
+        }
+
+        function runAppLlmDiagnose(btn) {
+            var status = document.getElementById('app-diag-llm-status');
+            var result = document.getElementById('app-diag-llm-result');
+            btn.disabled = true;
+            status.textContent = 'Calling LLM (this can take 5-30s)…';
+            status.style.color = '';
+            result.style.display = 'none';
+            result.textContent = '';
+            fetch('/demo/app/diagnose-with-llm?lines=500')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.ok) {
+                        status.textContent = '✓ LLM analysis (' + data.durationMs + 'ms, ' +
+                            (data.model || '?') + ')';
+                        status.style.color = '#067647';
+                        result.textContent = data.analysis || '(empty)';
+                        result.style.display = '';
+                    } else {
+                        status.textContent = '✗ ' + (data.reason || 'unknown');
+                        status.style.color = '#b91c1c';
+                    }
+                    btn.disabled = false;
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                    btn.disabled = false;
+                });
+        }
     </script>
 </div>
 </body>

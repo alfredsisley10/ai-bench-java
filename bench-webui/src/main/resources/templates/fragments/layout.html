@@ -21,8 +21,9 @@
         <a href="/copilot-guide">Copilot guide</a>
         <a href="/docs/operations-guide">Ops guide</a>
         <span th:if="${isAdmin}" class="nav-sep">|</span>
-        <span th:if="${isAdmin}" class="nav-group-label">Admin</span>
         <a th:if="${isAdmin}" href="/run">Run benchmark</a>
+        <span th:if="${isAdmin}" class="nav-sep">|</span>
+        <span th:if="${isAdmin}" class="nav-group-label">Setup</span>
         <a th:if="${isAdmin}" href="/github">GitHub</a>
         <a th:if="${isAdmin}" href="/jira">JIRA</a>
         <a th:if="${isAdmin}" href="/llm">LLMs</a>
