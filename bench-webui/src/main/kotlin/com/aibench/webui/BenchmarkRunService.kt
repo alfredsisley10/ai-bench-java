@@ -467,12 +467,15 @@ class BenchmarkRunService(
         phase(run, "report", "Summarizing pass@${run.seeds}…")
         sleep(300)
         val passCount = seedResults.count { it.passed }
-        val pricedPrompt = priceCatalog.catalog
-            .firstOrNull { it.modelIdentifier == run.modelId }
-            ?.costPer1kPrompt ?: 0.0
-        val pricedCompletion = priceCatalog.catalog
-            .firstOrNull { it.modelIdentifier == run.modelId }
-            ?.costPer1kCompletion ?: 0.0
+        // Look up by `id` (registry-side, e.g. "copilot-gpt-4-1") rather
+        // than `modelIdentifier` (vendor-side, e.g. "gpt-4.1"). run.modelId
+        // is the registry id chosen on the launcher form, so it matches
+        // ModelPrice.id directly. The earlier `it.modelIdentifier ==
+        // run.modelId` comparison would never match for any prefixed
+        // entry, leaving every Copilot run with $0 estimated cost.
+        val priced = priceCatalog.catalog.firstOrNull { it.id == run.modelId }
+        val pricedPrompt = priced?.costPer1kPrompt ?: 0.0
+        val pricedCompletion = priced?.costPer1kCompletion ?: 0.0
         val cost = (totalPromptTokens * run.seeds / 1000.0) * pricedPrompt +
                    (totalCompletion / 1000.0) * pricedCompletion
         run.stats = run.stats.copy(
