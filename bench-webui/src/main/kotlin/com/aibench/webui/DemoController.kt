@@ -13,7 +13,8 @@ import java.io.File
 class DemoController(
     private val bankingApp: BankingAppManager,
     private val benchmarkRuns: BenchmarkRunService,
-    private val connectionSettings: ConnectionSettings
+    private val connectionSettings: ConnectionSettings,
+    private val registeredModelsRegistry: RegisteredModelsRegistry
 ) {
 
     data class VerificationStep(
@@ -855,8 +856,16 @@ class DemoController(
             session.setAttribute("demoRunStatus", DemoRunStatus(issueId, "error", "Unknown issue: $issueId", complete = true, success = false))
             return "redirect:/demo"
         }
+        // Resolve registry-id (modelId, e.g. "copilot-gpt-4-1") to the
+        // vendor-side identifier (e.g. "gpt-4.1") the bridge expects.
+        // Falls back to modelId when the chosen entry isn't in the
+        // registry (defensive — the dropdown only surfaces verified
+        // models, but a hand-crafted POST could supply anything).
+        val matched = registeredModelsRegistry.availableModels(session)
+            .firstOrNull { it.provider == provider && it.id == modelId }
+        val modelIdentifier = matched?.modelIdentifier ?: modelId
         val run = benchmarkRuns.start(issue.id, issue.title, provider, modelId,
-            contextProvider, appmapMode, seeds)
+            modelIdentifier, contextProvider, appmapMode, seeds)
         // Stash the active run id so /demo's live panel knows which
         // run to poll.
         session.setAttribute("activeRunId", run.id)

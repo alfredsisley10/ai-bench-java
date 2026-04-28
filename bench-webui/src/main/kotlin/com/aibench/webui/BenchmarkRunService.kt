@@ -98,7 +98,19 @@ class BenchmarkRunService(
         val issueId: String,
         val issueTitle: String,
         val provider: String,
+        /** Registry-side id chosen on the launcher form. Prefixed for
+         *  uniqueness across providers (e.g. `copilot-gpt-4-1`). Used
+         *  for catalog joins, dashboard display, and audit linking. */
         val modelId: String,
+        /** Vendor-side identifier sent over the wire to the bridge /
+         *  gateway (e.g. `gpt-4.1`, `claude-sonnet-4.6`). Distinct from
+         *  modelId because the bridge has no knowledge of the registry's
+         *  prefix scheme — passing the registry id makes the bridge
+         *  silently fall back to whatever Copilot's default model is,
+         *  which produces wrong-model bills + audit confusion. The
+         *  launcher resolves modelId → modelIdentifier via the registry
+         *  and passes both through to start(). */
+        val modelIdentifier: String,
         /** "none" or "appmap-navie" — orthogonal to the LLM
          *  provider/model. When "appmap-navie" the harness wraps the
          *  prompt with Navie's AppMap-driven retrieval before calling
@@ -171,11 +183,16 @@ class BenchmarkRunService(
     }
 
     fun start(issueId: String, issueTitle: String, provider: String, modelId: String,
+              modelIdentifier: String,
               contextProvider: String, appmapMode: String, seeds: Int): BenchmarkRun {
         val id = "run-" + UUID.randomUUID().toString().substring(0, 8)
         val run = BenchmarkRun(
             id = id, issueId = issueId, issueTitle = issueTitle,
             provider = provider, modelId = modelId,
+            // Falls back to modelId when the caller didn't pass an
+            // identifier (defensive — older call sites + tests). The
+            // launcher always resolves and passes the vendor name.
+            modelIdentifier = modelIdentifier.ifBlank { modelId },
             contextProvider = contextProvider,
             appmapMode = appmapMode, seeds = seeds,
             startedAt = Instant.now()
@@ -232,6 +249,28 @@ class BenchmarkRunService(
             return true
         }
         return false
+    }
+
+    /**
+     * Bulk-delete completed runs from the in-memory store. Refuses to
+     * touch any run that's still QUEUED or RUNNING — those need to be
+     * cancelled first (or wait to finish), since deleting them would
+     * leak the worker thread + bridge call. Returns a (deleted, skipped,
+     * missing) breakdown so the dashboard can surface a precise toast
+     * after the operation.
+     */
+    data class DeleteSummary(val deleted: Int, val skippedActive: Int, val missing: Int)
+    fun deleteRuns(ids: Collection<String>): DeleteSummary {
+        var deleted = 0; var skipped = 0; var missing = 0
+        for (id in ids) {
+            val r = runs[id]
+            when {
+                r == null -> missing++
+                r.status == Status.RUNNING || r.status == Status.QUEUED -> skipped++
+                else -> { runs.remove(id); deleted++ }
+            }
+        }
+        return DeleteSummary(deleted, skipped, missing)
     }
 
     // ------------------------------------------------------------------
@@ -581,7 +620,15 @@ class BenchmarkRunService(
         val userPrompt = "Issue: ${run.issueId} — ${run.issueTitle}.\n" +
             "Provider: ${run.provider}, model: ${run.modelId}, " +
             "context provider: ${run.contextProvider}, seed: $seed."
-        val body = """{"model":${jsonStr(run.modelId)},"temperature":0.2,"messages":[""" +
+        // Send the vendor-side identifier (e.g. "gpt-4.1"), NOT the
+        // registry-prefixed id. Copilot's bridge doesn't recognise the
+        // "copilot-" prefix and silently falls back to whatever the
+        // user's currently-active default model is when handed an
+        // unknown id -- so passing run.modelId here would route every
+        // request to (typically) Claude Sonnet 4.6 regardless of what
+        // the operator picked on the launcher. The audit page surfaces
+        // both fields so the operator can spot-check the routing.
+        val body = """{"model":${jsonStr(run.modelIdentifier)},"temperature":0.2,"messages":[""" +
             """{"role":"system","content":${jsonStr(systemPrompt)}},""" +
             """{"role":"user","content":${jsonStr(userPrompt)}}""" +
             """]}"""

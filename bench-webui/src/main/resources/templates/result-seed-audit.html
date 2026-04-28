@@ -43,6 +43,26 @@
         duration <span th:text="${seedResult.durationMs}"></span> ms
     </section>
 
+    <!-- Routing chain — registry id picked on the launcher form vs.
+         the vendor identifier actually sent over the wire. Distinct
+         because the bridge doesn't know the registry's "copilot-"
+         prefix; passing the registry id silently routes to whatever
+         Copilot's default model is. The audit surfaces both so the
+         operator can confirm "I picked X, the bridge ran Y." -->
+    <section th:if="${run != null}" style="margin-bottom:0.8em">
+        <table style="width:auto">
+            <tr><th>Provider</th><td><code th:text="${run.provider}"></code></td></tr>
+            <tr><th>Registry id (picked on launcher)</th>
+                <td><code th:text="${run.modelId}"></code></td></tr>
+            <tr><th>Vendor id (sent to bridge)</th>
+                <td><code th:text="${run.modelIdentifier}"></code></td></tr>
+            <tr><th>Context provider</th>
+                <td><code th:text="${run.contextProvider}"></code></td></tr>
+            <tr><th>AppMap mode</th>
+                <td><code th:text="${run.appmapMode}"></code></td></tr>
+        </table>
+    </section>
+
     <!-- ============== (a) Bug description / metadata ================ -->
     <details open style="margin-bottom:0.6em">
         <summary><h3 style="display:inline; margin:0">Bug description shown to the solver</h3></summary>

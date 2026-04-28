@@ -116,3 +116,11 @@ table.sortable-table .filter-row input {
     border: 1px solid #ccc; border-radius: 2px;
 }
 table.sortable-table tbody tr.filtered-out { display: none; }
+
+/* Horizontal-scroll wrapper for wide tables. With many columns + per-
+   column filter inputs, a table's natural min-width regularly exceeds
+   the available content width on narrower viewports — wrapping in
+   .table-scroll keeps the table inside its parent container while
+   exposing the rest via horizontal scroll. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.table-scroll > table { width: 100%; }

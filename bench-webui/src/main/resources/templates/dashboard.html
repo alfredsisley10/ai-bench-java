@@ -19,8 +19,17 @@
          /results/{runId} detail route is unchanged; bare /results now
          redirects here. -->
     <section>
-        <h2>Benchmark runs</h2>
-        <p class="subtitle">All completed benchmark runs. Click a Run ID for the full transcript.</p>
+        <h2>Benchmark runs
+            <span class="help-text" id="runs-count" style="font-weight:normal; font-size:0.85em"></span>
+        </h2>
+        <p class="subtitle">All completed benchmark runs. Click a Run ID for the full transcript;
+            click any column header to sort; per-column filters narrow the visible set; tick rows + Delete
+            to clear selected runs (active / queued runs are skipped — cancel first).</p>
+
+        <!-- One-shot toast surfaced by deleteRuns() after a bulk delete. -->
+        <div th:if="${runsDeleteResult != null}" class="status-banner ok"
+             style="margin:0.25em 0; padding:0.4em 0.8em" th:text="${runsDeleteResult}">
+        </div>
 
         <div th:if="${#lists.isEmpty(runs)}">
             <p class="empty-state">
@@ -29,30 +38,275 @@
                 — or <a href="/demo">try a demo issue</a>.
             </p>
         </div>
-        <table th:unless="${#lists.isEmpty(runs)}">
-            <thead>
-            <tr>
-                <th>Run ID</th><th>Bug / Ticket</th><th>Solver</th><th>Model</th>
-                <th>AppMap</th><th>Status</th><th>Pass / total</th>
-                <th>Prompt tokens</th><th>Completion tokens</th><th>Duration</th>
-            </tr>
-            </thead>
-            <tbody>
-            <tr th:each="r : ${runs}">
-                <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
-                <td th:text="${r.issueId}"></td>
-                <td th:text="${r.provider}"></td>
-                <td th:text="${r.modelId}"></td>
-                <td th:text="${r.appmapMode}"></td>
-                <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
-                <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
-                <td th:text="${r.stats.totalPromptTokens}"></td>
-                <td th:text="${r.stats.totalCompletionTokens}"></td>
-                <td th:text="${(r.durationMs / 1000) + 's'}"></td>
-            </tr>
-            </tbody>
-        </table>
+
+        <form th:unless="${#lists.isEmpty(runs)}" method="post" action="/runs/delete"
+              id="runsDeleteForm"
+              onsubmit="return confirmRunDelete(this);">
+            <div class="button-row" style="margin:0.4em 0; gap:0.5em; align-items:center; flex-wrap:wrap">
+                <input type="text" id="runs-search"
+                       placeholder="Search across all columns…"
+                       style="flex:1 1 18em; max-width:30em; padding:0.3em 0.6em">
+                <span class="help-text">Show</span>
+                <select id="runs-page-size" style="padding:0.15em 0.3em">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+                <span class="help-text">rows per page</span>
+                <span style="flex:1"></span>
+                <button type="submit" class="btn-danger btn-sm" id="runs-delete-btn" disabled>
+                    Delete selected (<span id="runs-selected-count">0</span>)
+                </button>
+            </div>
+
+            <div class="table-scroll">
+            <table class="sortable-table"
+                   id="runsTable"
+                   data-count-target="#runs-count"
+                   data-search-target="#runs-search">
+                <thead>
+                    <tr class="sort-row">
+                        <th style="width:1.4em">
+                            <input type="checkbox" id="runs-select-all"
+                                   title="Select all visible (filtered + on this page)">
+                        </th>
+                        <th data-sort-key="id">Run ID <span class="sort-indicator"></span></th>
+                        <th data-sort-key="issue">Bug / Ticket <span class="sort-indicator"></span></th>
+                        <th data-sort-key="provider">Solver <span class="sort-indicator"></span></th>
+                        <th data-sort-key="model">Model <span class="sort-indicator"></span></th>
+                        <th data-sort-key="appmap">AppMap <span class="sort-indicator"></span></th>
+                        <th data-sort-key="status">Status <span class="sort-indicator"></span></th>
+                        <th data-sort-key="pass" data-sort-numeric="true">Pass / total <span class="sort-indicator"></span></th>
+                        <th data-sort-key="prompt" data-sort-numeric="true" class="num">Prompt tokens <span class="sort-indicator"></span></th>
+                        <th data-sort-key="completion" data-sort-numeric="true" class="num">Completion tokens <span class="sort-indicator"></span></th>
+                        <th data-sort-key="duration" data-sort-numeric="true" class="num">Duration (s) <span class="sort-indicator"></span></th>
+                    </tr>
+                    <tr class="filter-row">
+                        <th></th>
+                        <th><input type="text" data-filter-col="1" placeholder="filter id"></th>
+                        <th><input type="text" data-filter-col="2" placeholder="filter bug"></th>
+                        <th><input type="text" data-filter-col="3" placeholder="filter solver"></th>
+                        <th><input type="text" data-filter-col="4" placeholder="filter model"></th>
+                        <th><input type="text" data-filter-col="5" placeholder="filter mode"></th>
+                        <th><input type="text" data-filter-col="6" placeholder="filter status"></th>
+                        <th><input type="text" data-filter-col="7" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="8" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="9" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="10" placeholder="≥, ≤, ="></th>
+                    </tr>
+                </thead>
+                <tbody>
+                <tr th:each="r : ${runs}"
+                    th:attr="data-id=${r.id},
+                             data-issue=${r.issueId},
+                             data-provider=${r.provider},
+                             data-model=${r.modelId},
+                             data-appmap=${r.appmapMode},
+                             data-status=${r.status.name()},
+                             data-pass=${r.seedResults.?[passed].size()},
+                             data-prompt=${r.stats.totalPromptTokens},
+                             data-completion=${r.stats.totalCompletionTokens},
+                             data-duration=${r.durationMs / 1000}">
+                    <td>
+                        <input type="checkbox" class="runs-row-check" name="runIds"
+                               th:value="${r.id}"
+                               th:disabled="${r.status.name() == 'RUNNING' or r.status.name() == 'QUEUED'}"
+                               th:title="${r.status.name() == 'RUNNING' or r.status.name() == 'QUEUED'
+                                          ? 'Cancel this run first before deleting'
+                                          : 'Select this run for deletion'}">
+                    </td>
+                    <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
+                    <td th:text="${r.issueId}"></td>
+                    <td th:text="${r.provider}"></td>
+                    <td th:text="${r.modelId}"></td>
+                    <td th:text="${r.appmapMode}"></td>
+                    <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
+                    <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
+                    <td class="num" th:text="${r.stats.totalPromptTokens}"></td>
+                    <td class="num" th:text="${r.stats.totalCompletionTokens}"></td>
+                    <td class="num" th:text="${r.durationMs / 1000}"></td>
+                </tr>
+                </tbody>
+            </table>
+            </div><!-- /.table-scroll -->
+
+            <!-- Pagination controls — populated by the JS below from
+                 the current filter + page-size selection. Hidden when
+                 there's only one page. -->
+            <div id="runs-pagination" class="button-row"
+                 style="margin:0.5em 0; gap:0.4em; align-items:center; flex-wrap:wrap"></div>
+        </form>
     </section>
+
+    <script>
+        // Pagination + select-all behaviour layered on top of the
+        // existing sortable-table helper. The helper already toggles
+        // a 'filtered-out' class on rows that match the per-column
+        // filters + global search; this script slices the *unhidden*
+        // rows into pages and only un-hides the current page's slice.
+        (function () {
+            var table = document.getElementById('runsTable');
+            if (!table) return;
+            var tbody = table.querySelector('tbody');
+            var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            if (rows.length === 0) return;
+
+            var pageSizeSelect = document.getElementById('runs-page-size');
+            var pagination = document.getElementById('runs-pagination');
+            var countEl = document.getElementById('runs-count');
+            var selectAll = document.getElementById('runs-select-all');
+            var deleteBtn = document.getElementById('runs-delete-btn');
+            var selectedCountEl = document.getElementById('runs-selected-count');
+
+            var pageSize = parseInt(pageSizeSelect.value, 10) || 10;
+            var page = 1;
+
+            function visibleRows() {
+                return rows.filter(function (r) {
+                    return !r.classList.contains('filtered-out');
+                });
+            }
+
+            function repaint() {
+                var visible = visibleRows();
+                var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+                if (page > totalPages) page = totalPages;
+                var from = (page - 1) * pageSize;
+                var to = from + pageSize;
+                rows.forEach(function (r) { r.style.display = 'none'; });
+                visible.slice(from, to).forEach(function (r) {
+                    r.style.display = '';
+                });
+                if (countEl) {
+                    countEl.textContent = '— ' + visible.length + ' of ' +
+                        rows.length + ' shown' +
+                        (totalPages > 1 ? ' (page ' + page + ' / ' + totalPages + ')' : '');
+                }
+                renderPagination(totalPages);
+                refreshSelectAll();
+                refreshSelectedCount();
+            }
+
+            function renderPagination(totalPages) {
+                pagination.innerHTML = '';
+                if (totalPages <= 1) return;
+                function addBtn(label, target, disabled) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'btn-sm';
+                    b.textContent = label;
+                    b.disabled = !!disabled;
+                    if (target === page) {
+                        b.style.fontWeight = 'bold';
+                        b.style.background = '#dbeafe';
+                    }
+                    b.addEventListener('click', function () {
+                        page = target;
+                        repaint();
+                    });
+                    pagination.appendChild(b);
+                }
+                addBtn('« Prev', Math.max(1, page - 1), page === 1);
+                for (var i = 1; i <= totalPages; i++) {
+                    if (i === 1 || i === totalPages || Math.abs(i - page) <= 2) {
+                        addBtn(String(i), i, false);
+                    } else if (i === page - 3 || i === page + 3) {
+                        var span = document.createElement('span');
+                        span.className = 'help-text';
+                        span.style.padding = '0 0.3em';
+                        span.textContent = '…';
+                        pagination.appendChild(span);
+                    }
+                }
+                addBtn('Next »', Math.min(totalPages, page + 1), page === totalPages);
+            }
+
+            function refreshSelectAll() {
+                if (!selectAll) return;
+                var visible = visibleRows();
+                var visibleCheckboxes = visible.map(function (r) {
+                    return r.querySelector('.runs-row-check');
+                }).filter(function (c) { return c && !c.disabled; });
+                if (visibleCheckboxes.length === 0) {
+                    selectAll.checked = false;
+                    selectAll.indeterminate = false;
+                    return;
+                }
+                var checked = visibleCheckboxes.filter(function (c) { return c.checked; }).length;
+                selectAll.indeterminate = checked > 0 && checked < visibleCheckboxes.length;
+                selectAll.checked = checked === visibleCheckboxes.length;
+            }
+
+            function refreshSelectedCount() {
+                var n = rows.filter(function (r) {
+                    var c = r.querySelector('.runs-row-check');
+                    return c && c.checked;
+                }).length;
+                if (selectedCountEl) selectedCountEl.textContent = String(n);
+                if (deleteBtn) deleteBtn.disabled = n === 0;
+            }
+
+            // Page-size change → reset to page 1 and repaint.
+            if (pageSizeSelect) {
+                pageSizeSelect.addEventListener('change', function () {
+                    pageSize = parseInt(pageSizeSelect.value, 10) || 10;
+                    page = 1;
+                    repaint();
+                });
+            }
+
+            // Filter / sort changes propagate via the helper's MutationObserver
+            // -- but the helper doesn't fire an event. Listen on the inputs
+            // directly and re-paginate after a tick so the helper's class
+            // toggles have settled.
+            table.querySelectorAll('.filter-row input').forEach(function (i) {
+                i.addEventListener('input', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            });
+            var globalSearch = document.getElementById('runs-search');
+            if (globalSearch) {
+                globalSearch.addEventListener('input', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            }
+
+            // Select-all toggle wires up only the *currently-visible*
+            // (filtered + on this page) rows so a careless click can't
+            // tick a thousand off-screen rows. Active runs are excluded
+            // (the th:disabled binding on each row's checkbox).
+            if (selectAll) {
+                selectAll.addEventListener('change', function () {
+                    visibleRows().forEach(function (r) {
+                        if (r.style.display === 'none') return;
+                        var c = r.querySelector('.runs-row-check');
+                        if (c && !c.disabled) c.checked = selectAll.checked;
+                    });
+                    refreshSelectedCount();
+                });
+            }
+            // Per-row checkbox change updates the selected count + the
+            // select-all tri-state.
+            tbody.addEventListener('change', function (e) {
+                if (e.target.classList.contains('runs-row-check')) {
+                    refreshSelectAll();
+                    refreshSelectedCount();
+                }
+            });
+
+            repaint();
+        })();
+
+        // Confirm before bulk-delete. Returns false to block submission
+        // when the operator cancels the prompt.
+        function confirmRunDelete(form) {
+            var n = form.querySelectorAll('.runs-row-check:checked').length;
+            if (n === 0) return false;
+            return confirm('Delete ' + n + ' selected run' +
+                (n === 1 ? '' : 's') + '? This cannot be undone.');
+        }
+    </script>
 </main>
 </body>
 </html>

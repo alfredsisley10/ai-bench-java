@@ -163,14 +163,20 @@ class RunLauncherController(
         // verified set before kicking off a run.
         val verified = registeredModelsRegistry.availableModels(session)
             .filter { it.provider != "appmap-navie" }
-        val ok = verified.any { it.provider == providerNN && it.id == modelIdNN }
-        if (!ok) {
+        val matched = verified.firstOrNull { it.provider == providerNN && it.id == modelIdNN }
+        if (matched == null) {
             // Surface the picked combo so the form can show "we
             // couldn't verify modelId 'copilot-gpt-4-1' for provider
             // 'copilot' — register it on /llm or pick another."
             val pickedQ = "&picked=" + java.net.URLEncoder.encode("$providerNN/$modelIdNN", "UTF-8")
             return "redirect:/run?error=unverified$pickedQ"
         }
+        // Vendor-side identifier the harness sends over the wire (e.g.
+        // "gpt-4.1"). Distinct from the registry id ("copilot-gpt-4-1")
+        // which the bridge doesn't recognise -- threading both through
+        // BenchmarkRunService.start() so the audit / dashboard can show
+        // the registry id while the bridge call carries the right name.
+        val modelIdentifierNN = matched.modelIdentifier
 
         // Build the issueId + title from the target type. Without this
         // the launch redirected to / and silently never started a run --
@@ -195,6 +201,7 @@ class RunLauncherController(
             issueTitle = issueTitle,
             provider = providerNN,
             modelId = modelIdNN,
+            modelIdentifier = modelIdentifierNN,
             contextProvider = contextProvider,
             appmapMode = appmapModeNN,
             seeds = seeds
