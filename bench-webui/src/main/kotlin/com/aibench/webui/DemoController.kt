@@ -729,6 +729,46 @@ class DemoController(
                         "Click Start banking app to retry; foojay will re-attempt the JDK download cleanly."
                 )
             }
+            "stop-gradle-daemons" -> {
+                // `gradle --stop` shuts down every daemon for the current
+                // Gradle major. Walk the wrapper-distribution cache for
+                // any 9.x build and use its launcher; fall back to the
+                // existing wrapper inside banking-app/. Either path
+                // eliminates stale daemons that may still be under an
+                // older JAVA_HOME from a previous run.
+                val home = System.getProperty("user.home") ?: return mapOf(
+                    "ok" to false, "message" to "Could not resolve user home.")
+                val gradleExeName = if (Platform.isWindows) "gradle.bat" else "gradle"
+                val gradleBin = sequenceOf(
+                    java.io.File(home, ".gradle/wrapper/dists/gradle-9.4.1-bin"),
+                    java.io.File(home, ".gradle/wrapper/dists")
+                ).flatMap { dir ->
+                    if (!dir.isDirectory) emptySequence()
+                    else dir.walkTopDown().maxDepth(4).filter {
+                        it.isFile && it.name == gradleExeName && it.canExecute()
+                    }
+                }.firstOrNull()?.absolutePath
+                    ?: return mapOf(
+                        "ok" to false,
+                        "message" to "No gradle launcher found in ~/.gradle/wrapper/dists/."
+                    )
+                val proc = ProcessBuilder(gradleBin, "--stop").redirectErrorStream(true).start()
+                val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+                if (!finished) {
+                    runCatching { proc.destroyForcibly() }
+                    return mapOf(
+                        "ok" to false,
+                        "message" to "gradle --stop didn't finish within 15s."
+                    )
+                }
+                val out = proc.inputStream.bufferedReader().readText().trim()
+                mapOf(
+                    "ok" to true,
+                    "message" to "Stopped Gradle daemons. Output: '$out'. " +
+                        "Click Start banking app to retry; the next launch will spawn a " +
+                        "fresh daemon under bench-webui's selected JAVA_HOME."
+                )
+            }
             "clear-build-cache" -> {
                 val home = System.getProperty("user.home") ?: return mapOf(
                     "ok" to false, "message" to "Could not resolve user home.")

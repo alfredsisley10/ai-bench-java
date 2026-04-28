@@ -9,8 +9,28 @@ import org.springframework.web.bind.annotation.RequestParam
 
 @Controller
 class RunLauncherController(
-    private val registeredModelsRegistry: RegisteredModelsRegistry
+    private val registeredModelsRegistry: RegisteredModelsRegistry,
+    private val benchmarkRuns: BenchmarkRunService
 ) {
+
+    // Built-in OmniBank issue titles. Mirrors DemoController.demoIssues
+    // by id but only carries the title -- enough for the run record's
+    // display label without dragging the whole DemoIssue model into
+    // this launcher. Keep in sync if new BUG-XXXX entries are added.
+    private val omnibankIssueTitles = mapOf(
+        "BUG-0001" to "ACH same-day cutoff off-by-one at final window",
+        "BUG-0002" to "Wire cutoff timezone defaults to UTC instead of ET",
+        "BUG-0003" to "Trial balance invariant broken by uncommitted posting with mixed currency",
+        "BUG-0004" to "Fee assessor double-charges on retry after timeout",
+        "BUG-0005" to "OFAC screener allow-lists names that match by phonetics only",
+        "BUG-0006" to "Loan amortization rounds the wrong direction on final payment",
+        "BUG-0007" to "Card auth gateway races on stand-in approval window",
+        "BUG-0008" to "Saga rollback skips compensation when initial step is async",
+        "BUG-0009" to "Audit query service returns rows past the retention horizon",
+        "BUG-0010" to "Statement renderer drops trailing transactions when locale is fr-FR",
+        "BUG-0011" to "Settlement batcher emits duplicates after a stuck cursor",
+        "BUG-0012" to "Risk engine ignores the override flag for VIP counterparties"
+    )
 
     @GetMapping("/run")
     fun form(model: Model, session: HttpSession): String {
@@ -82,6 +102,38 @@ class RunLauncherController(
             .filter { it.provider != "appmap-navie" }
         val ok = verified.any { it.provider == provider && it.id == modelId }
         if (!ok) return "redirect:/run?error=unverified"
-        return "redirect:/"
+
+        // Build the issueId + title from the target type. Without this
+        // the launch redirected to / and silently never started a run --
+        // the form's inputs never reached BenchmarkRunService.start.
+        val (issueId, issueTitle) = when (targetType.lowercase()) {
+            "omnibank" -> {
+                val id = bugId?.takeIf { it.isNotBlank() }
+                    ?: return "redirect:/run?error=missing-bug"
+                id to (omnibankIssueTitles[id] ?: id)
+            }
+            "enterprise" -> {
+                val repo = repoName?.takeIf { it.isNotBlank() }
+                    ?: return "redirect:/run?error=missing-repo"
+                val ticket = jiraTicket?.takeIf { it.isNotBlank() } ?: "unspecified"
+                "$repo:$ticket" to "$repo / $ticket"
+            }
+            else -> return "redirect:/run?error=unknown-target-type"
+        }
+
+        val run = benchmarkRuns.start(
+            issueId = issueId,
+            issueTitle = issueTitle,
+            provider = provider,
+            modelId = modelId,
+            contextProvider = contextProvider,
+            appmapMode = appmapMode,
+            seeds = seeds
+        )
+        // Stash for /demo's live panel + the dashboard's "active run"
+        // pill, then send the operator straight to the per-run drilldown
+        // so they can watch progress without manually navigating.
+        session.setAttribute("activeRunId", run.id)
+        return "redirect:/results/${run.id}"
     }
 }

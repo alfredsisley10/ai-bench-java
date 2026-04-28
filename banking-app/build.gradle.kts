@@ -1,6 +1,6 @@
 plugins {
     java
-    id("org.springframework.boot") version "3.3.4" apply false
+    id("org.springframework.boot") version "3.5.14" apply false
     id("io.spring.dependency-management") version "1.1.6" apply false
     id("com.appland.appmap") version "1.+" apply false
 }
@@ -78,7 +78,7 @@ subprojects {
 
     extensions.configure<io.spring.gradle.dependencymanagement.dsl.DependencyManagementExtension> {
         imports {
-            mavenBom("org.springframework.boot:spring-boot-dependencies:3.3.4")
+            mavenBom("org.springframework.boot:spring-boot-dependencies:3.5.14")
             mavenBom("org.testcontainers:testcontainers-bom:1.20.1")
         }
     }

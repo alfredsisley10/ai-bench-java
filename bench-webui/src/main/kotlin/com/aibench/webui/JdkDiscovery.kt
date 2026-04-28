@@ -347,6 +347,14 @@ object JdkDiscovery {
             // SDKMAN
             globHomes("$userHome/.sdkman/candidates/java/*", "sdkman")
                 .forEach { add(it, "SDKMAN") }
+            // Gradle toolchain auto-provisioned JDKs on macOS. Layout
+            // is ~/.gradle/jdks/<distro>/<inner>/Contents/Home/bin/java
+            // (the .tar.gz from foojay extracts into a vendor-named
+            // subdir AND a macOS bundle), so the scan walks two
+            // levels deep before checking for Contents/Home/bin/java.
+            findGradleJdks(File(userHome, ".gradle/jdks")).forEach {
+                add(it, "~/.gradle/jdks (foojay)")
+            }
         } else if (Platform.isWindows) {
             // Common Windows installer roots. Each child whose `bin\java.exe`
             // exists is treated as a JAVA_HOME.
@@ -412,6 +420,11 @@ object JdkDiscovery {
                         add(child.absolutePath, "SDKMAN")
                     }
                 }
+            }
+            // Gradle toolchain auto-provisioned JDKs on Linux:
+            // ~/.gradle/jdks/<distro>/<inner>/bin/java
+            findGradleJdks(File(userHome, ".gradle/jdks")).forEach {
+                add(it, "~/.gradle/jdks (foojay)")
             }
         }
 
@@ -536,6 +549,52 @@ object JdkDiscovery {
      * Lightweight glob: matches a single literal `*` segment in the path.
      * Suffices for our needs (no recursive globbing, no character classes).
      */
+    /**
+     * Walk ~/.gradle/jdks (or wherever foojay-resolver extracts toolchain
+     * downloads) and return JAVA_HOME-style root paths. Each foojay
+     * extract has its own per-platform layout:
+     *   Windows: <gradle-jdks>/<distro>/bin/java.exe
+     *   Linux:   <gradle-jdks>/<distro>/<inner>/bin/java
+     *            (extra <inner> level because the .tar.gz includes a
+     *            vendor-named top dir; foojay doesn't strip it)
+     *   macOS:   <gradle-jdks>/<distro>/<inner>/Contents/Home/bin/java
+     *            (mac bundle layout adds Contents/Home)
+     * Walk depth ≤ 3 from <gradle-jdks>, stop as soon as bin/java(.exe)
+     * is found, return the JAVA_HOME-style ancestor (the dir whose
+     * `bin/` contains the binary).
+     */
+    private fun findGradleJdks(root: File): List<String> {
+        if (!root.isDirectory) return emptyList()
+        val javaExeName = if (Platform.isWindows) "java.exe" else "java"
+        val results = mutableListOf<String>()
+        // Visit each top-level entry and walk up to 3 levels deep
+        // looking for a JAVA_HOME-style root.
+        root.listFiles()?.forEach { topLevel ->
+            if (!topLevel.isDirectory) return@forEach
+            // Try direct bin/java first (Windows-style layout)
+            if (File(topLevel, "bin/$javaExeName").isFile) {
+                results += topLevel.absolutePath
+                return@forEach
+            }
+            // Walk one level deeper for the per-distro inner dir
+            topLevel.listFiles()?.forEach { inner ->
+                if (!inner.isDirectory) return@forEach
+                // Linux: <inner>/bin/java
+                if (File(inner, "bin/$javaExeName").isFile) {
+                    results += inner.absolutePath
+                    return@forEach
+                }
+                // macOS: <inner>/Contents/Home/bin/java
+                val macHome = File(inner, "Contents/Home")
+                if (File(macHome, "bin/$javaExeName").isFile) {
+                    results += macHome.absolutePath
+                    return@forEach
+                }
+            }
+        }
+        return results
+    }
+
     private fun globHomes(pattern: String, label: String): List<String> {
         val parts = pattern.split('/')
         val starIdx = parts.indexOfFirst { it.contains('*') }

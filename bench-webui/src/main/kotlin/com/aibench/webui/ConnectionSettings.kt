@@ -1277,15 +1277,23 @@ class ConnectionSettings {
     }
 
     private fun writeGradleProxyProperties(s: Settings) {
-        // Skip entirely only when there's truly nothing to manage --
-        // proxies, mirror auth, and the noProxy list are all rewritten
-        // here so a save in /proxy keeps gradle.properties in sync.
+        // Always run when ~/.gradle/gradle.properties exists, regardless
+        // of whether the new Settings has anything to write. Skipping
+        // when "nothing to manage" leaks a stale entry from a previous
+        // /proxy config -- e.g. the operator clears the proxy field in
+        // the form, but the dead `systemProp.http.proxyHost=...` lines
+        // stay in gradle.properties forever, and every later Gradle
+        // invocation tries to route through a now-unreachable host.
+        // The filter+rewrite always strips the keys we manage; the
+        // re-emit only happens when the new Settings actually has them.
+        val gradleDir = java.io.File(System.getProperty("user.home"), ".gradle")
+        val propsFile = java.io.File(gradleDir, "gradle.properties")
         val hasAnything = s.httpsProxy.isNotEmpty() || s.httpProxy.isNotEmpty() ||
                           s.noProxy.isNotEmpty() || s.hasMirrorAuth
-        if (!hasAnything) return
-        val gradleDir = java.io.File(System.getProperty("user.home"), ".gradle")
+        // No new state AND no pre-existing file = nothing to do, no
+        // need to even create the dir.
+        if (!hasAnything && !propsFile.exists()) return
         gradleDir.mkdirs()
-        val propsFile = java.io.File(gradleDir, "gradle.properties")
         val existingLines = if (propsFile.exists()) {
             propsFile.readLines().filter { line ->
                 !line.startsWith("systemProp.http.proxyHost") &&

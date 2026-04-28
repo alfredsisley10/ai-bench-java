@@ -82,14 +82,18 @@ object BankingAppDiagnostics {
             title = "Daemon JVM is older than the toolchain pin",
             regex = Regex("Unsupported class file major version (\\d+)"),
             severity = Severity.ERROR,
-            message = "Spring Boot's resolveMainClassName task (and other daemon-internal " +
-                "tasks that load compiled bytecode) failed because the Gradle daemon JVM " +
-                "is older than what the toolchain compiles to. Major version 65=21, 66=22, " +
-                "67=23, 68=24, 69=25. Either install a JDK matching the toolchain pin and " +
-                "register it via /demo's 'Add JDK path' button, or revert the toolchain to " +
-                "a major your daemon JVM can read.",
-            fixActionId = null,
-            fixActionLabel = null
+            message = "Spring Boot's resolveMainClassName (and other daemon-internal tasks " +
+                "that load compiled bytecode) failed because the Gradle daemon JVM is older " +
+                "than what the toolchain compiles to. Major version 65=21, 66=22, 67=23, " +
+                "68=24, 69=25. The most common cause is a stale daemon left running from a " +
+                "previous launch under a different JAVA_HOME -- new launches reuse it " +
+                "instead of spawning a fresh one. The auto-fix below kills all running " +
+                "Gradle daemons; the next Start banking app spawns a fresh daemon under " +
+                "the JDK bench-webui has discovered. If that fix doesn't help, your box " +
+                "genuinely lacks a JDK matching the toolchain pin -- register one via " +
+                "/demo's 'Add JDK path' button.",
+            fixActionId = "stop-gradle-daemons",
+            fixActionLabel = "Stop all Gradle daemons (next launch spawns fresh)"
         ),
         Pattern(
             id = "cmd-pipe-injection",
@@ -132,6 +136,26 @@ object BankingAppDiagnostics {
                 "the download. Safe to delete; the next build will re-download cleanly.",
             fixActionId = "clear-foojay-locks",
             fixActionLabel = "Delete stale ~/.gradle/jdks/*.reserved.lock files"
+        ),
+        Pattern(
+            id = "proxy-dns-fail",
+            title = "Configured proxy host won't resolve in DNS",
+            regex = Regex(
+                "(nodename nor servname provided, or not known|" +
+                "UnknownHostException.*proxy|" +
+                "Could not HEAD.*\\n.*\\n.*\\n\\s*>\\s*[a-zA-Z0-9.\\-]+\\.(example\\.com|invalid|local))",
+                RegexOption.DOT_MATCHES_ALL
+            ),
+            severity = Severity.ERROR,
+            message = "Gradle's HTTP client tried to route through a proxy host that does " +
+                "not resolve in DNS. Most common cause: a stale entry in " +
+                "~/.gradle/gradle.properties left over from a prior bench-webui /proxy " +
+                "config that's since been cleared in the form but not re-written to disk. " +
+                "Click the auto-fix below; it re-syncs gradle.properties with the current " +
+                "/proxy form (clearing the stale lines) and lets the next start go direct " +
+                "or through the right proxy.",
+            fixActionId = "regenerate-init",
+            fixActionLabel = "Re-sync ~/.gradle/gradle.properties with current /proxy form"
         ),
         Pattern(
             id = "proxy-unreachable",

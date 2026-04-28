@@ -447,7 +447,9 @@ class BankingAppManager(
         // requirement if banking-app's build.gradle.kts pins one — that
         // way Gradle's daemon launches with a JDK that matches the
         // toolchain (skipping the foojay download path entirely).
-        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = toolchainMajor())
+        val pinnedMajor = toolchainMajor()
+        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = pinnedMajor)
+        log.info("Banking app launch: toolchainMajor={}, JAVA_HOME={}", pinnedMajor, javaHome)
 
         val cmd = mutableListOf<String>().apply { addAll(Platform.gradleWrapper(dir)); add("bootRun") }
         // Carry the operator's proxy + TLS choices from the WebUI into
