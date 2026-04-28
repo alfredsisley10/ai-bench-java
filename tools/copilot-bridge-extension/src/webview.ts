@@ -145,7 +145,24 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
                 case 'setAuthRequired':     hooks.setAuthRequired(!!msg.required); break;
             }
         } catch (e: any) {
-            vscode.window.showErrorMessage(`Bridge action '${msg?.type}' failed: ${e?.message ?? e}`);
+            // EADDRINUSE on startOpenAi has a deterministic cause + fix.
+            // The detailed remediation steps are already in the
+            // OutputChannel via openai-server.ts's own log lines; the
+            // toast just nudges the operator there instead of dumping
+            // 6 lines into a popup that vanishes after 5 seconds.
+            const isAddrInUse = e?.code === 'EADDRINUSE' || /EADDRINUSE/.test(String(e?.message ?? e));
+            if (msg?.type === 'startOpenAi' && isAddrInUse) {
+                vscode.window.showErrorMessage(
+                    `OpenAI HTTP shim port already in use. Open View → Output → ai-bench Copilot Bridge for the specific process-killing commands, or change the port via aiBench.copilotBridge.openAiPort.`,
+                    'Show Output'
+                ).then(choice => {
+                    if (choice === 'Show Output') {
+                        vscode.commands.executeCommand('workbench.action.output.toggleOutput');
+                    }
+                });
+            } else {
+                vscode.window.showErrorMessage(`Bridge action '${msg?.type}' failed: ${e?.message ?? e}`);
+            }
         }
         // Always push a fresh snapshot — even on action failure — so
         // the WebView's optimistic-disable is cleared and the controls

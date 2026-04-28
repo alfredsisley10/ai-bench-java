@@ -265,8 +265,41 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
 
     currentBindAddress = args.bindAddress;
     await new Promise<void>((resolve, reject) => {
-        server!.once('error', reject);
+        const onError = (err: NodeJS.ErrnoException) => {
+            // EADDRINUSE: a previous bridge instance (orphaned after a
+            // reload that didn't run our deactivate hook), Ollama (which
+            // also defaults to 11434), or a manually-launched process is
+            // already on the port. Surface the conflict explicitly with
+            // remediation steps and clear the partial server reference
+            // so the operator can retry after freeing the port without
+            // hitting the "already running" guard at the top of this
+            // function.
+            if (err.code === 'EADDRINUSE') {
+                args.log(`OpenAI HTTP shim startup FAILED: port ${args.port} is already in use on ${args.bindAddress}.`);
+                args.log(`  Resolve options:`);
+                args.log(`  (1) Find the process holding the port and kill it. On macOS/Linux:`);
+                args.log(`        lsof -iTCP:${args.port} -sTCP:LISTEN`);
+                args.log(`        kill <PID>`);
+                args.log(`      On Windows (PowerShell):`);
+                args.log(`        Get-NetTCPConnection -LocalPort ${args.port} -State Listen | Select OwningProcess`);
+                args.log(`        Stop-Process -Id <PID>`);
+                args.log(`  (2) Ollama defaults to port ${args.port}. If you have Ollama installed, either stop it`);
+                args.log(`      ('ollama serve' / 'killall ollama') or change the bridge's port via`);
+                args.log(`      VSCode settings: 'aiBench.copilotBridge.openAiPort' (e.g. 11435).`);
+                args.log(`  (3) If a previous VSCode extension host crashed without releasing the port,`);
+                args.log(`      Developer: Reload Window once the orphaned process is killed.`);
+            }
+            // Drop the server reference so the public 'already running'
+            // guard at the top of startOpenAiServer doesn't block a retry.
+            server = undefined;
+            currentBindAddress = null;
+            reject(err);
+        };
+        server!.once('error', onError);
         server!.listen(args.port, args.bindAddress, () => {
+            // Successful bind — drop the error handler so a later
+            // runtime error doesn't fire the same recovery path.
+            server!.removeListener('error', onError);
             const authDesc = authState.required
                 ? (authState.token ? 'with Bearer auth' : 'with Bearer auth (token NOT SET yet — endpoint will 503)')
                 : (isLoopback(args.bindAddress)
@@ -274,6 +307,7 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                     : 'unauthenticated BUT NOT ON LOOPBACK — refusing requests');
             vscode.window.showInformationMessage(
                 `OpenAI-compatible endpoint listening on http://${args.bindAddress}:${args.port}/v1/ — ${authDesc}`);
+            args.log(`OpenAI HTTP shim listening on http://${args.bindAddress}:${args.port}/v1/`);
             resolve();
         });
     });
