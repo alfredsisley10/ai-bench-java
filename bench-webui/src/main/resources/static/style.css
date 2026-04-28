@@ -124,3 +124,15 @@ table.sortable-table tbody tr.filtered-out { display: none; }
    exposing the rest via horizontal scroll. */
 .table-scroll { overflow-x: auto; max-width: 100%; }
 .table-scroll > table { width: 100%; }
+
+/* Log-tail category colours used by the server-rendered initial log
+   entries on result-detail.html. The JS poller mirrors the same
+   palette inline (CATEGORY_COLOR map in the page script). */
+.log-cat-PHASE   { color: #a78bfa; }
+.log-cat-INFO    { color: #9ca3af; }
+.log-cat-TEST    { color: #fbbf24; }
+.log-cat-TRACE   { color: #34d399; }
+.log-cat-CONTEXT { color: #60a5fa; }
+.log-cat-LLM     { color: #f472b6; }
+.log-cat-RESULT  { color: #10b981; }
+.log-cat-ERROR   { color: #ef4444; }

@@ -173,20 +173,18 @@
                 <div th:if="${run.logEntries.isEmpty()}" class="help-text" style="color:#9ca3af">
                     No log entries yet.
                 </div>
+                <!-- Per-entry colour comes from the static CSS classes
+                     defined further down (.log-cat-ERROR, .log-cat-LLM,
+                     etc.). Thymeleaf rejects multi-line ternary
+                     expressions with embedded ${...}, so the colour
+                     lookup is done via CSS class rather than inline
+                     style. -->
                 <div th:each="e : ${run.logEntries}"
                      th:if="${!run.logEntries.isEmpty()}"
                      style="white-space: pre-wrap; word-break: break-word">
                     <span th:text="${#temporals.format(e.ts, 'HH:mm:ss')}" style="color:#9ca3af"></span>
                     <span th:text="${'[' + e.category.name() + '] '}"
-                          th:style="'color:' +
-                            (${e.category.name()} == 'ERROR'   ? '#ef4444' :
-                             ${e.category.name()} == 'RESULT'  ? '#10b981' :
-                             ${e.category.name()} == 'LLM'     ? '#f472b6' :
-                             ${e.category.name()} == 'CONTEXT' ? '#60a5fa' :
-                             ${e.category.name()} == 'TRACE'   ? '#34d399' :
-                             ${e.category.name()} == 'TEST'    ? '#fbbf24' :
-                             ${e.category.name()} == 'PHASE'   ? '#a78bfa' :
-                             '#9ca3af')"></span>
+                          th:class="'log-cat log-cat-' + ${e.category.name()}"></span>
                     <span th:text="${e.message}"></span>
                 </div>
             </div>
