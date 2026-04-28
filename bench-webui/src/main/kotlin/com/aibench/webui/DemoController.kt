@@ -893,6 +893,8 @@ class DemoController(
             "startedAt" to run.startedAt.toString(),
             "endedAt" to run.endedAt?.toString(),
             "durationMs" to run.durationMs,
+            "usedRealLlm" to run.usedRealLlm,
+            "usedRealScoring" to run.usedRealScoring,
             "stats" to mapOf(
                 "tracesRecorded" to run.stats.tracesRecorded,
                 "tracesSubmitted" to run.stats.tracesSubmitted,

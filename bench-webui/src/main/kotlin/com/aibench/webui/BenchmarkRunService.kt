@@ -23,7 +23,8 @@ import java.util.concurrent.Executors
  */
 @Component
 class BenchmarkRunService(
-    private val priceCatalog: ModelPriceCatalog
+    private val priceCatalog: ModelPriceCatalog,
+    private val realExecutor: RealBenchmarkExecutor
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -86,7 +87,17 @@ class BenchmarkRunService(
         @Volatile var currentSeed: Int = 0,
         @Volatile var status: Status = Status.QUEUED,
         @Volatile var stats: RunStats = RunStats(),
-        @Volatile var seedResults: List<SeedResult> = emptyList()
+        @Volatile var seedResults: List<SeedResult> = emptyList(),
+        /** True once at least one seed got a real bridge response back.
+         *  Drives the result-detail banner: green "real LLM" vs amber
+         *  "synthetic" so operators can tell the modes apart. */
+        @Volatile var usedRealLlm: Boolean = false,
+        /** True once at least one seed went through RealBenchmarkExecutor
+         *  end-to-end (patch extracted + applied + tests run). Distinct
+         *  from `usedRealLlm` because the bridge can succeed but the
+         *  scoring path can still degrade to synthetic when the bug
+         *  branch isn't seeded. */
+        @Volatile var usedRealScoring: Boolean = false
     ) {
         // Keep the log structure thread-safe so the worker thread and
         // the HTTP poll handler can both touch it without locking.
@@ -307,12 +318,16 @@ class BenchmarkRunService(
             } else {
                 entry(run, Category.LLM, "Seed $seed → request: ${run.provider} model=${run.modelId}, prompt=${totalPromptTokens} tokens")
             }
+            val solveStart = System.currentTimeMillis()
+            var llmResponseText: String? = null
             val completion: Int = if (bridgeLive) {
                 val realResp = realLlmCall(run, seed, totalPromptTokens)
                 if (realResp != null) {
                     entry(run, Category.LLM,
                         "Seed $seed ← real response: ${realResp.completionTokens} completion tokens " +
                         "in ${realResp.latencyMillis}ms, patch ~${realResp.contentLength} chars")
+                    llmResponseText = realResp.content
+                    run.usedRealLlm = true
                     realResp.completionTokens
                 } else {
                     entry(run, Category.LLM, "Seed $seed ← bridge call FAILED, falling back to simulated count for this seed")
@@ -329,20 +344,64 @@ class BenchmarkRunService(
                 sim
             }
             totalCompletion += completion
+            val solveMs = System.currentTimeMillis() - solveStart
 
             phase(run, "score-seed-$seed", "Applying patch + running tests for seed $seed…")
-            sleep(900)
-            val total = failingTests.size + (3..6).random()
-            val passed = if (Math.random() > 0.45) total
-                         else (failingTests.size - (1..failingTests.size).random()).coerceAtLeast(0) + (3..5).random()
-            val seedPassed = passed >= total
-            val sr = SeedResult(seed, seedPassed, passed, total,
-                durationMs = (1400L + 900L), promptTokens = totalPromptTokens,
-                completionTokens = completion)
-            seedResults += sr
+            // Real scoring path: when the bridge gave us actual text,
+            // hand it to RealBenchmarkExecutor which extracts the patch,
+            // creates a per-seed git worktree on bug/<id>/break, runs
+            // gradle :app-bootstrap:test, and scores by exit code. Falls
+            // back to the synthetic path when (a) no bridge text, (b) no
+            // bug branch seeded, or (c) git/gradle pipeline blew up --
+            // each fallback is logged with the specific reason.
+            val seedResult: SeedResult = if (llmResponseText != null) {
+                val real = realExecutor.scoreSeed(
+                    runId = run.id,
+                    seedNumber = seed,
+                    issueId = run.issueId,
+                    llmResponseText = llmResponseText,
+                    logFn = { msg -> entry(run, Category.RESULT, msg) }
+                )
+                // Outcome PASSED, FAILED_TESTS, FAILED_PATCH_APPLY, and
+                // FAILED_NO_PATCH all mean the real path actually ran;
+                // only NO_BRANCH and GRADLE_ERROR are fall-through.
+                val ranRealScoring = real.outcome != RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH &&
+                                     real.outcome != RealBenchmarkExecutor.Outcome.FAILED_GRADLE_ERROR
+                if (ranRealScoring) run.usedRealScoring = true
+                if (real.outcome == RealBenchmarkExecutor.Outcome.FAILED_NO_BRANCH ||
+                    real.outcome == RealBenchmarkExecutor.Outcome.FAILED_GRADLE_ERROR) {
+                    entry(run, Category.INFO,
+                        "Seed $seed: real scoring degraded → ${real.message}. Falling back to synthetic outcome.")
+                    val total = failingTests.size + (3..6).random()
+                    val passed = if (Math.random() > 0.45) total
+                        else (failingTests.size - (1..failingTests.size).random()).coerceAtLeast(0) + (3..5).random()
+                    val ok = passed >= total
+                    SeedResult(seed, ok, passed, total,
+                        durationMs = solveMs + real.durationMs,
+                        promptTokens = totalPromptTokens, completionTokens = completion)
+                } else {
+                    SeedResult(seed,
+                        passed = real.outcome == RealBenchmarkExecutor.Outcome.PASSED,
+                        testsPassed = real.testsPassed,
+                        testsTotal = real.testsTotal.coerceAtLeast(real.testsPassed),
+                        durationMs = solveMs + real.durationMs,
+                        promptTokens = totalPromptTokens, completionTokens = completion)
+                }
+            } else {
+                sleep(900)
+                val total = failingTests.size + (3..6).random()
+                val passed = if (Math.random() > 0.45) total
+                             else (failingTests.size - (1..failingTests.size).random()).coerceAtLeast(0) + (3..5).random()
+                val ok = passed >= total
+                SeedResult(seed, ok, passed, total,
+                    durationMs = solveMs + 900L, promptTokens = totalPromptTokens,
+                    completionTokens = completion)
+            }
+            seedResults += seedResult
             run.seedResults = seedResults.toList()
-            entry(run, if (seedPassed) Category.RESULT else Category.RESULT,
-                "Seed $seed: ${if (seedPassed) "✓ PASS" else "✗ FAIL"} ($passed/$total tests)")
+            entry(run, Category.RESULT,
+                "Seed $seed: ${if (seedResult.passed) "✓ PASS" else "✗ FAIL"} " +
+                "(${seedResult.testsPassed}/${seedResult.testsTotal} tests, ${seedResult.durationMs}ms)")
         }
 
         // Phase 6: report
@@ -435,7 +494,9 @@ class BenchmarkRunService(
         val promptTokens: Int,
         val completionTokens: Int,
         val latencyMillis: Long,
-        val contentLength: Int
+        val contentLength: Int,
+        /** Full assistant message text, JSON-decoded. */
+        val content: String
     )
 
     /**
@@ -462,7 +523,12 @@ class BenchmarkRunService(
         return try {
             val req = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create("http://127.0.0.1:11434/v1/chat/completions"))
-                .timeout(java.time.Duration.ofSeconds(60))
+                // Copilot bridge round-trips can take 60-90s on the
+                // first call (cold model) and 30-60s steady-state;
+                // 180s gives headroom without blocking a stuck call
+                // forever. The HTTP client's connectTimeout is still
+                // 3s so a missing bridge fails fast.
+                .timeout(java.time.Duration.ofSeconds(180))
                 .header("Content-Type", "application/json")
                 // Scope this request to the BenchmarkRun so the bridge's
                 // /llm activity panel can filter by runId. The harness
@@ -473,7 +539,25 @@ class BenchmarkRunService(
                 .build()
             val client = java.net.http.HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(3)).build()
-            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            // Send asynchronously so we can emit "still waiting…"
+            // progress entries every 20s. Without this, the log tail
+            // looks frozen for up to 3 minutes during slow Copilot
+            // responses -- the operator can't tell "stuck" from
+            // "working." Any polling client (result-detail's 1.5s
+            // tick) sees the periodic entries and the latest elapsed
+            // time, so the page never looks dead.
+            val future = client.sendAsync(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            var resp: java.net.http.HttpResponse<String>? = null
+            while (resp == null) {
+                resp = try {
+                    future.get(20, java.util.concurrent.TimeUnit.SECONDS)
+                } catch (te: java.util.concurrent.TimeoutException) {
+                    val elapsed = (System.currentTimeMillis() - start) / 1000
+                    entry(run, Category.LLM,
+                        "Seed $seed … still waiting on bridge response (${elapsed}s elapsed)")
+                    null
+                }
+            }
             val ms = System.currentTimeMillis() - start
             if (resp.statusCode() !in 200..299) {
                 entry(run, Category.ERROR,
@@ -485,9 +569,14 @@ class BenchmarkRunService(
                 .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: contextTokens
             val completionTokens = Regex("\"completion_tokens\"\\s*:\\s*(\\d+)")
                 .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val content = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+            val rawContent = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
                 .find(payload)?.groupValues?.get(1) ?: ""
-            LlmCallResult(promptTokens, completionTokens, ms, content.length)
+            // Decode the JSON string escapes so downstream code (patch
+            // extractor, git apply) sees real newlines and quotes.
+            val content = rawContent
+                .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+                .replace("\\\"", "\"").replace("\\\\", "\\")
+            LlmCallResult(promptTokens, completionTokens, ms, content.length, content)
         } catch (e: Exception) {
             entry(run, Category.ERROR,
                 "Bridge call threw ${e.javaClass.simpleName}: ${e.message ?: ""}")
