@@ -33,7 +33,8 @@ import java.util.concurrent.TimeUnit
 @Component
 class RealBenchmarkExecutor(
     private val bankingApp: BankingAppManager,
-    private val connectionSettings: ConnectionSettings
+    private val connectionSettings: ConnectionSettings,
+    private val bugCatalog: BugCatalog
 ) {
 
     private val log = LoggerFactory.getLogger(RealBenchmarkExecutor::class.java)
@@ -143,22 +144,68 @@ class RealBenchmarkExecutor(
         }
         logFn("Seed $seedNumber: bug branch '$branch' exists -- creating per-seed worktree")
 
+        // Resolve which file paths the bug touches. We overlay them
+        // from the break branch onto a copy of the live working tree.
+        val touched = bugCatalog.getBug(issueId)?.filesTouched ?: emptyList()
         val seedRoot = Files.createTempDirectory("ai-bench-${runId}-seed-${seedNumber}-").toFile()
         return try {
-            // git worktree add -- shares .git with the main repo, so this
-            // is fast and disk-cheap. Detached HEAD on the branch tip so
-            // we never accidentally publish a per-seed mutation.
-            val worktreeAdd = runProcess(
-                listOf("git", "worktree", "add", "--detach", seedRoot.absolutePath, branch),
-                bankingDir, 60
-            )
-            if (worktreeAdd.exitCode != 0) {
-                return ScoreResult(Outcome.FAILED_GRADLE_ERROR, 0, 0,
-                    System.currentTimeMillis() - started,
-                    "git worktree add failed (exit ${worktreeAdd.exitCode}): ${worktreeAdd.tail(200)}",
-                    extractedPatch = patch)
+            // Copy the live banking-app working tree (the on-disk
+            // shape, with the gradle 9.4.1 / JDK 25 upgrade applied)
+            // rather than worktree-ing off git's `main` branch, which
+            // is stuck at the initial JDK 17 / gradle 8.14.4 commit
+            // and doesn't compile any of the switch-pattern code in
+            // shared-domain. The live working tree is the canonical
+            // "this builds today" snapshot.
+            //
+            // Skip .gradle, build, tmp -- per-subproject build outputs
+            // are large (~hundreds of MB) and gradle re-builds them
+            // anyway. Skip .git so the seed dir doesn't shadow any
+            // git operations on the parent.
+            val skipDirs = setOf(".git", ".gradle", "build", "tmp", "out", "node_modules")
+            bankingDir.walkTopDown()
+                .onEnter { it == bankingDir || (it.name !in skipDirs) }
+                .forEach { src ->
+                    val rel = src.absolutePath.removePrefix(bankingDir.absolutePath)
+                        .trimStart('/')
+                    if (rel.isEmpty()) return@forEach
+                    val dst = File(seedRoot, rel)
+                    if (src.isDirectory) {
+                        dst.mkdirs()
+                    } else if (src.isFile) {
+                        dst.parentFile?.mkdirs()
+                        src.copyTo(dst, overwrite = true)
+                        if (src.canExecute()) dst.setExecutable(true)
+                    }
+                }
+            logFn("Seed $seedNumber: seed dir at ${seedRoot.absolutePath} (copy of live banking-app)")
+
+            // Overlay the bug's filesTouched from the break branch.
+            // `git show <ref>:<path>` reads the file content at that
+            // ref from banking-app's git history and writes it to the
+            // seed file path. We don't need a .git in the seed dir
+            // for this -- git show queries the parent banking-app
+            // repo's git dir.
+            if (touched.isEmpty()) {
+                logFn("Seed $seedNumber: WARNING -- no filesTouched; patch will apply against working tree, not break.")
+            } else {
+                for (path in touched) {
+                    val show = runProcess(
+                        listOf("git", "show", "$branch:$path"),
+                        bankingDir, 15
+                    )
+                    if (show.exitCode != 0) {
+                        return ScoreResult(Outcome.FAILED_GRADLE_ERROR, 0, 0,
+                            System.currentTimeMillis() - started,
+                            "git show $branch:$path failed (exit ${show.exitCode}): " +
+                            show.tail(200),
+                            extractedPatch = patch)
+                    }
+                    val target = File(seedRoot, path)
+                    target.parentFile?.mkdirs()
+                    target.writeText(show.stdout)
+                }
+                logFn("Seed $seedNumber: overlaid ${touched.size} file(s) from $branch")
             }
-            logFn("Seed $seedNumber: worktree at ${seedRoot.absolutePath}")
 
             // Persist patch to disk so 'git apply' has a clean stdin.
             val patchFile = File(seedRoot, ".llm-patch.diff")
@@ -176,12 +223,22 @@ class RealBenchmarkExecutor(
             }
             logFn("Seed $seedNumber: ✓ patch applied cleanly")
 
-            // Run tests. Quiet console; capture exit code; bound to 5min.
-            // Pass operator's proxy/mirror sysprops through so the test
-            // gradle run respects /proxy config.
+            // Run the bug's specific test in the bug's module rather
+            // than :app-bootstrap:test (which is a smoke aggregator
+            // that doesn't include payments-hub / accounts-* tests).
+            // Filter to the hidden verification test so the run only
+            // exercises the JUnit case the patch is supposed to fix
+            // -- avoids dragging in unrelated module tests that might
+            // have transient failures.
+            val bug = bugCatalog.getBug(issueId)
+            val testTask = bug?.module?.takeIf { it.isNotBlank() }
+                ?.let { ":$it:test" } ?: ":app-bootstrap:test"
             val cmd = mutableListOf<String>().apply {
                 addAll(Platform.gradleWrapper(seedRoot))
-                add(":app-bootstrap:test")
+                add(testTask)
+                bug?.hiddenTestClass?.takeIf { it.isNotBlank() }?.let {
+                    add("--tests"); add(it)
+                }
                 add("--no-daemon")
                 add("--console=plain")
                 addAll(connectionSettings.gradleSystemProps())
@@ -189,9 +246,21 @@ class RealBenchmarkExecutor(
             val cmdJoined = cmd.joinToString(" ")
             logFn("Seed $seedNumber: running ${cmd.subList(0, 3).joinToString(" ")} … (cap 5min)")
             val testProc = runProcess(cmd, seedRoot, 300)
-            val testsTotal = parseInt(testProc.stdout, "(\\d+) tests?", default = 0)
-            val testsFailed = parseInt(testProc.stdout, "(\\d+) failed", default = 0)
-            val testsPassed = (testsTotal - testsFailed).coerceAtLeast(0)
+            // Test counts come from the JUnit XML reports gradle writes
+            // to <module>/build/test-results/test/TEST-*.xml. They are
+            // authoritative regardless of whether gradle re-ran the
+            // task or pulled the result FROM-CACHE -- the cached
+            // outputs include the report files. Parsing stdout's
+            // "ClassName > test PASSED" lines or the "N tests, N
+            // failed" summary fails when the test task is cached
+            // (those lines aren't emitted on cache-hit), which made
+            // every cached pass display as 0/0 even though exit_code
+            // was 0.
+            val (testsTotal, testsFailed, testsPassed) = parseJUnitReports(seedRoot, bug?.module)
+                .also { (t, f, _) -> if (t == 0) {
+                    logFn("Seed $seedNumber: WARNING -- 0 tests parsed from JUnit XML " +
+                        "(was the test task skipped? exit=${testProc.exitCode})")
+                }}
             val outcome = when {
                 testProc.exitCode == 0 -> Outcome.PASSED
                 testsFailed > 0 -> Outcome.FAILED_TESTS
@@ -224,14 +293,94 @@ class RealBenchmarkExecutor(
                 "Real scoring threw ${e.javaClass.simpleName}: ${e.message ?: ""}",
                 extractedPatch = patch)
         } finally {
-            // Clean up the worktree. 'git worktree remove --force' in the
-            // main repo invalidates the per-seed .git pointer; deleting
-            // the dir handles the file tree.
+            // Seed dir is a plain copy now (no git worktree), so just
+            // recursive-delete. We do still attempt `git worktree
+            // remove` defensively in case an older code path left a
+            // stale worktree entry behind.
             runCatching {
                 runProcess(listOf("git", "worktree", "remove", "--force", seedRoot.absolutePath),
                     bankingDir, 30)
             }
             runCatching { seedRoot.deleteRecursively() }
+        }
+    }
+
+    /**
+     * Read every JUnit XML report under
+     * <module>/build/test-results/test/ and sum tests / failures /
+     * errors / skipped across them. Authoritative because gradle
+     * always writes these reports, even when the test task is
+     * resolved FROM-CACHE -- unlike the stdout's per-test PASSED
+     * lines which are cache-suppressed.
+     *
+     * Returns Triple(total, failed, passed). When `module` is null we
+     * scan every subproject's build/test-results, which is how the
+     * fallback :app-bootstrap:test path lands here too.
+     */
+    private fun parseJUnitReports(seedRoot: File, module: String?): Triple<Int, Int, Int> {
+        val candidates = if (!module.isNullOrBlank())
+            listOf(File(seedRoot, "$module/build/test-results/test"))
+        else
+            seedRoot.walkTopDown()
+                .filter { it.isDirectory && it.name == "test" && it.parentFile?.name == "test-results" }
+                .toList()
+        var total = 0; var failed = 0
+        // Match the JUnit-XML <testsuite> attributes. We tolerate any
+        // attribute order; the only fields we need are tests / failures
+        // / errors / skipped. Disabled tests (different attribute) are
+        // counted as skipped if present.
+        val tag = Regex("<testsuite\\s[^>]*?>")
+        val attr = Regex("""(\w+)="(\d+)"""")
+        for (dir in candidates) {
+            if (!dir.isDirectory) continue
+            val files = dir.listFiles { f -> f.isFile && f.name.startsWith("TEST-") &&
+                f.name.endsWith(".xml") } ?: continue
+            for (xml in files) {
+                val head = runCatching { xml.bufferedReader().use { it.readText().take(2_000) } }
+                    .getOrDefault("")
+                val opening = tag.find(head) ?: continue
+                val attrs = attr.findAll(opening.value)
+                    .associate { it.groupValues[1] to it.groupValues[2].toInt() }
+                total += attrs["tests"] ?: 0
+                failed += (attrs["failures"] ?: 0) + (attrs["errors"] ?: 0)
+            }
+        }
+        val passed = (total - failed).coerceAtLeast(0)
+        return Triple(total, failed, passed)
+    }
+
+    /**
+     * Overlay the main-repo banking-app/'s gradle wrapper files on top
+     * of the seed worktree. We replace gradlew, gradlew.bat, and the
+     * full gradle/wrapper/ directory so the worktree uses main's
+     * gradle distribution + wrapper-properties even though the rest
+     * of the source is from the bug-break commit.
+     *
+     * <p>Conservative: nothing else is touched -- settings.gradle.kts,
+     * build.gradle.kts, and source files all stay at the break-commit
+     * shape. If main's settings references subprojects that don't
+     * exist on the break commit, the build will still fail; that's a
+     * deeper "bug branch is too far behind main" problem than this
+     * helper can fix.
+     */
+    private fun overlayMainWrapper(mainRepo: File, worktree: File) {
+        runCatching {
+            for (file in listOf("gradlew", "gradlew.bat")) {
+                val src = File(mainRepo, file)
+                if (src.isFile) {
+                    val dst = File(worktree, file)
+                    src.copyTo(dst, overwrite = true)
+                    dst.setExecutable(true)
+                }
+            }
+            val srcWrapper = File(mainRepo, "gradle/wrapper")
+            val dstWrapper = File(worktree, "gradle/wrapper")
+            if (srcWrapper.isDirectory) {
+                dstWrapper.mkdirs()
+                srcWrapper.listFiles()?.forEach { f ->
+                    if (f.isFile) f.copyTo(File(dstWrapper, f.name), overwrite = true)
+                }
+            }
         }
     }
 

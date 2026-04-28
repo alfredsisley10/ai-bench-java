@@ -71,6 +71,7 @@
                             <input type="checkbox" id="runs-select-all"
                                    title="Select all visible (filtered + on this page)">
                         </th>
+                        <th data-sort-key="started" data-sort-numeric="true">Started <span class="sort-indicator"></span></th>
                         <th data-sort-key="id">Run ID <span class="sort-indicator"></span></th>
                         <th data-sort-key="issue">Bug / Ticket <span class="sort-indicator"></span></th>
                         <th data-sort-key="provider">Solver <span class="sort-indicator"></span></th>
@@ -84,21 +85,23 @@
                     </tr>
                     <tr class="filter-row">
                         <th></th>
-                        <th><input type="text" data-filter-col="1" placeholder="filter id"></th>
-                        <th><input type="text" data-filter-col="2" placeholder="filter bug"></th>
-                        <th><input type="text" data-filter-col="3" placeholder="filter solver"></th>
-                        <th><input type="text" data-filter-col="4" placeholder="filter model"></th>
-                        <th><input type="text" data-filter-col="5" placeholder="filter mode"></th>
-                        <th><input type="text" data-filter-col="6" placeholder="filter status"></th>
-                        <th><input type="text" data-filter-col="7" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="1" placeholder="filter date"></th>
+                        <th><input type="text" data-filter-col="2" placeholder="filter id"></th>
+                        <th><input type="text" data-filter-col="3" placeholder="filter bug"></th>
+                        <th><input type="text" data-filter-col="4" placeholder="filter solver"></th>
+                        <th><input type="text" data-filter-col="5" placeholder="filter model"></th>
+                        <th><input type="text" data-filter-col="6" placeholder="filter mode"></th>
+                        <th><input type="text" data-filter-col="7" placeholder="filter status"></th>
                         <th><input type="text" data-filter-col="8" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="9" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="10" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="11" placeholder="≥, ≤, ="></th>
                     </tr>
                 </thead>
                 <tbody>
                 <tr th:each="r : ${runs}"
                     th:attr="data-id=${r.id},
+                             data-started=${r.startedAt.toEpochMilli()},
                              data-issue=${r.issueId},
                              data-provider=${r.provider},
                              data-model=${r.modelId},
@@ -116,6 +119,11 @@
                                           ? 'Cancel this run first before deleting'
                                           : 'Select this run for deletion'}">
                     </td>
+                    <!-- Condensed timestamp: MM-dd HH:mm. Full ISO timestamp
+                         is kept in the title attr for hover. data-started
+                         is epoch-millis so the column sorts numerically. -->
+                    <td th:title="${#temporals.format(r.startedAt, 'yyyy-MM-dd HH:mm:ss')}"
+                        th:text="${#temporals.format(r.startedAt, 'MM-dd HH:mm')}"></td>
                     <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
                     <td th:text="${r.issueId}"></td>
                     <td th:text="${r.provider}"></td>
