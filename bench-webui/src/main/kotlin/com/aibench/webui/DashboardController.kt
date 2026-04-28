@@ -19,8 +19,7 @@ import org.springframework.web.bind.annotation.RequestParam
 @Controller
 class DashboardController(
     private val benchmarkRuns: BenchmarkRunService,
-    private val registeredModels: RegisteredModelsRegistry,
-    private val bugCatalog: BugCatalog
+    private val registeredModels: RegisteredModelsRegistry
 ) {
 
     @GetMapping("/")
@@ -38,11 +37,14 @@ class DashboardController(
         model.addAttribute("solvers", registeredModels.availableProviders(session))
         model.addAttribute("runs", runs)
         model.addAttribute("connectedRepos", 0)
-        // BugCatalog already resolves bugs/ as a sibling of the
-        // BankingAppManager-located banking-app/ -- same path getBug()
-        // uses for per-bug yaml lookups, so the tile and the per-run
-        // audit page can never disagree on whether bugs/ is reachable.
-        model.addAttribute("availableBugs", bugCatalog.count())
+        // "Bugs" tile counts unique bug IDs that have at least one
+        // benchmark run -- consistent with Runs / Pass rate / Solvers
+        // which are all derived from the live runs list. The catalog's
+        // total (bugCatalog.count()) is the right number for the
+        // launcher's dropdown but on the dashboard the operator wants
+        // to know "how many distinct bugs have I actually benchmarked"
+        // -- a 12/12 catalog with no runs should read 0 here.
+        model.addAttribute("availableBugs", runs.map { it.issueId }.distinct().size)
         // Surface delete-result toast — set by deleteRuns() before
         // redirecting back here so the table re-renders with a one-
         // shot summary message.
