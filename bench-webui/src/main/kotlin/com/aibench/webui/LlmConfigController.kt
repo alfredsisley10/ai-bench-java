@@ -40,7 +40,8 @@ class LlmConfigController(
     private val connectionSettings: ConnectionSettings,
     private val secretStore: SecretStore,
     private val priceCatalog: ModelPriceCatalog,
-    private val registeredModelsRegistry: RegisteredModelsRegistry
+    private val registeredModelsRegistry: RegisteredModelsRegistry,
+    private val registeredModelsStore: RegisteredModelsStore
 ) {
 
     private val log = LoggerFactory.getLogger(LlmConfigController::class.java)
@@ -108,11 +109,24 @@ class LlmConfigController(
         const val OAI_AVAILABLE_MODELS = "corpOpenAi.availableModels"
     }
 
-    private fun getSessionModels(session: HttpSession): MutableList<ModelInfo> {
-        @Suppress("UNCHECKED_CAST")
-        return session.getAttribute("llmModels") as? MutableList<ModelInfo>
-            ?: mutableListOf<ModelInfo>().also { session.setAttribute("llmModels", it) }
-    }
+    /**
+     * Backwards-compat shim. Used to return a session-scoped list, but
+     * now reads from the disk-backed RegisteredModelsStore so manually-
+     * registered models survive bench-webui restarts.
+     *
+     * <p>Returned list is a defensive copy. Mutations should go through
+     * {@link RegisteredModelsStore#add},
+     * {@link RegisteredModelsStore#upsertById}, or
+     * {@link RegisteredModelsStore#removeById}, not by mutating this
+     * snapshot. Each call site that previously used the return value
+     * for direct add/remove was updated alongside this change.
+     *
+     * <p>The {@code session} parameter is retained for source
+     * compatibility but is ignored.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun getSessionModels(session: HttpSession): List<ModelInfo> =
+        registeredModelsStore.all()
 
     @GetMapping("/llm")
     fun config(model: Model, session: HttpSession): String {
@@ -562,18 +576,15 @@ class LlmConfigController(
         val cleanId = "copilot-" + modelId.trim().replace(Regex("[^a-zA-Z0-9_\\-]"), "-")
         val cleanName = (displayName?.trim()?.ifBlank { null }
             ?: "Copilot — ${modelId.trim()}")
-        val models = getSessionModels(session)
-        if (models.none { it.id == cleanId }) {
-            models.add(ModelInfo(
-                id = cleanId,
-                displayName = cleanName,
-                provider = "copilot",
-                modelIdentifier = modelId.trim(),
-                status = "available",
-                costPer1kPrompt = 0.0,
-                costPer1kCompletion = 0.0
-            ))
-        }
+        registeredModelsStore.add(ModelInfo(
+            id = cleanId,
+            displayName = cleanName,
+            provider = "copilot",
+            modelIdentifier = modelId.trim(),
+            status = "available",
+            costPer1kPrompt = 0.0,
+            costPer1kCompletion = 0.0
+        ))
         return "redirect:/llm#copilot"
     }
 
@@ -587,8 +598,6 @@ class LlmConfigController(
         @Suppress("UNCHECKED_CAST")
         val enumerated = (session.getAttribute(COPILOT_MODELS) as? List<Map<String, Any?>>)
             ?: return "redirect:/llm#copilot"
-        val models = getSessionModels(session)
-        val existingIds = models.map { it.id }.toMutableSet()
         // Also register a synthetic "auto" row so callers that just
         // want "whatever Copilot picks first" have an entry.
         val rows = mutableListOf<Pair<String, String>>()
@@ -600,17 +609,17 @@ class LlmConfigController(
         }
         for ((rawId, name) in rows) {
             val cleanId = "copilot-" + rawId.replace(Regex("[^a-zA-Z0-9_\\-]"), "-")
-            if (existingIds.add(cleanId)) {
-                models.add(ModelInfo(
-                    id = cleanId,
-                    displayName = name,
-                    provider = "copilot",
-                    modelIdentifier = rawId,
-                    status = "available",
-                    costPer1kPrompt = 0.0,
-                    costPer1kCompletion = 0.0
-                ))
-            }
+            registeredModelsStore.add(ModelInfo(
+                id = cleanId,
+                displayName = name,
+                provider = "copilot",
+                modelIdentifier = rawId,
+                status = "available",
+                costPer1kPrompt = 0.0,
+                costPer1kCompletion = 0.0
+            ))
+            // add() is a no-op when the id already exists, so this loop
+            // is naturally idempotent.
         }
         return "redirect:/llm#copilot"
     }
@@ -1106,8 +1115,8 @@ class LlmConfigController(
         @RequestParam(defaultValue = "0.0") costPer1kCompletion: Double,
         session: HttpSession
     ): String {
-        val models = getSessionModels(session)
-        models.add(ModelInfo(id, displayName, provider, modelIdentifier, "configured", costPer1kPrompt, costPer1kCompletion))
+        registeredModelsStore.add(ModelInfo(id, displayName, provider, modelIdentifier,
+            "configured", costPer1kPrompt, costPer1kCompletion))
         return "redirect:/llm"
     }
 
@@ -1119,17 +1128,19 @@ class LlmConfigController(
         @RequestParam costPer1kCompletion: Double,
         session: HttpSession
     ): String {
-        val models = getSessionModels(session)
-        val idx = models.indexOfFirst { it.id == modelId }
-        if (idx >= 0) {
-            models[idx] = models[idx].copy(displayName = displayName, costPer1kPrompt = costPer1kPrompt, costPer1kCompletion = costPer1kCompletion)
+        registeredModelsStore.upsertById(modelId) {
+            it.copy(
+                displayName = displayName,
+                costPer1kPrompt = costPer1kPrompt,
+                costPer1kCompletion = costPer1kCompletion
+            )
         }
         return "redirect:/llm"
     }
 
     @PostMapping("/llm/models/{modelId}/delete")
     fun deleteModel(@PathVariable modelId: String, session: HttpSession): String {
-        getSessionModels(session).removeIf { it.id == modelId }
+        registeredModelsStore.removeById(modelId)
         return "redirect:/llm"
     }
 

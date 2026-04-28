@@ -8,9 +8,11 @@ import org.springframework.stereotype.Component
  * reach right now". Combines two sources:
  *
  * <ul>
- *   <li><b>Session-stored entries</b> — everything the operator added via
- *       the Copilot wizard's Register button (or by other manual flows).
- *       Keyed in session under {@code llmModels}.</li>
+ *   <li><b>Persisted entries</b> — everything the operator added via the
+ *       Copilot wizard's Register button (or by other manual flows).
+ *       Stored in {@link RegisteredModelsStore}, which writes to
+ *       {@code ~/.ai-bench/registered-models.json} so they survive a
+ *       bench-webui restart.</li>
  *   <li><b>Auto-derived defaults</b> — synthetic entries that exist only
  *       when their underlying provider is healthy:
  *       <code>copilot-default</code> when the VSCode bridge socket is
@@ -24,7 +26,8 @@ import org.springframework.stereotype.Component
  */
 @Component
 class RegisteredModelsRegistry(
-    private val priceCatalog: ModelPriceCatalog
+    private val priceCatalog: ModelPriceCatalog,
+    private val registeredModelsStore: RegisteredModelsStore
 ) {
 
     /**
@@ -185,16 +188,18 @@ class RegisteredModelsRegistry(
             )
         }
 
-        @Suppress("UNCHECKED_CAST")
-        val sessionModels = (session.getAttribute("llmModels")
-            as? List<LlmConfigController.ModelInfo>) ?: emptyList()
+        // Manually-registered models come from the disk-backed store
+        // (~/.ai-bench/registered-models.json) so they survive a
+        // bench-webui restart. Previously kept in HttpSession under
+        // "llmModels", which was wiped on every JVM bounce.
+        val storedModels = registeredModelsStore.all()
 
-        // Auto-derived defaults take precedence by id; session-added
-        // entries with the same id are shadowed (rare, but possible if
-        // the operator manually registers `copilot-default`).
+        // Auto-derived defaults take precedence by id; store entries
+        // with the same id are shadowed (rare, but possible if the
+        // operator manually registers `copilot-default`).
         val seenIds = builtins.map { it.id }.toMutableSet()
         val merged = builtins.toMutableList()
-        for (m in sessionModels) {
+        for (m in storedModels) {
             if (seenIds.add(m.id)) merged += m
         }
         // Last pass: fill in per-1K pricing from the public catalog for
