@@ -580,6 +580,84 @@ class BenchmarkRunService(
     }
 
     /**
+     * Compose the (system, user) prompt pair sent to the bridge for
+     * each seed. The system prompt locks in the diff-only response
+     * format; the user prompt embeds the bug's natural-language
+     * problemStatement plus every file from filesTouched read off the
+     * break branch -- this is what makes the patch-extraction step
+     * usable.
+     *
+     * <p>Returns a wiring-only prompt (no source) when the bug isn't
+     * in the catalog OR the break-branch source can't be read; the
+     * caller's path still generates a valid bridge request, the seed
+     * just falls into FAILED_NO_PATCH downstream.
+     */
+    private fun buildSolverPrompt(run: BenchmarkRun, seed: Int): Pair<String, String> {
+        val bug = bugCatalog.getBug(run.issueId)
+        if (bug == null || bug.filesTouched.isEmpty()) {
+            val sys = "You are a senior Java engineer triaging a banking-app bug. " +
+                "Suggest a focused approach to investigate. Keep it under 6 bullet points; " +
+                "no preamble, no apologies, just actionable steps."
+            val usr = "Issue: ${run.issueId} -- ${run.issueTitle}.\n" +
+                "Provider: ${run.provider}, model: ${run.modelId}, " +
+                "context provider: ${run.contextProvider}, seed: $seed.\n" +
+                "(Bug metadata not loaded -- diff response format won't extract.)"
+            return sys to usr
+        }
+        val systemPrompt = """
+            You are a senior Java engineer fixing a single bug in a banking
+            application. Respond with ONLY a unified diff in a fenced ```diff
+            block -- no prose, no commentary, no explanation. The diff must:
+              * apply cleanly with `git apply` against the file(s) shown below
+              * use the exact path shown in the diff header (`--- a/<path>`
+                and `+++ b/<path>`), NOT a placeholder
+              * touch ONLY the file(s) shown -- do not invent or rename
+              * be minimal -- change only what's needed to fix the bug,
+                ideally a single hunk of a few lines
+              * preserve existing imports, package declarations, and formatting
+            If you cannot solve the bug from the information given, still
+            respond with a diff that takes a best-effort approach. A chat
+            reply that isn't a diff will be rejected.
+        """.trimIndent()
+        // Read each file at the break commit so the LLM sees exactly what
+        // RealBenchmarkExecutor will hand to `git apply`. Truncate is on
+        // the BugCatalog side (256KB cap) so what the operator sees on
+        // the audit page matches what the LLM saw.
+        val sources = bug.filesTouched.joinToString("\n\n") { path ->
+            val snap = bugCatalog.readFileAtRef(bug.breakCommit, path)
+            if (snap.content == null) {
+                "[unable to read $path at ${bug.breakCommit}: ${snap.error ?: "unknown error"}]"
+            } else {
+                buildString {
+                    append("File: ").append(path).append("\n")
+                    append("```java\n")
+                    append(snap.content)
+                    if (!snap.content.endsWith("\n")) append('\n')
+                    append("```")
+                }
+            }
+        }
+        val hintsBlock = if (bug.hints.isNotEmpty())
+            "\n\nHints:\n" + bug.hints.joinToString("\n") { "- $it" } else ""
+        val userPrompt = """
+            Issue ${run.issueId}: ${run.issueTitle}
+
+            Problem statement:
+            ${bug.problemStatement}$hintsBlock
+
+            Source code that may need modification (the file(s) listed in the
+            bug's filesTouched, read off the bug-break branch):
+
+            $sources
+
+            Reply with a unified diff in a ```diff fenced block. Apply minimal
+            changes. The diff will be piped directly into `git apply` against
+            a worktree at the bug-break commit.
+        """.trimIndent()
+        return systemPrompt to userPrompt
+    }
+
+    /**
      * Reachability check for the Copilot bridge's OpenAI shim. One TCP
      * connect with 500ms timeout; called once per run, not per seed.
      */
@@ -607,19 +685,20 @@ class BenchmarkRunService(
     /**
      * One real chat-completion request to the Copilot bridge, scoped
      * with the run id so the bridge's activity panel groups requests
-     * under this BenchmarkRun. Prompt is intentionally minimal -- we're
-     * exercising the wiring + capturing real token counts, not (yet)
-     * trying to actually solve the bug, since that needs the full source
-     * tree + patch-apply + test-runner harness which is a larger task.
+     * under this BenchmarkRun. The prompt now ships the bug's
+     * problemStatement + the buggy source files (read from the bug's
+     * break branch via BugCatalog) and explicitly asks for a unified
+     * diff so RealBenchmarkExecutor.extractPatch can pick it up. The
+     * earlier "suggest an approach" prompt was useful for wiring
+     * verification but always failed FAILED_NO_PATCH; this version is
+     * the actual benchmark.
+     *
+     * <p>Falls back to the wiring-only prompt when bug metadata isn't
+     * available (bugs/ dir missing or break-branch source unreadable)
+     * so the run still produces a token-count without crashing.
      */
     private fun realLlmCall(run: BenchmarkRun, seed: Int, contextTokens: Int): LlmCallResult? {
-        val systemPrompt =
-            "You are a senior Java engineer triaging a banking-app bug. " +
-            "Suggest a focused approach to investigate. Keep it under 6 bullet points; " +
-            "no preamble, no apologies, just actionable steps."
-        val userPrompt = "Issue: ${run.issueId} — ${run.issueTitle}.\n" +
-            "Provider: ${run.provider}, model: ${run.modelId}, " +
-            "context provider: ${run.contextProvider}, seed: $seed."
+        val (systemPrompt, userPrompt) = buildSolverPrompt(run, seed)
         // Send the vendor-side identifier (e.g. "gpt-4.1"), NOT the
         // registry-prefixed id. Copilot's bridge doesn't recognise the
         // "copilot-" prefix and silently falls back to whatever the
