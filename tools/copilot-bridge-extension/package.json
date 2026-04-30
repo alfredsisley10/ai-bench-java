@@ -2,7 +2,7 @@
   "name": "copilot-bridge",
   "displayName": "ai-bench Copilot Bridge",
   "description": "Exposes the user's GitHub Copilot chat entitlement over a TCP localhost endpoint (and an optional OpenAI-compatible HTTP endpoint), with a usage-stats dashboard.",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "publisher": "ai-bench",
   "license": "MIT",
   "icon": "icon.png",

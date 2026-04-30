@@ -44,6 +44,18 @@ function truncatePreview(s: string): string {
     return s.slice(0, PREVIEW_CHARS) + `\n… [truncated; ${s.length - PREVIEW_CHARS} more chars]`;
 }
 
+/**
+ * In-memory full-body store, keyed by record ts. We deliberately do NOT
+ * persist these — globalState is bounded and full prompts can hit
+ * megabytes per record. They survive while the VSCode window is open;
+ * on restart only the truncated preview remains. The webview's
+ * "View full prompt" button + the /v1/activity/full?ts=... HTTP route
+ * both serve from this map; both fall back gracefully (showing only
+ * the preview) when the entry has aged out.
+ */
+interface FullBody { promptFull: string; completionFull: string; ts: number; }
+const FULL_BODY_LIMIT = 200; // capped so a leak can't grow unbounded
+
 export interface ModelTotals {
     modelId: string;
     label: string;
@@ -126,9 +138,23 @@ const RECENT_LIMIT = 50;
 export class UsageTracker {
     private records: RawRecord[];
     private listeners: Array<() => void> = [];
+    /** Volatile full-body store; see FullBody comment above. */
+    private fullBodies: Map<number, FullBody> = new Map();
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.records = (context.globalState.get<RawRecord[]>(STATE_KEY) ?? []).slice(-MAX_RECORDS);
+    }
+
+    /** Return the full prompt + completion for a recorded ts, if still
+     *  in the in-memory store. Used by the webview "View full prompt"
+     *  button and the HTTP /v1/activity/full?ts=... route. */
+    getFullBody(ts: number): FullBody | undefined {
+        return this.fullBodies.get(ts);
+    }
+    /** Snapshot of every retained full body (newest first). Used by
+     *  Export and by /v1/activity/full when no ts is given. */
+    allFullBodies(): FullBody[] {
+        return Array.from(this.fullBodies.values()).sort((a, b) => b.ts - a.ts);
     }
 
     /**
@@ -164,6 +190,19 @@ export class UsageTracker {
         this.records.push(rec);
         if (this.records.length > MAX_RECORDS) {
             this.records.splice(0, this.records.length - MAX_RECORDS);
+        }
+        // Stash the full bodies in-memory only — see FullBody comment.
+        this.fullBodies.set(rec.ts,
+            { ts: rec.ts, promptFull: args.promptText, completionFull: args.completionText });
+        if (this.fullBodies.size > FULL_BODY_LIMIT) {
+            // Evict the oldest until we're under cap. Maps keep insertion
+            // order so the first key is the oldest.
+            const it = this.fullBodies.keys();
+            while (this.fullBodies.size > FULL_BODY_LIMIT) {
+                const k = it.next().value;
+                if (k === undefined) break;
+                this.fullBodies.delete(k);
+            }
         }
         // Persist async — don't block the chat path.
         this.context.globalState.update(STATE_KEY, this.records);
@@ -338,6 +377,7 @@ export class UsageTracker {
 
     clear(): void {
         this.records = [];
+        this.fullBodies.clear();
         this.context.globalState.update(STATE_KEY, this.records);
         this.fireListeners();
     }

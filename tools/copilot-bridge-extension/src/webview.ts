@@ -143,6 +143,86 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
                     });
                     break;
                 case 'setAuthRequired':     hooks.setAuthRequired(!!msg.required); break;
+                // -------- new in 0.2.18: full-body inspection + export --------
+                case 'requestFullBody': {
+                    // Operator clicked "View full" on a recent-activity row.
+                    // Look up the in-memory full body by ts and either open
+                    // it in a new editor tab, or surface a not-retained
+                    // toast when the record has aged out of the cap.
+                    const wantedTs = Number(msg.ts);
+                    const body = hooks.tracker.getFullBody(wantedTs);
+                    if (!body) {
+                        vscode.window.showWarningMessage(
+                            `Full prompt for ts=${wantedTs} is no longer retained ` +
+                            `(in-memory cap exceeded or VSCode reload since the call).`
+                        );
+                    } else {
+                        // Two side-by-side editors so the operator can scroll
+                        // them independently. Markdown so VSCode renders the
+                        // fenced blocks Navie / Oracle ship in the prompt.
+                        const promptDoc = await vscode.workspace.openTextDocument(
+                            { language: 'markdown',
+                              content: '# Prompt sent to Copilot (ts=' + wantedTs + ')\n\n' + body.promptFull });
+                        await vscode.window.showTextDocument(promptDoc,
+                            { viewColumn: vscode.ViewColumn.One, preview: false });
+                        const compDoc = await vscode.workspace.openTextDocument(
+                            { language: 'markdown',
+                              content: '# Completion from Copilot (ts=' + wantedTs + ')\n\n' + body.completionFull });
+                        await vscode.window.showTextDocument(compDoc,
+                            { viewColumn: vscode.ViewColumn.Beside, preview: false });
+                    }
+                    break;
+                }
+                case 'requestExport': {
+                    // Save every retained full body + the snapshot record
+                    // to a JSONL file. One line per record so the operator
+                    // can `jq` over it. Snapshot stats (per-model totals,
+                    // per-client totals) go in a sibling .summary.json.
+                    const defaultName = 'copilot-bridge-export-' +
+                        new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl';
+                    const target = await vscode.window.showSaveDialog({
+                        defaultUri: vscode.Uri.file(defaultName),
+                        filters: { 'JSON Lines': ['jsonl'], 'All files': ['*'] },
+                    });
+                    if (!target) break;
+                    const snap = hooks.tracker.snapshot();
+                    const fulls = new Map(hooks.tracker.allFullBodies().map(b => [b.ts, b]));
+                    // recent[] is already truncated previews + tokens; we
+                    // merge in the full bodies (when retained) so the
+                    // export is complete-as-possible.
+                    const lines = snap.recent.map(r => {
+                        const ts = new Date(r.whenIso).getTime();
+                        const full = fulls.get(ts);
+                        return JSON.stringify({
+                            ...r,
+                            ts,
+                            promptFull:     full?.promptFull     ?? null,
+                            completionFull: full?.completionFull ?? null,
+                        });
+                    });
+                    const summary = {
+                        sinceIso: snap.sinceIso,
+                        totalRequests: snap.totalRequests,
+                        totalPromptTokens: snap.totalPromptTokens,
+                        totalCompletionTokens: snap.totalCompletionTokens,
+                        totalEstimatedCostUsd: snap.totalEstimatedCostUsd,
+                        perModel: snap.perModel,
+                        perClient: snap.perClient,
+                        fullBodiesRetained: fulls.size,
+                        exportedAt: new Date().toISOString(),
+                    };
+                    const fs = require('fs');
+                    fs.writeFileSync(target.fsPath, lines.join('\n') + '\n', 'utf8');
+                    fs.writeFileSync(target.fsPath.replace(/\.jsonl$/, '.summary.json'),
+                        JSON.stringify(summary, null, 2), 'utf8');
+                    vscode.window.showInformationMessage(
+                        `Exported ${lines.length} record(s) to ${target.fsPath}` +
+                        (fulls.size < snap.recent.length
+                            ? `; ${snap.recent.length - fulls.size} older record(s) had previews only (full bodies aged out)`
+                            : '')
+                    );
+                    break;
+                }
             }
         } catch (e: any) {
             // EADDRINUSE on startOpenAi has a deterministic cause + fix.
@@ -338,7 +418,15 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
     <select id="recentRunIdFilter" style="padding:0.15em 0.3em; min-width:14em">
         <option value="">All requests</option>
     </select>
-    <span class="help" style="margin-left:0.4em">· click a row to inspect the full prompt + response.</span>
+    <span class="help" style="margin-left:0.4em">·</span>
+    <!-- Pause auto-refresh while inspecting a long prompt. The 3s
+         tick was scrolling the view back to the top; this lets the
+         operator freeze the panel until they release it. -->
+    <button id="recentPauseBtn" type="button" class="btn" style="padding:0.15em 0.6em">⏸ Pause refresh</button>
+    <button id="recentExportBtn" type="button" class="btn" style="padding:0.15em 0.6em"
+            title="Save the in-memory full bodies + summary stats to a JSONL file">⤓ Export…</button>
+    <span class="help" style="margin-left:0.4em">·</span>
+    <span class="help">click a row to inspect the prompt preview, or use <strong>View full</strong> to open the complete prompt in side-by-side editors.</span>
 </div>
 <table id="recent"><thead><tr>
     <th></th><!-- expand chevron column -->
@@ -497,6 +585,12 @@ var recentRunIdFilter = (function(){
 // Set of recent-activity row indexes currently expanded; lets us preserve
 // the user's drill-in across snapshot pushes.
 var expandedRecentIdx = {};
+// Pause-refresh latch. While true, periodic 3s ticks and snapshot
+// pushes do NOT re-render the Recent activity table — so the operator
+// can read a long prompt without the panel scrolling itself back to
+// the top. Manual interactions (page-size, filter, row click, View
+// full) bypass the latch.
+var recentPaused = false;
 
 function renderStats() {
     var snap = state.snapshot || { totalRequests:0, totalPromptTokens:0, totalCompletionTokens:0, totalEstimatedCostUsd:0, perModel:[], perClient:[], recent:[] };
@@ -556,7 +650,19 @@ function escapeHtml(s){
  *     for diagnosing prompts the harness sent through the bridge
  */
 function renderRecent(rows){
+    // Pause refresh: if the operator hit Pause, ignore tick-driven
+    // re-renders. Manual interactions (page-size change, filter change,
+    // row click, View full) bypass the pause via the renderRecent calls
+    // they make directly with renderRecent.allowDuringPause = true.
+    if (recentPaused && !renderRecent.__force) return;
+    renderRecent.__force = false;
     var tbody = document.querySelector('#recent tbody');
+    // Preserve scroll position across the innerHTML replace below —
+    // before this guard, the auto-refresh tick reset the panel to the
+    // top of the table every 3s, which made reading any prompt longer
+    // than the viewport painful.
+    var scroller = document.scrollingElement || document.documentElement;
+    var savedScrollTop = scroller.scrollTop;
     // Refresh the runId filter dropdown's option list from the current
     // snapshot so newly-tagged runs appear without a panel reload.
     syncRunIdFilterOptions(rows);
@@ -590,15 +696,31 @@ function renderRecent(rows){
         // didn't capture text (older record from before the upgrade),
         // surface that explicitly so the user knows why the box is empty.
         var hasText = (r.promptPreview && r.promptPreview.length) || (r.completionPreview && r.completionPreview.length);
+        // ts (unix-millis) is used by the View-full button to look up
+        // the in-memory full body. recentEntries keep .whenIso (ISO);
+        // we convert here so the click handler can postMessage(ts).
+        var ts = new Date(r.whenIso).getTime();
+        var viewFullBtn =
+          '<button type="button" class="btn view-full-btn" ' +
+            'data-ts="' + ts + '" ' +
+            'style="padding:0.1em 0.6em; margin-left:0.4em; font-size:0.85em">' +
+            '⤢ View full prompt + completion in editors' +
+          '</button>';
         var body = hasText
-            ? '<div style="display:flex;gap:0.6em;flex-wrap:wrap">' +
-                '<div style="flex:1 1 24em;min-width:18em">' +
-                  '<div class="help" style="margin-bottom:0.2em">Prompt</div>' +
-                  '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.promptPreview || '(empty)') + '</pre>' +
+            ? '<div>' +
+                '<div class="help" style="margin-bottom:0.3em">' +
+                  'Preview shows the first ~1.5K chars of each side. ' +
+                  viewFullBtn +
                 '</div>' +
-                '<div style="flex:1 1 24em;min-width:18em">' +
-                  '<div class="help" style="margin-bottom:0.2em">Completion</div>' +
-                  '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.completionPreview || '(empty)') + '</pre>' +
+                '<div style="display:flex;gap:0.6em;flex-wrap:wrap">' +
+                  '<div style="flex:1 1 24em;min-width:18em">' +
+                    '<div class="help" style="margin-bottom:0.2em">Prompt (preview)</div>' +
+                    '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.promptPreview || '(empty)') + '</pre>' +
+                  '</div>' +
+                  '<div style="flex:1 1 24em;min-width:18em">' +
+                    '<div class="help" style="margin-bottom:0.2em">Completion (preview)</div>' +
+                    '<pre style="margin:0;padding:0.4em;background:#0b1220;color:#cbd5e1;border-radius:3px;white-space:pre-wrap;word-break:break-word;max-height:18em;overflow:auto;font-size:0.82em">' + escapeHtml(r.completionPreview || '(empty)') + '</pre>' +
+                  '</div>' +
                 '</div>' +
               '</div>'
             : '<div class="help">No prompt/completion text captured for this record. Records logged before the upgrade only retained summary stats; new requests after upgrading will include the click-to-expand preview.</div>';
@@ -613,8 +735,25 @@ function renderRecent(rows){
         tr.addEventListener('click', function(){
             var idx = tr.getAttribute('data-idx');
             expandedRecentIdx[idx] = !expandedRecentIdx[idx];
+            renderRecent.__force = true;
             renderRecent(rows);
         });
+    });
+    // View-full button → postMessage('requestFullBody'). Stop event
+    // propagation so the row's collapse-toggle doesn't fire.
+    tbody.querySelectorAll('.view-full-btn').forEach(function(btn){
+        btn.addEventListener('click', function(e){
+            e.stopPropagation();
+            var ts = Number(btn.getAttribute('data-ts'));
+            vscode.postMessage({ type: 'requestFullBody', ts: ts });
+        });
+    });
+    // Restore scroll position. requestAnimationFrame so the new DOM has
+    // settled before we set the offset; otherwise the browser snaps to
+    // the document head briefly between the innerHTML replace and our
+    // restore call.
+    requestAnimationFrame(function(){
+        scroller.scrollTop = savedScrollTop;
     });
 }
 
@@ -645,6 +784,47 @@ window.addEventListener('message', function(ev){
     }
 });
 document.getElementById('clearBtn').onclick = function(){ vscode.postMessage({ type: 'clear' }); };
+
+// Pause / Resume refresh button — toggles recentPaused. Visual marker
+// (orange = paused) so it's obvious the panel isn't auto-updating. The
+// snapshot tick still records new bridge calls; just doesn't repaint
+// the table while paused.
+(function(){
+    var btn = document.getElementById('recentPauseBtn');
+    if (!btn) return;
+    function paint(){
+        if (recentPaused) {
+            btn.textContent = '▶ Resume refresh';
+            btn.style.background = '#fef3c7';
+            btn.style.color = '#92400e';
+            btn.style.borderColor = '#f59e0b';
+        } else {
+            btn.textContent = '⏸ Pause refresh';
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.style.borderColor = '';
+        }
+    }
+    btn.addEventListener('click', function(){
+        recentPaused = !recentPaused;
+        paint();
+        if (!recentPaused && state.snapshot) {
+            renderRecent.__force = true;
+            renderRecent(state.snapshot.recent || []);
+        }
+    });
+    paint();
+})();
+
+// Export button → postMessage. Extension shows a save dialog and
+// writes the JSONL + summary file. No client-side state to manage.
+(function(){
+    var btn = document.getElementById('recentExportBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function(){
+        vscode.postMessage({ type: 'requestExport' });
+    });
+})();
 
 // Refresh the runId filter dropdown with the distinct runIds present
 // in the current snapshot. Preserves the user's selection if the

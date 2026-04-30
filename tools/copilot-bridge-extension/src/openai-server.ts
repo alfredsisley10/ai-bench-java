@@ -167,6 +167,39 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                 });
             }
 
+            // Full prompt/completion bodies for one record (or all in
+            // memory). Returns 404 when the record has aged out of the
+            // in-memory FullBody map (capped + lost on VSCode reload).
+            //
+            //   GET /v1/activity/full              -> ALL retained full bodies
+            //   GET /v1/activity/full?ts=<ms>      -> single record by ts
+            //
+            // Used by the webview's "View full prompt" button AND by
+            // the bench-webui / claude-code agents that want to verify
+            // exactly what reached Copilot — without parsing webview HTML.
+            if (req.method === 'GET' &&
+                (url.pathname === '/v1/activity/full' || url.pathname === '/activity/full')) {
+                const wanted = url.searchParams.get('ts');
+                if (wanted) {
+                    const tsNum = Number(wanted);
+                    if (!Number.isFinite(tsNum)) {
+                        return send(res, 400, { error: { message: 'ts must be a unix-millis number', type: 'bad_request' }});
+                    }
+                    const body = args.tracker.getFullBody(tsNum);
+                    if (!body) {
+                        return send(res, 404, {
+                            error: { message: `No retained full body for ts=${tsNum} — likely aged out of the in-memory cap or lost on VSCode reload.`, type: 'not_retained' },
+                            ts: tsNum,
+                        });
+                    }
+                    return send(res, 200, body);
+                }
+                return send(res, 200, {
+                    note: 'Full prompt/completion bodies are kept only in memory (lost on VSCode reload, capped at the most-recent N requests). Pass ?ts=<unix-millis> for a single record.',
+                    bodies: args.tracker.allFullBodies(),
+                });
+            }
+
             // Per-runId activity query. Returns the authoritative token
             // totals + per-model breakdown for a single BenchmarkRun.id
             // (or whatever caller-correlation slug was tagged on
