@@ -214,16 +214,6 @@ class ModelPriceCatalog {
                    notes = "Copilot seat-priced; router picks per request — rate estimated at the GPT-4o direct rate (most-common backend)"),
         ModelPrice("copilot-copilot-fast", "Copilot Fast (via Copilot)", "copilot", "copilot-fast",
                    0.00015, 0.0006, "chat",
-                   notes = "Copilot seat-priced; latency-optimised route — rate estimated at GPT-4o-mini's direct rate"),
-
-        // --- AppMap Navie (rides on top of Copilot via the bridge) ----
-        // No incremental per-token charge above what Copilot already
-        // costs the seat. Listed here so cost-per-run computations
-        // resolve to $0 (matching the seat-priced reality) and so the
-        // catalog table documents the routing model for ops/finance.
-        ModelPrice("appmap-navie-via-copilot", "AppMap Navie via Copilot",
-                   "appmap-navie", "navie-via-copilot",
-                   0.0, 0.0, "chat",
-                   notes = "AppMap CLI's Navie context engine; LLM calls flow through the local Copilot bridge — Copilot seat price applies, no separate Navie token charge")
+                   notes = "Copilot seat-priced; latency-optimised route — rate estimated at GPT-4o-mini's direct rate")
     )
 }

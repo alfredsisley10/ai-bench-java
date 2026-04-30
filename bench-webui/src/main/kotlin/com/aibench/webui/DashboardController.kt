@@ -19,8 +19,38 @@ import org.springframework.web.bind.annotation.RequestParam
 @Controller
 class DashboardController(
     private val benchmarkRuns: BenchmarkRunService,
-    private val registeredModels: RegisteredModelsRegistry
+    private val registeredModels: RegisteredModelsRegistry,
+    private val bugCatalog: BugCatalog
 ) {
+
+    /** A single PASSED run, denormalised against its bug metadata so the
+     *  leaderboard can pivot on difficulty / category without a second
+     *  catalog hit per row. */
+    data class PassRecord(
+        val bugId: String,
+        val durationMs: Long,
+        val costUsd: Double,
+        val difficulty: String,
+        val category: String
+    )
+
+    /** Per-model leaderboard summary. Lists the operator's fastest /
+     *  cheapest successful solve and how the model's solve set breaks
+     *  down by bug difficulty + category — the answer to "which models
+     *  are best for which kinds of problems?". */
+    data class LeaderboardEntry(
+        val modelId: String,
+        val provider: String,
+        val totalRuns: Int,
+        val passedRuns: Int,
+        val passRate: Double,
+        val fastest: PassRecord?,
+        val cheapest: PassRecord?,
+        val avgPassMs: Long,
+        val avgPassCostUsd: Double,
+        val solvedByDifficulty: Map<String, Int>,
+        val solvedByCategory: Map<String, Int>
+    )
 
     @GetMapping("/")
     fun dashboard(model: Model, session: HttpSession): String {
@@ -45,6 +75,54 @@ class DashboardController(
         // to know "how many distinct bugs have I actually benchmarked"
         // -- a 12/12 catalog with no runs should read 0 here.
         model.addAttribute("availableBugs", runs.map { it.issueId }.distinct().size)
+
+        // Leaderboard — group PASSED runs by model, aggregate fastest /
+        // cheapest / problem-type breakdown. Bug difficulty + category
+        // come from the YAML catalog (BugCatalog.getBug); when the bug
+        // is enterprise (issueId like "repo:ticket") or the catalog
+        // can't resolve it, the run still counts but lands in the
+        // "(unknown)" bucket so the operator at least sees the totals.
+        val totalsByModel = runs.groupingBy { it.modelId }.eachCount()
+        val passedRuns = runs.filter { it.status.name == "PASSED" }
+        val passRecordsByModel: Map<String, List<Triple<String, PassRecord, String>>> = passedRuns
+            .groupBy { it.modelId }
+            .mapValues { (_, modelRuns) ->
+                modelRuns.map { run ->
+                    val bug = bugCatalog.getBug(run.issueId)
+                    val record = PassRecord(
+                        bugId = run.issueId,
+                        durationMs = run.durationMs,
+                        costUsd = run.stats.estimatedCostUsd,
+                        difficulty = bug?.difficulty?.takeIf { it.isNotBlank() } ?: "(unknown)",
+                        category = bug?.category?.takeIf { it.isNotBlank() } ?: "(unknown)"
+                    )
+                    Triple(run.provider, record, run.modelId)
+                }
+            }
+        val leaderboard = passRecordsByModel.map { (modelId, triples) ->
+            val records = triples.map { it.second }
+            val provider = triples.first().first
+            val totalForModel = totalsByModel[modelId] ?: records.size
+            LeaderboardEntry(
+                modelId = modelId,
+                provider = provider,
+                totalRuns = totalForModel,
+                passedRuns = records.size,
+                passRate = records.size.toDouble() / totalForModel,
+                fastest = records.minByOrNull { it.durationMs },
+                cheapest = records.minByOrNull { it.costUsd },
+                avgPassMs = records.map { it.durationMs }.average().toLong(),
+                avgPassCostUsd = records.map { it.costUsd }.average(),
+                solvedByDifficulty = records.groupingBy { it.difficulty }.eachCount()
+                    .toList().sortedByDescending { it.second }.toMap(LinkedHashMap()),
+                solvedByCategory = records.groupingBy { it.category }.eachCount()
+                    .toList().sortedByDescending { it.second }.toMap(LinkedHashMap())
+            )
+        }.sortedWith(
+            compareByDescending<LeaderboardEntry> { it.passedRuns }
+                .thenBy { it.avgPassMs }
+        )
+        model.addAttribute("leaderboard", leaderboard)
         // Surface delete-result toast — set by deleteRuns() before
         // redirecting back here so the table re-renders with a one-
         // shot summary message.

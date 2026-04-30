@@ -307,43 +307,46 @@ npm run package      # produces copilot-bridge.vsix</pre>
                                placeholder="openai.read openai.write" style="width:400px">
                     </label>
 
-                    <fieldset style="margin-top:0.5em; padding:0.5em; border:1px solid #d6d8db; border-radius:4px">
-                        <legend class="help-text">Secret storage (applies to client_secret and to any header marked secret)</legend>
-                        <label style="margin:0.2em 0">
-                            <input type="radio" name="secretStorage" value="memory"
-                                   th:checked="${secretStorage == 'memory'}">
-                            <strong>In memory only</strong>
-                            <span class="help-text" style="margin-left:0.5em">— stored in this session; cleared on WebUI restart</span>
-                        </label>
-                        <label style="margin:0.2em 0" th:if="${keystoreAvailable}">
-                            <input type="radio" name="secretStorage" value="keystore"
-                                   th:checked="${secretStorage == 'keystore'}">
-                            <strong>OS keystore</strong>
-                            <span class="help-text" style="margin-left:0.5em"
-                                  th:text="'— persistent (' + ${keystoreBackendName} + ')'"></span>
-                        </label>
-                        <label style="margin:0.2em 0">
-                            <input type="radio" name="secretStorage" value="vault"
-                                   th:checked="${secretStorage == 'vault'}">
-                            <strong>HashiCorp Vault (via env var)</strong>
-                            <span class="help-text" style="margin-left:0.5em">
-                                — secret value is an env-var NAME; actual secret is
-                                injected by Vault Agent / the OpenShift injector at
-                                launch time
-                            </span>
-                        </label>
-                        <p class="help-text" th:unless="${keystoreAvailable}" style="margin:0.2em 0">
+                    <fieldset style="margin-top:0.5em; padding:0.5em 0.75em; border:1px solid #d6d8db; border-radius:4px">
+                        <legend class="help-text">Secret storage</legend>
+                        <div style="display:flex; flex-wrap:wrap; gap:1em 1.5em; align-items:center">
+                            <label style="display:inline-flex; align-items:center; gap:0.35em; margin:0"
+                                   title="Stored in this session only; cleared when the WebUI restarts.">
+                                <input type="radio" name="secretStorage" value="memory"
+                                       th:checked="${secretStorage == 'memory'}">
+                                <strong>In memory</strong>
+                            </label>
+                            <label style="display:inline-flex; align-items:center; gap:0.35em; margin:0"
+                                   th:if="${keystoreAvailable}"
+                                   th:title="'Persistent via ' + ${keystoreBackendName} + '.'">
+                                <input type="radio" name="secretStorage" value="keystore"
+                                       th:checked="${secretStorage == 'keystore'}">
+                                <strong>OS keystore</strong>
+                            </label>
+                            <label style="display:inline-flex; align-items:center; gap:0.35em; margin:0"
+                                   title="Secret value is an env-var NAME; the real secret is injected at launch by Vault Agent or the OpenShift injector.">
+                                <input type="radio" name="secretStorage" value="vault"
+                                       th:checked="${secretStorage == 'vault'}">
+                                <strong>HashiCorp Vault</strong>
+                            </label>
+                            <span class="help-text" style="margin-left:auto">Applies to client_secret and any header marked secret. Hover for details.</span>
+                        </div>
+                        <p class="help-text" th:unless="${keystoreAvailable}" style="margin:0.4em 0 0 0">
                             OS keystore not available on this host —
                             <code th:text="${keystoreBackendName}"></code>. Install
                             <code>security</code>/<code>secret-tool</code>/<code>cmdkey</code>,
                             or choose memory / Vault mode.
                         </p>
-                        <label>clientId env-var name (harness reads value from here):
-                            <input name="clientIdEnvName" th:value="${clientIdEnvName}" style="width:250px">
-                        </label>
-                        <label>clientSecret env-var name:
-                            <input name="clientSecretEnvName" th:value="${clientSecretEnvName}" style="width:250px">
-                        </label>
+                        <div style="display:flex; flex-wrap:wrap; gap:0.5em 1em; align-items:center; margin-top:0.4em">
+                            <label style="display:inline-flex; align-items:center; gap:0.35em; margin:0">
+                                <span class="help-text">clientId env-var:</span>
+                                <input name="clientIdEnvName" th:value="${clientIdEnvName}" style="width:220px">
+                            </label>
+                            <label style="display:inline-flex; align-items:center; gap:0.35em; margin:0">
+                                <span class="help-text">clientSecret env-var:</span>
+                                <input name="clientSecretEnvName" th:value="${clientSecretEnvName}" style="width:220px">
+                            </label>
+                        </div>
                     </fieldset>
                     <div class="button-row">
                         <button type="submit" class="btn-sm">Save credentials</button>

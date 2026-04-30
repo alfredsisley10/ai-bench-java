@@ -56,9 +56,16 @@ class BenchmarkRunService(
         val passed: Boolean,
         val testsPassed: Int,
         val testsTotal: Int,
+        /** Total wall time for this seed = solveMs + executionMs. */
         val durationMs: Long,
         val promptTokens: Int,
-        val completionTokens: Int
+        val completionTokens: Int,
+        /** Time spent waiting on the LLM (or simulated LLM) for the
+         *  patch response only. Excludes patch-apply and test-run cost. */
+        val solveMs: Long = 0L,
+        /** Time spent applying the patch + running gradle tests; the
+         *  "benchmark execution" portion of the seed wall clock. */
+        val executionMs: Long = 0L
     )
 
     /**
@@ -165,6 +172,17 @@ class BenchmarkRunService(
 
         val durationMs: Long get() =
             ((endedAt ?: Instant.now()).toEpochMilli() - startedAt.toEpochMilli())
+
+        /** Wall time the LLM (or its simulator) was busy producing the
+         *  patch — summed across every seed completed so far. The runs
+         *  table shows this side-by-side with the overall durationMs so
+         *  the operator can tell "fast model + slow tests" runs apart
+         *  from "slow model + fast tests" ones. */
+        val totalLlmMs: Long get() = seedResults.sumOf { it.solveMs }
+        /** Wall time spent applying patches + running gradle for every
+         *  completed seed. Roughly durationMs minus totalLlmMs minus
+         *  per-run setup (prepare / discover-tests / collect-traces). */
+        val totalExecutionMs: Long get() = seedResults.sumOf { it.executionMs }
 
         /** 0..100 progress estimate based on the phase order. */
         val percent: Int get() = when (phase) {
@@ -488,14 +506,16 @@ class BenchmarkRunService(
                     val ok = passed >= total
                     SeedResult(seed, ok, passed, total,
                         durationMs = solveMs + real.durationMs,
-                        promptTokens = totalPromptTokens, completionTokens = completion)
+                        promptTokens = totalPromptTokens, completionTokens = completion,
+                        solveMs = solveMs, executionMs = real.durationMs)
                 } else {
                     SeedResult(seed,
                         passed = real.outcome == RealBenchmarkExecutor.Outcome.PASSED,
                         testsPassed = real.testsPassed,
                         testsTotal = real.testsTotal.coerceAtLeast(real.testsPassed),
                         durationMs = solveMs + real.durationMs,
-                        promptTokens = totalPromptTokens, completionTokens = completion)
+                        promptTokens = totalPromptTokens, completionTokens = completion,
+                        solveMs = solveMs, executionMs = real.durationMs)
                 }
             } else {
                 sleep(900)
@@ -505,7 +525,8 @@ class BenchmarkRunService(
                 val ok = passed >= total
                 SeedResult(seed, ok, passed, total,
                     durationMs = solveMs + 900L, promptTokens = totalPromptTokens,
-                    completionTokens = completion)
+                    completionTokens = completion,
+                    solveMs = solveMs, executionMs = 900L)
             }
             seedResults += seedResult
             run.seedResults = seedResults.toList()

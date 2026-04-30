@@ -112,104 +112,102 @@ class RunLauncherController(
     fun launch(
         @RequestParam(required = false) targetType: String?,
         @RequestParam(required = false) bugId: String?,
+        @RequestParam(required = false) bugIds: List<String>?,
         @RequestParam(required = false) repoName: String?,
         @RequestParam(required = false) jiraTicket: String?,
         @RequestParam(required = false) provider: String?,
         @RequestParam(required = false) modelId: String?,
+        @RequestParam(required = false) modelIds: List<String>?,
         @RequestParam(defaultValue = "none") contextProvider: String,
         @RequestParam(required = false) appmapMode: String?,
         @RequestParam(defaultValue = "3") seeds: Int,
         session: HttpSession
     ): String {
-        // Validate required fields ourselves rather than relying on
-        // Spring's @RequestParam binding to throw 400. The opaque
-        // "Bad Request" JSON Spring produces is what operators kept
-        // hitting when, e.g., the Copilot model list was empty post-
-        // restart and the form submitted with modelId="" -- they had
-        // no idea which field was missing. Now each missing field
-        // bounces back to the form with a specific named error.
-        // appmapMode is implicit OFF whenever the operator picked
-        // AppMap Navie as the context provider — Navie does its own
-        // map selection and the harness packer must stay out of the
-        // way (matching /demo's auto-OFF behavior). The form's JS
-        // disables the AppMap-mode select in that case, which
-        // *removes the field from the POST body* (HTML quirk: disabled
-        // controls don't submit), so we treat the missing value as OFF
-        // here. Without this coercion the launch failed with
-        // "Missing required field(s): appmapMode" right after the
-        // Navie + OFF combo got picked.
+        // appmapMode auto-coercion: see prior comment in original implementation.
         val effectiveAppmapMode =
             if (contextProvider == "appmap-navie" && appmapMode.isNullOrBlank()) "OFF"
             else appmapMode
 
+        // Coalesce single + multi inputs. A multi-select named "modelIds" sends
+        // one repeated form param per pick; the legacy "modelId" field is still
+        // accepted so curl scripts that POSTed the old shape keep working.
+        val pickedModelIds = (modelIds.orEmpty() + listOfNotNull(modelId))
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val pickedBugIds = (bugIds.orEmpty() + listOfNotNull(bugId))
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
         val missing = buildList<String> {
             if (targetType.isNullOrBlank())  add("targetType")
             if (provider.isNullOrBlank())    add("provider")
-            if (modelId.isNullOrBlank())     add("modelId")
+            if (pickedModelIds.isEmpty())    add("modelId")
             if (effectiveAppmapMode.isNullOrBlank()) add("appmapMode")
         }
         if (missing.isNotEmpty()) {
             val encoded = java.net.URLEncoder.encode(missing.joinToString(","), "UTF-8")
             return "redirect:/run?error=missing-fields&fields=$encoded"
         }
-        // Re-bind to non-null locals now that we've validated.
         val targetTypeNN = targetType!!
         val providerNN = provider!!
-        val modelIdNN = modelId!!
         val appmapModeNN = effectiveAppmapMode!!
-        // Defense-in-depth: even though the dropdown only surfaces
-        // verified providers, the form could be POSTed by hand with
-        // anything. Re-check the chosen provider/model is still in the
-        // verified set before kicking off a run.
+
+        // Defense-in-depth: re-verify every (provider, model) pick against the
+        // live registry. Reject the whole launch if any pick is unverified —
+        // partial launches make the dashboard confusing.
         val verified = registeredModelsRegistry.availableModels(session)
             .filter { it.provider != "appmap-navie" }
-        val matched = verified.firstOrNull { it.provider == providerNN && it.id == modelIdNN }
-        if (matched == null) {
-            // Surface the picked combo so the form can show "we
-            // couldn't verify modelId 'copilot-gpt-4-1' for provider
-            // 'copilot' — register it on /llm or pick another."
-            val pickedQ = "&picked=" + java.net.URLEncoder.encode("$providerNN/$modelIdNN", "UTF-8")
-            return "redirect:/run?error=unverified$pickedQ"
+        val resolvedModels = pickedModelIds.map { mid ->
+            val m = verified.firstOrNull { it.provider == providerNN && it.id == mid }
+            if (m == null) {
+                val pickedQ = "&picked=" + java.net.URLEncoder.encode("$providerNN/$mid", "UTF-8")
+                return "redirect:/run?error=unverified$pickedQ"
+            }
+            m
         }
-        // Vendor-side identifier the harness sends over the wire (e.g.
-        // "gpt-4.1"). Distinct from the registry id ("copilot-gpt-4-1")
-        // which the bridge doesn't recognise -- threading both through
-        // BenchmarkRunService.start() so the audit / dashboard can show
-        // the registry id while the bridge call carries the right name.
-        val modelIdentifierNN = matched.modelIdentifier
 
-        // Build the issueId + title from the target type. Without this
-        // the launch redirected to / and silently never started a run --
-        // the form's inputs never reached BenchmarkRunService.start.
-        val (issueId, issueTitle) = when (targetTypeNN.lowercase()) {
+        // Resolve target → list of (issueId, issueTitle) tuples. Multi-bug only
+        // applies to omnibank; enterprise is single-target (repoName + ticket).
+        val targets: List<Pair<String, String>> = when (targetTypeNN.lowercase()) {
             "omnibank" -> {
-                val id = bugId?.takeIf { it.isNotBlank() }
-                    ?: return "redirect:/run?error=missing-bug"
-                id to (omnibankIssueTitles[id] ?: id)
+                val ids = pickedBugIds.ifEmpty { return "redirect:/run?error=missing-bug" }
+                ids.map { id -> id to (omnibankIssueTitles[id] ?: id) }
             }
             "enterprise" -> {
                 val repo = repoName?.takeIf { it.isNotBlank() }
                     ?: return "redirect:/run?error=missing-repo"
                 val ticket = jiraTicket?.takeIf { it.isNotBlank() } ?: "unspecified"
-                "$repo:$ticket" to "$repo / $ticket"
+                listOf("$repo:$ticket" to "$repo / $ticket")
             }
             else -> return "redirect:/run?error=unknown-target-type"
         }
 
-        val run = benchmarkRuns.start(
-            issueId = issueId,
-            issueTitle = issueTitle,
-            provider = providerNN,
-            modelId = modelIdNN,
-            modelIdentifier = modelIdentifierNN,
-            contextProvider = contextProvider,
-            appmapMode = appmapModeNN,
-            seeds = seeds
-        )
-        // Stash for /demo's live panel + the dashboard's "active run"
-        // pill, then send the operator straight to the per-run drilldown
-        // so they can watch progress without manually navigating.
-        session.setAttribute("activeRunId", run.id)
-        return "redirect:/results/${run.id}"
+        // Cross-product: every (bug × model) → one run. The launches go in
+        // a stable order (bugs outer, models inner) so the dashboard groups
+        // them sensibly when sorted by start time.
+        val launched = mutableListOf<String>()
+        for ((issueId, issueTitle) in targets) {
+            for (m in resolvedModels) {
+                val run = benchmarkRuns.start(
+                    issueId = issueId,
+                    issueTitle = issueTitle,
+                    provider = providerNN,
+                    modelId = m.id,
+                    modelIdentifier = m.modelIdentifier,
+                    contextProvider = contextProvider,
+                    appmapMode = appmapModeNN,
+                    seeds = seeds
+                )
+                launched.add(run.id)
+            }
+        }
+
+        // Single launch → drill into its detail page like before. Multi-launch
+        // → bounce to the dashboard so the operator sees all of them at once.
+        return if (launched.size == 1) {
+            session.setAttribute("activeRunId", launched.first())
+            "redirect:/results/${launched.first()}"
+        } else {
+            session.setAttribute("activeRunId", launched.first())
+            "redirect:/?launched=${launched.size}"
+        }
     }
 }

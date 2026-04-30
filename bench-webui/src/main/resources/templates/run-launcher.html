@@ -53,13 +53,26 @@
             </p>
 
             <div id="omnibankFields">
-                <label>Bug ID:
-                    <select name="bugId" id="bugId">
-                        <option value="">-- select a bug --</option>
+                <label style="align-items:flex-start">Bug ID(s):
+                    <select name="bugIds" id="bugId" multiple size="6"
+                            style="min-width:14em; vertical-align:top">
                         <option th:each="b : ${availableBugs}" th:value="${b}" th:text="${b}"
                                 th:selected="${b == defaultBugId}"></option>
                     </select>
                 </label>
+                <div class="button-row" style="margin:0.25em 0; gap:0.4em">
+                    <button type="button" class="btn-sm" onclick="bugsSelectAll()">Select all bugs</button>
+                    <button type="button" class="btn-sm" onclick="bugsClear()">Clear</button>
+                    <span class="help-text">
+                        Selected:
+                        <strong id="bugsSelectedCount">0</strong>
+                        of <span id="bugsTotalCount">0</span>
+                    </span>
+                </div>
+                <p class="help-text" style="margin:0.2em 0 0 0">
+                    Hold <kbd>⌘</kbd>/<kbd>Ctrl</kbd> to select multiple bugs.
+                    Each picked bug × picked model becomes one run.
+                </p>
             </div>
 
             <div id="enterpriseFields" style="display:none">
@@ -108,17 +121,58 @@
                 expected to see is missing, finish its verify step there.
             </p>
 
-            <label>Model:
-                <select name="modelId" id="modelId" required
-                        th:disabled="${noProvidersVerified}">
-                    <option value="">-- select provider first --</option>
+            <label style="align-items:flex-start">Model(s):
+                <select name="modelIds" id="modelId" required multiple size="6"
+                        th:disabled="${noProvidersVerified}"
+                        style="min-width:22em; vertical-align:top">
                     <option th:each="m : ${models}" th:value="${m.id}" th:text="${m.name}"
                             th:attr="data-provider=${m.provider}"
                             th:selected="${m.id == defaultModelId}"></option>
                 </select>
             </label>
-            <p class="help-text">Specific model to use. Configure models in <a href="/llm">LLM settings</a>.</p>
+            <div class="button-row" style="margin:0.25em 0; gap:0.4em">
+                <button type="button" class="btn-sm" onclick="modelsSelectAll()">Select all models</button>
+                <button type="button" class="btn-sm" onclick="modelsClear()">Clear</button>
+                <span class="help-text">
+                    Selected:
+                    <strong id="modelsSelectedCount">0</strong>
+                    of <span id="modelsVisibleCount">0</span> (visible for current provider)
+                </span>
+            </div>
+            <p class="help-text" style="margin:0.2em 0 0 0">
+                Hold <kbd>⌘</kbd>/<kbd>Ctrl</kbd> to select multiple models.
+                Each picked bug × picked model becomes one run. Models from
+                providers other than the one selected above are hidden.
+            </p>
         </fieldset>
+
+        <!-- Combinatorial summary — recalculated whenever the bug, model, or
+             seeds inputs change. Tells the operator exactly how many runs +
+             seeds they're about to launch BEFORE clicking the button so a
+             stray "select all" doesn't queue 100 runs by surprise. -->
+        <div id="launchSummary"
+             style="margin:0.75em 0; padding:0.6em 0.9em; border:1px solid #cbd5e1;
+                    border-radius:4px; background:#f8fafc">
+            <strong>Run plan</strong>
+            <span class="help-text">— what gets launched on click</span>
+            <div style="display:flex; flex-wrap:wrap; gap:0.5em 1.5em; margin-top:0.3em; align-items:baseline">
+                <span><span id="planBugs">0</span> bug<span id="planBugsS">s</span></span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planModels">0</span> model<span id="planModelsS">s</span></span>
+                <span style="color:#9ca3af">=</span>
+                <span><strong id="planRuns">0</strong> run<span id="planRunsS">s</span></span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planSeedsEach">1</span> seed<span id="planSeedsEachS">s</span> each</span>
+                <span style="color:#9ca3af">=</span>
+                <span style="background:#fde68a; padding:0.1em 0.5em; border-radius:3px">
+                    <strong id="planTotalSeeds">0</strong> total seeds
+                </span>
+            </div>
+            <p class="help-text" id="planWarning"
+               style="margin:0.4em 0 0 0; color:#b45309; display:none">
+                ⚠ Large launch — this will start many concurrent runs. Confirm before clicking Launch.
+            </p>
+        </div>
 
         <fieldset>
             <legend>Runtime options</legend>
@@ -159,7 +213,11 @@
             <ul class="help-text" style="margin:0.25em 0 0.5em 1.2em">
                 <li><strong>None:</strong> problem statement only — measures
                     how much the model can fix without seeing any code (worst-
-                    case baseline).</li>
+                    case baseline). Also doubles as a <em>training-data
+                    contamination check</em>: if the model produces a correct
+                    patch from the prompt alone, it likely saw this bug (or its
+                    fix) during pre-training, which invalidates the benchmark
+                    for that model.</li>
                 <li><strong>Oracle:</strong> hand-curated <code>filesTouched</code>
                     list from the bug's YAML — guarantees the right file is in
                     the prompt (best-case ceiling).</li>
@@ -245,21 +303,28 @@
             var provider = document.getElementById('provider').value;
             var modelSelect = document.getElementById('modelId');
             var options = modelSelect.querySelectorAll('option[data-provider]');
-            var prev = modelSelect.value;
-            if (!preserveSelection) modelSelect.value = '';
-            options.forEach(function(opt) {
-                opt.style.display = (!provider || opt.getAttribute('data-provider') === provider) ? '' : 'none';
+            // Capture any prior selection (multi-select returns N values).
+            var prev = Array.prototype.map.call(modelSelect.selectedOptions, function (o) { return o.value; });
+            options.forEach(function (opt) {
+                var visible = (!provider || opt.getAttribute('data-provider') === provider);
+                opt.style.display = visible ? '' : 'none';
+                // An option that's now hidden cannot stay selected — the form
+                // would POST a model whose provider was just filtered out.
+                if (!visible) opt.selected = false;
             });
-            // When called from page-load (preserveSelection=true), keep
-            // the server-rendered default model so the operator doesn't
-            // see "select provider first" after a default is in place --
-            // but only if its provider still matches what's currently
-            // picked (otherwise the option is hidden anyway).
-            if (preserveSelection && prev) {
-                var keepOpt = modelSelect.querySelector('option[value="' + prev + '"]');
-                if (keepOpt && keepOpt.getAttribute('data-provider') === provider) {
-                    modelSelect.value = prev;
-                }
+            // On page load (preserveSelection=true), keep any server-default
+            // selections that still belong to the active provider. On a manual
+            // provider switch, drop the prior picks entirely so the operator
+            // is forced to re-pick within the new provider's set.
+            if (preserveSelection) {
+                prev.forEach(function (v) {
+                    var keepOpt = modelSelect.querySelector('option[value="' + v + '"]');
+                    if (keepOpt && keepOpt.getAttribute('data-provider') === provider) {
+                        keepOpt.selected = true;
+                    }
+                });
+            } else {
+                Array.prototype.forEach.call(modelSelect.options, function (o) { o.selected = false; });
             }
         }
         // Apply the default provider's filter once on page load so the
@@ -268,10 +333,95 @@
         // touches the provider select.
         filterModels(true);
 
+        // ---------- Multi-select helpers + run-plan summary -----------------
+        // Select-all / clear bind to the bug + model multi-selects. Models'
+        // "select all" only flips visible options (those matching the active
+        // provider) so a stray click can't pick models from a hidden provider.
+        function bugsSelectAll() {
+            var sel = document.getElementById('bugId');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = true; });
+            recomputeLaunchPlan();
+        }
+        function bugsClear() {
+            var sel = document.getElementById('bugId');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = false; });
+            recomputeLaunchPlan();
+        }
+        function modelsSelectAll() {
+            var sel = document.getElementById('modelId');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) {
+                if (o.style.display !== 'none') o.selected = true;
+            });
+            recomputeLaunchPlan();
+        }
+        function modelsClear() {
+            var sel = document.getElementById('modelId');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = false; });
+            recomputeLaunchPlan();
+        }
+
+        function recomputeLaunchPlan() {
+            var type = document.getElementById('targetType').value;
+            var bugSel = document.getElementById('bugId');
+            var modelSel = document.getElementById('modelId');
+            var seedsEl = document.querySelector('input[name="seeds"]');
+
+            // Counts — bugs only matter for omnibank target. Enterprise is
+            // single-target so we treat its "bug count" as 1 in the plan.
+            var bugTotal = bugSel ? bugSel.options.length : 0;
+            var bugPicked = bugSel ? bugSel.selectedOptions.length : 0;
+            var visibleModels = modelSel
+                ? Array.prototype.filter.call(modelSel.options, function (o) { return o.style.display !== 'none'; })
+                : [];
+            var modelPicked = modelSel ? modelSel.selectedOptions.length : 0;
+
+            // Counter labels next to the multi-selects.
+            var bsc = document.getElementById('bugsSelectedCount');     if (bsc) bsc.textContent = bugPicked;
+            var btc = document.getElementById('bugsTotalCount');        if (btc) btc.textContent = bugTotal;
+            var msc = document.getElementById('modelsSelectedCount');   if (msc) msc.textContent = modelPicked;
+            var mvc = document.getElementById('modelsVisibleCount');    if (mvc) mvc.textContent = visibleModels.length;
+
+            // Plan box at the bottom of the form.
+            var seeds = seedsEl ? Math.max(1, parseInt(seedsEl.value, 10) || 1) : 1;
+            var bugsForPlan = (type === 'omnibank') ? bugPicked : 1;
+            var runs = bugsForPlan * modelPicked;
+            var totalSeeds = runs * seeds;
+            var setText = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
+            var setSuffix = function (id, n) {
+                var el = document.getElementById(id);
+                if (el) el.textContent = (n === 1) ? '' : 's';
+            };
+            setText('planBugs', bugsForPlan);   setSuffix('planBugsS',   bugsForPlan);
+            setText('planModels', modelPicked); setSuffix('planModelsS', modelPicked);
+            setText('planRuns', runs);          setSuffix('planRunsS',   runs);
+            setText('planSeedsEach', seeds);    setSuffix('planSeedsEachS', seeds);
+            setText('planTotalSeeds', totalSeeds);
+            var warn = document.getElementById('planWarning');
+            if (warn) warn.style.display = (runs >= 10) ? '' : 'none';
+        }
+
+        // Wire change events so the plan box updates live.
+        ['bugId', 'modelId', 'targetType', 'provider'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('change', recomputeLaunchPlan);
+        });
+        var seedsField = document.querySelector('input[name="seeds"]');
+        if (seedsField) seedsField.addEventListener('input', recomputeLaunchPlan);
+        // Initial paint reflects the server-rendered defaults.
+        recomputeLaunchPlan();
+
         document.getElementById('launchForm').addEventListener('submit', function(e) {
             var type = document.getElementById('targetType').value;
-            if (type === 'omnibank' && !document.getElementById('bugId').value) {
-                e.preventDefault(); alert('Please select a Bug ID for Omnibank runs.'); return;
+            var bugSelect = document.getElementById('bugId');
+            var modelSelect = document.getElementById('modelId');
+            var bugCount = bugSelect ? bugSelect.selectedOptions.length : 0;
+            var modelCount = modelSelect ? modelSelect.selectedOptions.length : 0;
+            if (type === 'omnibank' && bugCount === 0) {
+                e.preventDefault(); alert('Please select at least one Bug ID for Omnibank runs.'); return;
             }
             if (type === 'enterprise' && !document.getElementById('repoName').value) {
                 e.preventDefault(); alert('Please select a repository for enterprise runs.'); return;
@@ -279,8 +429,19 @@
             if (!document.getElementById('provider').value) {
                 e.preventDefault(); alert('Please select an LLM provider.'); return;
             }
-            if (!document.getElementById('modelId').value) {
-                e.preventDefault(); alert('Please select a model.'); return;
+            if (modelCount === 0) {
+                e.preventDefault(); alert('Please select at least one model.'); return;
+            }
+            // Cross-product warning: large launches produce many concurrent
+            // runs. Bail out gracefully so the operator can confirm.
+            var seedsField = document.querySelector('input[name="seeds"]');
+            var seedCount = seedsField ? Math.max(1, parseInt(seedsField.value, 10) || 1) : 1;
+            var totalRuns = (type === 'omnibank' ? bugCount : 1) * modelCount;
+            if (totalRuns >= 10) {
+                if (!confirm('This will start ' + totalRuns + ' runs (' +
+                             totalRuns * seedCount + ' total seeds). Proceed?')) {
+                    e.preventDefault();
+                }
             }
         });
     </script>

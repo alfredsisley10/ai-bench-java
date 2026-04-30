@@ -124,7 +124,10 @@
                 <thead>
                 <tr>
                     <th>Seed</th><th>Result</th><th>Tests</th>
-                    <th class="num">Prompt tok</th><th class="num">Completion tok</th><th>Duration</th>
+                    <th class="num">Prompt tok</th><th class="num">Completion tok</th>
+                    <th title="Total seed wall time (LLM solve + patch apply + tests)">Total</th>
+                    <th title="LLM solve time only — model thinking + token streaming">LLM</th>
+                    <th title="Patch apply + gradle test execution time (no LLM)">Exec</th>
                     <th>Audit</th>
                 </tr>
                 </thead>
@@ -142,11 +145,40 @@
                         <td th:text="${sr.testsPassed} + ' / ' + ${sr.testsTotal}"></td>
                         <td class="num" th:text="${#numbers.formatInteger(sr.promptTokens, 1, 'COMMA')}"></td>
                         <td class="num" th:text="${#numbers.formatInteger(sr.completionTokens, 1, 'COMMA')}"></td>
-                        <td th:text="${sr.durationMs} + 'ms'"></td>
+                        <td th:with="d=${sr.durationMs},
+                                     ms=${d % 1000},
+                                     sTotal=${d / 1000},
+                                     s=${sTotal % 60},
+                                     m=${sTotal / 60}"
+                            th:text="${m > 0
+                                       ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                       : (sTotal > 0
+                                          ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                          : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
+                        <td th:with="d=${sr.solveMs},
+                                     ms=${d % 1000},
+                                     sTotal=${d / 1000},
+                                     s=${sTotal % 60},
+                                     m=${sTotal / 60}"
+                            th:text="${m > 0
+                                       ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                       : (sTotal > 0
+                                          ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                          : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
+                        <td th:with="d=${sr.executionMs},
+                                     ms=${d % 1000},
+                                     sTotal=${d / 1000},
+                                     s=${sTotal % 60},
+                                     m=${sTotal / 60}"
+                            th:text="${m > 0
+                                       ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                       : (sTotal > 0
+                                          ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                          : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
                         <td><a th:href="'/results/' + ${run.id} + '/seed/' + ${sr.seed} + '/audit'">Inspect</a></td>
                     </tr>
                     <tr th:if="${run.seedResults.isEmpty()}">
-                        <td colspan="7" class="help-text">No seeds completed yet.</td>
+                        <td colspan="9" class="help-text">No seeds completed yet.</td>
                     </tr>
                 </tbody>
             </table>
@@ -241,11 +273,15 @@
     function fmtUsd(n) { return '$' + Number(n || 0).toFixed(6); }
     function fmtMs(ms) {
         if (ms == null) return '';
-        if (ms < 1000) return ms + 'ms';
-        var s = Math.floor(ms / 1000);
-        if (s < 60) return s + 's';
-        var m = Math.floor(s / 60);
-        return m + 'm' + (s % 60) + 's';
+        var n = Math.max(0, Math.floor(ms));
+        var msPart = n % 1000;
+        var sTotal = Math.floor(n / 1000);
+        var sPart = sTotal % 60;
+        var mPart = Math.floor(sTotal / 60);
+        var c = function (x) { return Number(x).toLocaleString(); };
+        if (mPart > 0) return c(mPart) + 'm ' + sPart + 's ' + c(msPart) + 'ms';
+        if (sTotal > 0) return sPart + 's ' + c(msPart) + 'ms';
+        return c(msPart) + 'ms';
     }
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -353,10 +389,12 @@
                 '<td class="num">' + fmt(sr.promptTokens) + '</td>' +
                 '<td class="num">' + fmt(sr.completionTokens) + '</td>' +
                 '<td>' + fmtMs(sr.durationMs) + '</td>' +
+                '<td>' + fmtMs(sr.solveMs) + '</td>' +
+                '<td>' + fmtMs(sr.executionMs) + '</td>' +
                 '<td><a href="' + auditHref + '">Inspect</a></td>' +
                 '</tr>';
         }).join('') ||
-            '<tr><td colspan="7" class="help-text">No seeds completed yet.</td></tr>';
+            '<tr><td colspan="9" class="help-text">No seeds completed yet.</td></tr>';
 
         // Log tail ------------------------------------------------------
         var entries = run.log || [];

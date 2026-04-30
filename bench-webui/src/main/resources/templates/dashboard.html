@@ -3,14 +3,274 @@
       th:replace="~{fragments/layout :: page('Dashboard', ~{::main})}">
 <body>
 <main>
+    <!-- Dashboard-only width override. Runs table + leaderboard each have
+         10+ columns; the global 1500px ceiling forces horizontal scroll
+         even on wide monitors. Only this page widens; other pages keep
+         their text-friendly width. -->
+    <style>
+      main { max-width: 1700px; }
+      /* Both data tables on this page are column-heavy; tighten padding +
+         font so they fit on common laptop widths without horizontal scroll. */
+      #runsTable, #leaderboardTable {
+          font-size: 0.92em;
+          width: 100%;
+          table-layout: auto;
+      }
+      #runsTable td, #runsTable th,
+      #leaderboardTable td, #leaderboardTable th {
+          padding: 0.18em 0.5em;
+          overflow: hidden;
+          text-overflow: ellipsis;
+      }
+      /* Long content (model ids, badge clouds) wraps inside its cell rather
+         than forcing the table wider than its container. */
+      #runsTable td, #leaderboardTable td { word-break: break-word; }
+      /* Filter inputs fill their column so each box sits flush under its
+         header label, regardless of how wide the data cells are. */
+      #runsTable .filter-row th,
+      #leaderboardTable .filter-row th { padding: 2px 4px; }
+      #runsTable .filter-row input,
+      #leaderboardTable .filter-row input {
+          width: 100%; min-width: 0; padding: 1px 3px;
+          font-size: 0.85em; box-sizing: border-box;
+      }
+      #runsTable .num, #leaderboardTable .num { text-align: right; white-space: nowrap; }
+      /* Drop the table-scroll horizontal scrollbar on the dashboard —
+         table-layout + tightened padding keeps these tables inside their
+         container, so the scrollbar was firing on a few rendering quirks
+         (filter input widths, sub-pixel rounding) without anything to
+         actually scroll to. */
+      section .table-scroll:has(#runsTable),
+      section .table-scroll:has(#leaderboardTable) { overflow-x: hidden; }
+    </style>
     <section>
         <h2>Summary</h2>
         <div class="cards">
             <div class="card"><span class="label">Runs</span><span class="value" th:text="${totalRuns}">0</span></div>
             <div class="card"><span class="label">Pass rate</span><span class="value" th:text="${#numbers.formatPercent(passRate, 1, 1)}">0%</span></div>
-            <div class="card"><span class="label">Solvers</span><span class="value" th:text="${#lists.isEmpty(solvers) ? 'none registered' : #strings.listJoin(solvers, ', ')}">none</span></div>
             <div class="card"><span class="label">Bugs</span><span class="value" th:text="${availableBugs}">0</span></div>
         </div>
+    </section>
+
+    <!-- Leaderboard — per-model summary of PASSED runs. Each row is one
+         line: model+provider, pass rate, best/avg time, best/avg cost,
+         and one-line tag clouds for difficulty + category. Sort/filter/
+         paginate via the shared sortable-table helper.  Hidden when no
+         model has solved anything yet. -->
+    <section th:unless="${#lists.isEmpty(leaderboard)}">
+        <h2>Leaderboard
+            <span class="help-text" id="leaderboard-count" style="font-weight:normal; font-size:0.85em"></span>
+        </h2>
+        <p class="subtitle">
+            Aggregates only <strong>PASSED</strong> runs.
+            Best = fastest / cheapest single solve.
+            Click headers to sort; filter inputs narrow each column.
+        </p>
+
+        <div class="button-row" style="margin:0.4em 0; gap:0.5em; align-items:center; flex-wrap:wrap">
+            <input type="text" id="leaderboard-search"
+                   placeholder="Search across all columns…"
+                   style="flex:1 1 18em; max-width:30em; padding:0.3em 0.6em">
+            <span class="help-text">Show</span>
+            <select id="leaderboard-page-size" style="padding:0.15em 0.3em">
+                <option value="10" selected>10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            <span class="help-text">rows per page</span>
+        </div>
+
+        <div class="table-scroll">
+        <table id="leaderboardTable" class="sortable-table"
+               data-count-target="#leaderboard-count"
+               data-search-target="#leaderboard-search">
+            <thead>
+                <tr class="sort-row">
+                    <th data-sort-key="model">Model <span class="sort-indicator"></span></th>
+                    <th data-sort-key="provider">Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="passrate" data-sort-numeric="true" class="num">Pass <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solved" data-sort-numeric="true" class="num">Solved <span class="sort-indicator"></span></th>
+                    <th data-sort-key="fastest" data-sort-numeric="true" class="num">Best time <span class="sort-indicator"></span></th>
+                    <th data-sort-key="cheapest" data-sort-numeric="true" class="num">Best cost <span class="sort-indicator"></span></th>
+                    <th data-sort-key="avgms" data-sort-numeric="true" class="num">Avg time <span class="sort-indicator"></span></th>
+                    <th data-sort-key="avgcost" data-sort-numeric="true" class="num">Avg cost <span class="sort-indicator"></span></th>
+                    <th data-sort-key="difficulty">Difficulty <span class="sort-indicator"></span></th>
+                    <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
+                </tr>
+                <tr class="filter-row">
+                    <th><input type="text" data-filter-col="0" placeholder="filter model"></th>
+                    <th><input type="text" data-filter-col="1" placeholder="filter provider"></th>
+                    <th><input type="text" data-filter-col="2" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="3" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="4" placeholder="filter time"></th>
+                    <th><input type="text" data-filter-col="5" placeholder="filter cost"></th>
+                    <th><input type="text" data-filter-col="6" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="7" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="8" placeholder="EASY,MEDIUM…"></th>
+                    <th><input type="text" data-filter-col="9" placeholder="TIMING,LOGIC…"></th>
+                </tr>
+            </thead>
+            <tbody>
+            <tr th:each="lb, iter : ${leaderboard}"
+                th:attr="data-model=${lb.modelId},
+                         data-provider=${lb.provider},
+                         data-passrate=${lb.passRate},
+                         data-solved=${lb.passedRuns},
+                         data-fastest=${lb.fastest != null ? lb.fastest.durationMs : 999999999},
+                         data-cheapest=${lb.cheapest != null ? lb.cheapest.costUsd : 999999},
+                         data-avgms=${lb.avgPassMs},
+                         data-avgcost=${lb.avgPassCostUsd},
+                         data-difficulty=${#strings.listJoin(lb.solvedByDifficulty.keySet(), ',')},
+                         data-category=${#strings.listJoin(lb.solvedByCategory.keySet(), ',')}">
+                <td style="white-space:nowrap">
+                    <code th:text="${lb.modelId}"></code>
+                    <span th:if="${iter.first}" class="badge PASSED"
+                          style="margin-left:0.3em; font-size:0.7em">leader</span>
+                </td>
+                <td th:text="${lb.provider}"></td>
+                <td class="num" style="white-space:nowrap"
+                    th:text="${#numbers.formatPercent(lb.passRate, 1, 0)} + ' (' +
+                             ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
+                             ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
+                <td class="num" th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></td>
+                <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
+                    th:with="d=${lb.fastest.durationMs},
+                             ms=${d % 1000},
+                             sTotal=${d / 1000},
+                             s=${sTotal % 60},
+                             m=${sTotal / 60}"
+                    th:text="(${m > 0
+                               ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                               : (sTotal > 0
+                                  ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}) + ' · ' + ${lb.fastest.bugId}"></td>
+                <td class="num" th:unless="${lb.fastest != null}">—</td>
+                <td class="num" style="white-space:nowrap" th:if="${lb.cheapest != null}"
+                    th:text="'$' + ${#numbers.formatDecimal(lb.cheapest.costUsd, 1, 'COMMA', 6, 'POINT')} + ' · ' + ${lb.cheapest.bugId}"></td>
+                <td class="num" th:unless="${lb.cheapest != null}">—</td>
+                <td class="num" style="white-space:nowrap"
+                    th:with="d=${lb.avgPassMs},
+                             ms=${d % 1000},
+                             sTotal=${d / 1000},
+                             s=${sTotal % 60},
+                             m=${sTotal / 60}"
+                    th:text="${m > 0
+                               ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's'
+                               : (sTotal > 0
+                                  ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
+                <td class="num" style="white-space:nowrap"
+                    th:text="'$' + ${#numbers.formatDecimal(lb.avgPassCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
+                <td style="white-space:nowrap">
+                    <span th:each="entry : ${lb.solvedByDifficulty}"
+                          style="display:inline-block; padding:0 0.35em; margin-right:0.2em;
+                                 border:1px solid #d1d5db; border-radius:3px; font-size:0.8em; background:#f9fafb"
+                          th:text="${entry.key} + '×' + ${entry.value}"></span>
+                </td>
+                <td style="white-space:nowrap">
+                    <span th:each="entry : ${lb.solvedByCategory}"
+                          style="display:inline-block; padding:0 0.35em; margin-right:0.2em;
+                                 border:1px solid #c7d2fe; border-radius:3px; font-size:0.8em; background:#eef2ff"
+                          th:text="${entry.key} + '×' + ${entry.value}"></span>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+        </div>
+
+        <!-- Pagination controls — populated by the JS below. Hidden when
+             there's only one page. -->
+        <div id="leaderboard-pagination" class="button-row"
+             style="margin:0.4em 0; gap:0.25em; flex-wrap:wrap"></div>
+
+        <script>
+        // Mirrors the runs-table pagination wiring at a smaller scale —
+        // sortable-table.js handles sort+filter; this layer adds page-size
+        // slicing and re-paints on every change.
+        (function () {
+            var table = document.getElementById('leaderboardTable');
+            if (!table) return;
+            var tbody = table.querySelector('tbody');
+            if (tbody.children.length === 0) return;
+            var pageSizeSelect = document.getElementById('leaderboard-page-size');
+            var pagination = document.getElementById('leaderboard-pagination');
+            var countEl = document.getElementById('leaderboard-count');
+            var pageSize = parseInt(pageSizeSelect.value, 10) || 10;
+            var page = 1;
+
+            function allRows() { return Array.prototype.slice.call(tbody.querySelectorAll('tr')); }
+            function visibleRows() {
+                return allRows().filter(function (r) {
+                    return !r.classList.contains('filtered-out');
+                });
+            }
+            function repaint() {
+                var all = allRows();
+                var visible = visibleRows();
+                var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+                if (page > totalPages) page = totalPages;
+                var from = (page - 1) * pageSize;
+                all.forEach(function (r) { r.style.display = 'none'; });
+                visible.slice(from, from + pageSize).forEach(function (r) {
+                    r.style.display = '';
+                });
+                if (countEl) {
+                    countEl.textContent = '— ' + visible.length + ' of ' + all.length +
+                        (totalPages > 1 ? ' shown (page ' + page + ' / ' + totalPages + ')' : ' shown');
+                }
+                renderPagination(totalPages);
+            }
+            function renderPagination(totalPages) {
+                pagination.innerHTML = '';
+                if (totalPages <= 1) return;
+                function addBtn(label, target, disabled) {
+                    var b = document.createElement('button');
+                    b.type = 'button'; b.className = 'btn-sm'; b.textContent = label;
+                    b.disabled = !!disabled;
+                    if (target === page) {
+                        b.style.fontWeight = 'bold'; b.style.background = '#dbeafe';
+                    }
+                    b.addEventListener('click', function () { page = target; repaint(); });
+                    pagination.appendChild(b);
+                }
+                addBtn('« Prev', Math.max(1, page - 1), page === 1);
+                for (var i = 1; i <= totalPages; i++) {
+                    if (i === 1 || i === totalPages || Math.abs(i - page) <= 2) {
+                        addBtn(String(i), i, false);
+                    } else if (i === page - 3 || i === page + 3) {
+                        var span = document.createElement('span');
+                        span.className = 'help-text';
+                        span.style.padding = '0 0.3em';
+                        span.textContent = '…';
+                        pagination.appendChild(span);
+                    }
+                }
+                addBtn('Next »', Math.min(totalPages, page + 1), page === totalPages);
+            }
+            pageSizeSelect.addEventListener('change', function () {
+                pageSize = parseInt(pageSizeSelect.value, 10) || 10;
+                page = 1; repaint();
+            });
+            table.querySelectorAll('.filter-row input').forEach(function (i) {
+                i.addEventListener('input', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            });
+            table.querySelectorAll('.sort-row th[data-sort-key]').forEach(function (h) {
+                h.addEventListener('click', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            });
+            var globalSearch = document.getElementById('leaderboard-search');
+            if (globalSearch) {
+                globalSearch.addEventListener('input', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            }
+            repaint();
+        })();
+        </script>
     </section>
 
     <!-- Merged results section. Was previously a separate /results page;
@@ -71,17 +331,18 @@
                             <input type="checkbox" id="runs-select-all"
                                    title="Select all visible (filtered + on this page)">
                         </th>
-                        <th data-sort-key="started" data-sort-numeric="true">Started <span class="sort-indicator"></span></th>
-                        <th data-sort-key="id">Run ID <span class="sort-indicator"></span></th>
-                        <th data-sort-key="issue">Bug / Ticket <span class="sort-indicator"></span></th>
-                        <th data-sort-key="provider">Solver <span class="sort-indicator"></span></th>
-                        <th data-sort-key="model">Model <span class="sort-indicator"></span></th>
-                        <th data-sort-key="appmap">AppMap <span class="sort-indicator"></span></th>
-                        <th data-sort-key="status">Status <span class="sort-indicator"></span></th>
-                        <th data-sort-key="pass" data-sort-numeric="true">Pass / total <span class="sort-indicator"></span></th>
-                        <th data-sort-key="prompt" data-sort-numeric="true" class="num">Prompt tokens <span class="sort-indicator"></span></th>
-                        <th data-sort-key="completion" data-sort-numeric="true" class="num">Completion tokens <span class="sort-indicator"></span></th>
-                        <th data-sort-key="duration" data-sort-numeric="true" class="num">Duration (s) <span class="sort-indicator"></span></th>
+                        <th data-sort-key="started" data-sort-numeric="true" title="Started">Started <span class="sort-indicator"></span></th>
+                        <th data-sort-key="id" title="Run ID">Run ID <span class="sort-indicator"></span></th>
+                        <th data-sort-key="issue" title="Bug / Ticket">Bug <span class="sort-indicator"></span></th>
+                        <th data-sort-key="provider" title="Solver / provider">Solver <span class="sort-indicator"></span></th>
+                        <th data-sort-key="model" title="Model id">Model <span class="sort-indicator"></span></th>
+                        <th data-sort-key="appmap" title="AppMap mode (OFF / ON_RECOMMENDED / ON_ALL)">AM <span class="sort-indicator"></span></th>
+                        <th data-sort-key="status" title="Run status">Status <span class="sort-indicator"></span></th>
+                        <th data-sort-key="pass" data-sort-numeric="true" title="Passed seeds / total seeds">P/T <span class="sort-indicator"></span></th>
+                        <th data-sort-key="prompt" data-sort-numeric="true" class="num" title="Prompt tokens">P tok <span class="sort-indicator"></span></th>
+                        <th data-sort-key="completion" data-sort-numeric="true" class="num" title="Completion tokens">C tok <span class="sort-indicator"></span></th>
+                        <th data-sort-key="duration" data-sort-numeric="true" class="num" title="Total benchmark wall clock (queue + LLM + gradle + bookkeeping)">Run <span class="sort-indicator"></span></th>
+                        <th data-sort-key="llm" data-sort-numeric="true" class="num" title="LLM time only (sum of seed solve durations) — excludes patch apply + gradle test time">LLM <span class="sort-indicator"></span></th>
                     </tr>
                     <tr class="filter-row">
                         <th></th>
@@ -96,6 +357,7 @@
                         <th><input type="text" data-filter-col="9" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="10" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="11" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="12" placeholder="≥, ≤, ="></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -110,7 +372,8 @@
                              data-pass=${r.seedResults.?[passed].size()},
                              data-prompt=${r.stats.totalPromptTokens},
                              data-completion=${r.stats.totalCompletionTokens},
-                             data-duration=${r.durationMs / 1000}">
+                             data-duration=${r.durationMs / 1000},
+                             data-llm=${r.totalLlmMs / 1000}">
                     <td>
                         <input type="checkbox" class="runs-row-check" name="runIds"
                                th:value="${r.id}"
@@ -125,10 +388,19 @@
                     <td th:title="${#temporals.format(r.startedAt, 'yyyy-MM-dd HH:mm:ss')}"
                         th:text="${#temporals.format(r.startedAt, 'MM-dd HH:mm')}"></td>
                     <td><a th:href="'/results/' + ${r.id}" th:text="${r.id}"></a></td>
-                    <td th:text="${r.issueId}"></td>
+                    <td>
+                        <a th:if="${#strings.startsWith(r.issueId, 'BUG-')}"
+                           th:href="'/demo/' + ${r.issueId}"
+                           th:text="${r.issueId}"
+                           th:title="'Open bug detail: ' + ${r.issueId}"></a>
+                        <span th:unless="${#strings.startsWith(r.issueId, 'BUG-')}"
+                              th:text="${r.issueId}"></span>
+                    </td>
                     <td th:text="${r.provider}"></td>
                     <td th:text="${r.modelId}"></td>
-                    <td th:text="${r.appmapMode}"></td>
+                    <td th:title="${r.appmapMode}"
+                        th:text="${r.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
+                                  (r.appmapMode == 'ON_ALL' ? 'ALL' : r.appmapMode)}"></td>
                     <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
                     <!-- Display values use comma thousands separators for
                          readability; the data-* attrs above stay raw so
@@ -137,7 +409,12 @@
                     <td th:text="${#numbers.formatInteger(r.seedResults.?[passed].size(), 1, 'COMMA')} + ' / ' + ${#numbers.formatInteger(r.seeds, 1, 'COMMA')}"></td>
                     <td class="num" th:text="${#numbers.formatInteger(r.stats.totalPromptTokens, 1, 'COMMA')}"></td>
                     <td class="num" th:text="${#numbers.formatInteger(r.stats.totalCompletionTokens, 1, 'COMMA')}"></td>
-                    <td class="num" th:text="${#numbers.formatInteger(r.durationMs / 1000, 1, 'COMMA')}"></td>
+                    <td class="num"
+                        th:title="${#numbers.formatInteger(r.durationMs, 1, 'COMMA') + ' ms total wall clock'}"
+                        th:text="${#numbers.formatInteger(r.durationMs / 1000, 1, 'COMMA')} + 's'"></td>
+                    <td class="num"
+                        th:title="${#numbers.formatInteger(r.totalLlmMs, 1, 'COMMA') + ' ms LLM only · execution ' + #numbers.formatInteger(r.totalExecutionMs, 1, 'COMMA') + ' ms'}"
+                        th:text="${#numbers.formatInteger(r.totalLlmMs / 1000, 1, 'COMMA')} + 's'"></td>
                 </tr>
                 </tbody>
             </table>
@@ -161,8 +438,8 @@
             var table = document.getElementById('runsTable');
             if (!table) return;
             var tbody = table.querySelector('tbody');
-            var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
-            if (rows.length === 0) return;
+            var initialRows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            if (initialRows.length === 0) return;
 
             var pageSizeSelect = document.getElementById('runs-page-size');
             var pagination = document.getElementById('runs-pagination');
@@ -174,25 +451,32 @@
             var pageSize = parseInt(pageSizeSelect.value, 10) || 10;
             var page = 1;
 
+            // Always read from the live DOM so pagination respects the current
+            // sort order applied by sortable-table.js (which reorders <tr>s
+            // via tbody.appendChild on header clicks).
+            function allRows() {
+                return Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            }
             function visibleRows() {
-                return rows.filter(function (r) {
+                return allRows().filter(function (r) {
                     return !r.classList.contains('filtered-out');
                 });
             }
 
             function repaint() {
+                var all = allRows();
                 var visible = visibleRows();
                 var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
                 if (page > totalPages) page = totalPages;
                 var from = (page - 1) * pageSize;
                 var to = from + pageSize;
-                rows.forEach(function (r) { r.style.display = 'none'; });
+                all.forEach(function (r) { r.style.display = 'none'; });
                 visible.slice(from, to).forEach(function (r) {
                     r.style.display = '';
                 });
                 if (countEl) {
                     countEl.textContent = '— ' + visible.length + ' of ' +
-                        rows.length + ' shown' +
+                        all.length + ' shown' +
                         (totalPages > 1 ? ' (page ' + page + ' / ' + totalPages + ')' : '');
                 }
                 renderPagination(totalPages);
@@ -251,7 +535,7 @@
             }
 
             function refreshSelectedCount() {
-                var n = rows.filter(function (r) {
+                var n = allRows().filter(function (r) {
                     var c = r.querySelector('.runs-row-check');
                     return c && c.checked;
                 }).length;
@@ -271,9 +555,16 @@
             // Filter / sort changes propagate via the helper's MutationObserver
             // -- but the helper doesn't fire an event. Listen on the inputs
             // directly and re-paginate after a tick so the helper's class
-            // toggles have settled.
+            // toggles (and tbody reorder, for sort) have settled.
             table.querySelectorAll('.filter-row input').forEach(function (i) {
                 i.addEventListener('input', function () {
+                    setTimeout(function () { page = 1; repaint(); }, 80);
+                });
+            });
+            // Sort header clicks reorder the tbody DOM; jump back to page 1
+            // and repaint so the user sees the head of the freshly-sorted set.
+            table.querySelectorAll('.sort-row th[data-sort-key]').forEach(function (h) {
+                h.addEventListener('click', function () {
                     setTimeout(function () { page = 1; repaint(); }, 80);
                 });
             });
@@ -290,7 +581,7 @@
             // (the th:disabled binding on each row's checkbox).
             if (selectAll) {
                 selectAll.addEventListener('change', function () {
-                    visibleRows().forEach(function (r) {
+                    allRows().forEach(function (r) {
                         if (r.style.display === 'none') return;
                         var c = r.querySelector('.runs-row-check');
                         if (c && !c.disabled) c.checked = selectAll.checked;
@@ -308,6 +599,162 @@
             });
 
             repaint();
+        })();
+
+        // ---------- Per-model cost tooltip ---------------------------------
+        // Hovering a model cell pops a native browser tooltip with the
+        // model's per-1K-token rates and any catalog note. Data comes from
+        // /llm/catalog (shared with the Public model reference table on
+        // /llm). Best-effort — tooltips simply don't appear when the
+        // catalog request fails or the row's model isn't in the catalog.
+        (function () {
+            fetch('/llm/catalog', { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data) return;
+                    var byId = {};
+                    (data.models || []).forEach(function (m) { byId[m.id] = m; });
+                    function applyTooltips() {
+                        document.querySelectorAll('#runsTable tbody tr[data-model]').forEach(function (row) {
+                            var id = row.getAttribute('data-model');
+                            var m = byId[id];
+                            if (!m) return;
+                            // Model column is index 5 (after checkbox=0,
+                            // started=1, runId=2, bug=3, solver=4).
+                            var cell = row.querySelectorAll('td')[5];
+                            if (!cell) return;
+                            var fmt = function (n) {
+                                var x = Number(n) || 0;
+                                return '$' + x.toFixed(6) + '/1K';
+                            };
+                            cell.title =
+                                m.displayName + '\n' +
+                                'Prompt: ' + fmt(m.costPer1kPrompt) + '\n' +
+                                'Completion: ' + fmt(m.costPer1kCompletion) +
+                                (m.notes ? '\n\n' + m.notes : '');
+                            cell.style.cursor = 'help';
+                            cell.style.textDecoration = 'underline dotted #94a3b8';
+                        });
+                    }
+                    applyTooltips();
+                    // Re-apply after the auto-refresh DOM-patches new rows
+                    // in (existing rows keep their tooltip — title attrs
+                    // aren't in the cells the refresher rewrites). Polling
+                    // is gated on visibility to avoid wasted work.
+                    var observer = new MutationObserver(applyTooltips);
+                    var tbody = document.querySelector('#runsTable tbody');
+                    if (tbody) observer.observe(tbody, { childList: true });
+                })
+                .catch(function () { /* silent */ });
+        })();
+
+        // ---------- Live dashboard auto-refresh ----------------------------
+        // Polls / every 4s while any run is still QUEUED or RUNNING and
+        // patches the live DOM with the freshest status, pass count, token
+        // counts, duration cells, summary tiles, and leaderboard body.
+        // Sort / filter / pagination / search / row-selection state are all
+        // untouched — we only mutate cell contents and a couple of attrs
+        // the table helper doesn't read post-init.
+        (function () {
+            var POLL_MS = 4000;
+            var badge = document.getElementById('autoRefreshBadge');
+            var pollTimer = null;
+            // Tracks whether the previous tick saw any active runs. The
+            // transition true→false fires one extra fetch so the
+            // leaderboard + summary tiles + final per-row status pick up
+            // the LAST run's terminal state — without it the dashboard
+            // froze on the second-to-last poll and the operator had to
+            // hit F5 to see the last PASSED run reflected in the
+            // leaderboard.
+            var wasActive = false;
+            function isAnyActive() {
+                return !!document.querySelector(
+                    '#runsTable tbody tr[data-status="RUNNING"], ' +
+                    '#runsTable tbody tr[data-status="QUEUED"]');
+            }
+            function setBadge(txt, color) {
+                if (!badge) return;
+                badge.textContent = txt;
+                badge.style.color = color || '#6b7280';
+            }
+            function tick() {
+                var active = isAnyActive();
+                if (!active && !wasActive) {
+                    setBadge('· auto-refresh idle (no active runs)');
+                    return;
+                }
+                if (active) {
+                    setBadge('· auto-refreshing every ' + (POLL_MS/1000) + 's …', '#0ea5e9');
+                } else {
+                    // Final refresh — pick up the freshly-terminated
+                    // run's leaderboard + summary contributions, then go
+                    // idle. wasActive flips below so the next tick bails.
+                    setBadge('· final refresh — picking up last completion …', '#0ea5e9');
+                }
+                // Flip the latch BEFORE fetch so the in-flight tick has
+                // already "consumed" the transition. If the fetch races
+                // a fast subsequent state change, the next tick's
+                // active=true reading will re-arm the latch correctly.
+                wasActive = active;
+                fetch(window.location.pathname + '?_=' + Date.now(), {
+                    headers: { 'Accept': 'text/html' },
+                    credentials: 'same-origin'
+                }).then(function (r) { return r.text(); }).then(function (html) {
+                    var doc = new DOMParser().parseFromString(html, 'text/html');
+                    // Summary tile values are simple <span class="value"> nodes.
+                    var oldVals = document.querySelectorAll('.cards .card .value');
+                    var newVals = doc.querySelectorAll('.cards .card .value');
+                    for (var i = 0; i < oldVals.length && i < newVals.length; i++) {
+                        if (oldVals[i].textContent !== newVals[i].textContent) {
+                            oldVals[i].textContent = newVals[i].textContent;
+                        }
+                    }
+                    // Per-row update — match by data-id and copy the live
+                    // cells (status badge, pass count, tokens, duration).
+                    var newRows = doc.querySelectorAll('#runsTable tbody tr[data-id]');
+                    newRows.forEach(function (newRow) {
+                        var id = newRow.getAttribute('data-id');
+                        var oldRow = document.querySelector(
+                            '#runsTable tbody tr[data-id="' + id + '"]');
+                        if (!oldRow) return;
+                        ['data-status', 'data-pass', 'data-prompt',
+                         'data-completion', 'data-duration', 'data-llm'].forEach(function (a) {
+                            var v = newRow.getAttribute(a);
+                            if (v != null) oldRow.setAttribute(a, v);
+                        });
+                        var oldCells = oldRow.querySelectorAll('td');
+                        var newCells = newRow.querySelectorAll('td');
+                        // Cells with live content: status (col 7), pass/total (8),
+                        // prompt tokens (9), completion tokens (10), run time (11),
+                        // LLM time (12). Cols 0-6 are static run metadata.
+                        [7, 8, 9, 10, 11, 12].forEach(function (i) {
+                            if (oldCells[i] && newCells[i] &&
+                                oldCells[i].innerHTML !== newCells[i].innerHTML) {
+                                oldCells[i].innerHTML = newCells[i].innerHTML;
+                            }
+                        });
+                    });
+                    // Leaderboard body refresh — only when its row count or
+                    // contents actually changed, to avoid pointless reflows.
+                    var oldLb = document.querySelector('#leaderboardTable tbody');
+                    var newLb = doc.querySelector('#leaderboardTable tbody');
+                    if (oldLb && newLb && oldLb.innerHTML !== newLb.innerHTML) {
+                        oldLb.innerHTML = newLb.innerHTML;
+                    }
+                    setBadge('· last refresh ' + new Date().toLocaleTimeString(),
+                             '#16a34a');
+                }).catch(function () {
+                    setBadge('· auto-refresh failed — retrying', '#dc2626');
+                });
+            }
+            // Kick off immediately on page load if there are active runs;
+            // then schedule on a steady interval. Clear the timer the
+            // moment everything terminates so we don't keep pinging /.
+            pollTimer = setInterval(tick, POLL_MS);
+            tick();
+            window.addEventListener('beforeunload', function () {
+                if (pollTimer) clearInterval(pollTimer);
+            });
         })();
 
         // Confirm before bulk-delete. Returns false to block submission

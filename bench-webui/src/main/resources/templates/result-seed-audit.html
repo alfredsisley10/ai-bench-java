@@ -40,7 +40,16 @@
         &nbsp;·&nbsp;
         completion <span th:text="${seedResult.completionTokens}"></span> tok
         &nbsp;·&nbsp;
-        duration <span th:text="${seedResult.durationMs}"></span> ms
+        duration <span th:with="d=${seedResult.durationMs},
+                                ms=${d % 1000},
+                                sTotal=${d / 1000},
+                                s=${sTotal % 60},
+                                m=${sTotal / 60}"
+                       th:text="${m > 0
+                                  ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                  : (sTotal > 0
+                                     ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
+                                     : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></span>
     </section>
 
     <!-- Routing chain — registry id picked on the launcher form vs.

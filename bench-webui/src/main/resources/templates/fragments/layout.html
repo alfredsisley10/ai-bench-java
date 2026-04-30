@@ -18,6 +18,7 @@
     <nav>
         <a href="/">Dashboard</a>
         <a href="/demo">Demo</a>
+        <a href="/demo/appmap">AppMap</a>
         <a href="/copilot-guide">Copilot guide</a>
         <a href="/docs/operations-guide">Ops guide</a>
         <span th:if="${isAdmin}" class="nav-sep">|</span>
@@ -50,6 +51,11 @@
           th:text="'commit ' + ${#strings.substring(buildInfo.gitCommitDate, 0, 10)}"></span>
     <span>·</span>
     <span th:text="'built ' + ${buildInfo.buildTime}"></span>
+    <!-- Dashboard's auto-refresh status lands here when the page is /;
+         every other route just shows the empty span. setBadge() in
+         dashboard.html targets this id directly, so the badge text is
+         scoped to whichever page populates it. -->
+    <span id="autoRefreshBadge"></span>
     <span style="margin-left:auto">
         <a href="/actuator/info" class="help-text">/actuator/info</a>
     </span>
