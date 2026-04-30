@@ -12,9 +12,9 @@ filesTouched:
 oracleDiffLines: 6
 
 hiddenTest:
-  class: com.omnibank.ledger.internal.PostingServiceImplIT
+  class: com.omnibank.ledger.internal.PostingServiceImplCurrencyCheckTest
   method: mixed_currency_journal_rejected_before_persistence
-  file: ledger-core/src/test/java/com/omnibank/ledger/internal/PostingServiceImplIT.java
+  file: ledger-core/src/test/java/com/omnibank/ledger/internal/PostingServiceImplCurrencyCheckTest.java
 
 problemStatement: |
   An edge case in the validate() routine in PostingServiceImpl allows a
