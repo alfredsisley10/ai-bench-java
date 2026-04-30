@@ -90,8 +90,23 @@ class ContextProvider(
                     "(curated filesTouched). Multi-turn tool-use loop is on the roadmap.",
                 fellBack = true
             )
-            // appmap-navie is handled by AppmapNavieController (the CLI
-            // hop happens before the bridge call), not here.
+            // Layer-B AppMap-Navie wiring: until the full Navie CLI
+            // integration lands (Layer C — vector-search the AppMap
+            // trace cache + emit a pruned source set), Navie context
+            // ships Oracle's curated filesTouched as the source slice.
+            // The actual AppMap traces get embedded in the prompt
+            // separately by buildSolverPrompt's tracesBlock, so a
+            // (navie + ON_RECOMMENDED) run still gives the model the
+            // bug source AND the runtime traces — which is what
+            // operators expect when they pick Navie.
+            "appmap-navie" -> oracle(bug, providerId).copy(
+                requestedProvider = providerId,
+                rationale = "Layer-B Navie: source selection delegated to Oracle " +
+                    "(curated filesTouched). AppMap traces from the shared cache " +
+                    "are embedded in the user prompt regardless. Layer C will " +
+                    "replace this with real Navie CLI vector retrieval.",
+                fellBack = true
+            )
             else -> Resolved(providerId, providerId, emptyList(),
                 "Unknown context provider '$providerId'; sending no source.",
                 fellBack = true)

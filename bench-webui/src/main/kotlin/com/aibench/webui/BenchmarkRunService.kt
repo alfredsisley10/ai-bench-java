@@ -469,7 +469,7 @@ class BenchmarkRunService(
             var auditUserPrompt: String? = null
             var auditContext: ContextProvider.Resolved? = null
             val completion: Int = if (bridgeLive) {
-                val realResp = realLlmCall(run, seed, totalPromptTokens)
+                val realResp = realLlmCall(run, seed, totalPromptTokens, traceInv)
                 if (realResp != null) {
                     entry(run, Category.LLM,
                         "Seed $seed ← real response: ${realResp.completionTokens} completion tokens " +
@@ -716,7 +716,11 @@ class BenchmarkRunService(
         val resolvedContext: ContextProvider.Resolved
     )
 
-    private fun buildSolverPrompt(run: BenchmarkRun, seed: Int): SolverPrompt {
+    private fun buildSolverPrompt(
+        run: BenchmarkRun,
+        seed: Int,
+        traceInv: AppMapTraceManager.TraceInventory? = null
+    ): SolverPrompt {
         val bug = bugCatalog.getBug(run.issueId)
         // Resolve the context provider regardless of bug-presence; it
         // returns a graceful 'no source' Resolved when the bug isn't in
@@ -770,6 +774,17 @@ class BenchmarkRunService(
         }
         val hintsBlock = if (bug.hints.isNotEmpty())
             "\n\nHints:\n" + bug.hints.joinToString("\n") { "- $it" } else ""
+
+        // Embed AppMap traces directly in the user message so the LLM
+        // actually has runtime information to look at. Without this the
+        // earlier code only inflated tracesSubmitted as a token-count
+        // estimate but the prompt body was traces-free — the audit said
+        // "3 traces shipped" and the model never saw them. Each trace
+        // is capped at TRACE_BODY_CAP chars so a single huge AppMap
+        // (Layer C real recordings can hit MB) doesn't blow the prompt
+        // window; aggregate across all traces is also bounded.
+        val tracesBlock = buildTracesBlock(traceInv, run.appmapMode)
+
         val userPrompt = """
             Issue ${run.issueId}: ${run.issueTitle}
 
@@ -778,13 +793,58 @@ class BenchmarkRunService(
 
             Source code retrieved by the '${ctx.effectiveProvider}' context provider:
 
-            $sources
+            $sources$tracesBlock
 
             Reply with a unified diff in a ```diff fenced block. Apply minimal
             changes. The diff will be piped directly into `git apply` against
             a worktree at the bug-break commit.
         """.trimIndent()
         return SolverPrompt(systemPrompt, userPrompt, ctx)
+    }
+
+    /** Per-trace cap (chars). Layer-B synthetic stubs are ~300 bytes; this
+     *  is sized for Layer-C real recordings without breaking the prompt
+     *  window. */
+    private val TRACE_BODY_CAP = 12_000
+    /** Aggregate cap across all traces in the prompt. */
+    private val TRACE_AGGREGATE_CAP = 64_000
+
+    private fun buildTracesBlock(
+        inv: AppMapTraceManager.TraceInventory?,
+        mode: String
+    ): String {
+        if (inv == null || inv.tracePaths.isEmpty() || mode == "OFF") return ""
+        val sb = StringBuilder()
+        sb.append("\n\nAppMap traces (recorded at runtime — call graphs / SQL / HTTP "
+            + "captured while running the failing test and neighbors). "
+            + "Mode=").append(mode).append(", source=")
+            .append(if (inv.synthetic) "synthetic stub (Layer B)" else "real recording")
+            .append(":\n\n")
+        var aggregate = 0
+        var includedCount = 0
+        for (f in inv.tracePaths) {
+            val raw = runCatching { f.readText() }.getOrElse { e ->
+                "[unable to read trace ${f.name}: ${e.message}]"
+            }
+            val clipped = if (raw.length > TRACE_BODY_CAP)
+                raw.take(TRACE_BODY_CAP) +
+                    "\n\n[... truncated ${raw.length - TRACE_BODY_CAP} chars ...]\n"
+                else raw
+            val piece = "Trace: ${f.nameWithoutExtension}\n```json\n$clipped\n```\n\n"
+            // Stop adding once the aggregate cap is hit; remaining traces
+            // are noted so the audit page still shows them as "available".
+            if (aggregate + piece.length > TRACE_AGGREGATE_CAP && includedCount > 0) {
+                val skipped = inv.tracePaths.size - includedCount
+                sb.append("[... ${skipped} additional trace(s) omitted to stay under "
+                    + "${TRACE_AGGREGATE_CAP} chars; see /results/{run}/seed/{n}/audit "
+                    + "for the full list]\n")
+                break
+            }
+            sb.append(piece)
+            aggregate += piece.length
+            includedCount++
+        }
+        return sb.toString()
     }
 
     /**
@@ -829,8 +889,13 @@ class BenchmarkRunService(
      * available (bugs/ dir missing or break-branch source unreadable)
      * so the run still produces a token-count without crashing.
      */
-    private fun realLlmCall(run: BenchmarkRun, seed: Int, contextTokens: Int): LlmCallResult? {
-        val solver = buildSolverPrompt(run, seed)
+    private fun realLlmCall(
+        run: BenchmarkRun,
+        seed: Int,
+        contextTokens: Int,
+        traceInv: AppMapTraceManager.TraceInventory? = null
+    ): LlmCallResult? {
+        val solver = buildSolverPrompt(run, seed, traceInv)
         val systemPrompt = solver.systemPrompt
         val userPrompt = solver.userPrompt
         // Surface what the context provider produced in the run's log so

@@ -197,25 +197,47 @@
             </tr>
         </table>
         <h4 th:if="${!audit.traceFiles.isEmpty()}" style="margin-top:0.6em">Trace files</h4>
-        <table th:if="${!audit.traceFiles.isEmpty()}">
+        <table th:if="${!audit.traceFiles.isEmpty()}" class="trace-files-table">
             <thead><tr>
-                <th>Trace</th>
+                <th style="width:18em">Trace</th>
                 <th>On-disk path</th>
-                <th class="num">Size (bytes)</th>
-                <th>Shipped to prompt?</th>
+                <th class="num" style="width:8em">Size</th>
+                <th style="width:10em">Shipped?</th>
+                <th style="width:8em">Actions</th>
             </tr></thead>
             <tbody>
                 <tr th:each="tf : ${audit.traceFiles}">
-                    <td><code th:text="${tf.name}"></code></td>
-                    <td><code th:text="${tf.path}" style="font-size:0.85em"></code></td>
-                    <td class="num" th:text="${#numbers.formatInteger(tf.sizeBytes, 1, 'COMMA')}"></td>
+                    <td><code th:text="${tf.name}" style="word-break:break-all"></code></td>
+                    <td>
+                        <code th:text="${tf.path}"
+                              style="font-size:0.8em; word-break:break-all; display:block;
+                                     max-width:100%; line-height:1.35"></code>
+                    </td>
+                    <td class="num" th:text="${#numbers.formatInteger(tf.sizeBytes, 1, 'COMMA') + ' B'}"></td>
                     <td>
                         <span th:if="${tf.submittedToPrompt}" style="color:#16a34a">✓ yes</span>
                         <span th:unless="${tf.submittedToPrompt}" style="color:#6b7280">— available only</span>
                     </td>
+                    <td>
+                        <a th:href="'/appmap-cache/raw?path=' + ${#uris.escapeQueryParam(tf.path)}"
+                           target="_blank"
+                           class="btn-sm" style="padding:0.1em 0.5em">View JSON</a>
+                    </td>
                 </tr>
             </tbody>
         </table>
+        <p th:if="${!audit.traceFiles.isEmpty() and audit.traceCacheSynthetic}" class="help-text"
+           style="margin-top:0.4em">
+            Note: Layer-B synthetic stubs have empty <code>events</code> /
+            <code>classMap</code> arrays — the JSON is well-formed but
+            content-free. The embedded AppMap viewer becomes useful in
+            Layer C when real recordings populate those fields.
+        </p>
+        <style>
+          .trace-files-table { table-layout: fixed; width: 100%; }
+          .trace-files-table td, .trace-files-table th { vertical-align: top; padding: 0.25em 0.5em; }
+          .trace-files-table td:nth-child(2) { overflow-wrap: anywhere; word-break: break-all; }
+        </style>
         <p th:if="${audit.traceFiles.isEmpty()}" class="help-text">
             Mode is <code th:text="${audit.traceMode}"></code> but no trace files exist on disk.
             Possible cause: the cache directory was cleared between this run's start and the audit render,

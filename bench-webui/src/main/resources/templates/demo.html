@@ -589,29 +589,6 @@ java -jar $HOME\ai-bench\bench-webui-0.1.0-SNAPSHOT.jar</pre>
         </div>
     </section>
 
-    <section th:if="${recentRuns != null and !recentRuns.isEmpty()}">
-        <h3>Recent benchmark runs</h3>
-        <table>
-            <thead><tr><th>Run</th><th>Issue</th><th>Model</th><th>Status</th><th>Pass / total</th><th>Duration</th><th>Cost</th></tr></thead>
-            <tbody>
-                <tr th:each="r : ${recentRuns}">
-                    <td><a th:href="'/demo#live-run'" onclick="return loadRun('${r.id}')"><code th:text="${r.id}"></code></a></td>
-                    <td th:text="${r.issueId}"></td>
-                    <td th:text="${r.modelId}"></td>
-                    <td>
-                        <span th:class="'badge ' + (${r.status.name() == 'PASSED'} ? 'available'
-                                                  : (${r.status.name() == 'FAILED' or r.status.name() == 'ERRORED'} ? 'unavailable'
-                                                  : 'partial'))"
-                              th:text="${r.status.name()}"></span>
-                    </td>
-                    <td th:text="${r.seedResults.?[passed].size()} + ' / ' + ${r.seeds}"></td>
-                    <td th:text="${(r.durationMs / 1000) + 's'}"></td>
-                    <td th:text="${'$' + #numbers.formatDecimal(r.stats.estimatedCostUsd, 1, 6, 'POINT')}"></td>
-                </tr>
-            </tbody>
-        </table>
-    </section>
-
     <section>
         <h3>Demo issues
             <span class="help-text" id="demo-issues-count" style="font-weight:normal; font-size:0.85em"></span>
