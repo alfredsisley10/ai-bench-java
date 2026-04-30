@@ -12,9 +12,9 @@ filesTouched:
 oracleDiffLines: 4
 
 hiddenTest:
-  class: com.omnibank.payments.internal.PaymentServiceImplIT
+  class: com.omnibank.payments.internal.PaymentIdempotencyTest
   method: concurrent_submit_with_same_idempotency_key_returns_same_payment_id
-  file: payments-hub/src/test/java/com/omnibank/payments/internal/PaymentServiceImplIT.java
+  file: payments-hub/src/test/java/com/omnibank/payments/internal/PaymentIdempotencyTest.java
 
 problemStatement: |
   Two concurrent submit() calls with the same idempotency key race past the
