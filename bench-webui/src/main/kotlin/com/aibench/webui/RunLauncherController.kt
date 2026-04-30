@@ -118,29 +118,39 @@ class RunLauncherController(
         @RequestParam(required = false) provider: String?,
         @RequestParam(required = false) modelId: String?,
         @RequestParam(required = false) modelIds: List<String>?,
-        @RequestParam(defaultValue = "none") contextProvider: String,
+        @RequestParam(required = false) contextProvider: String?,
+        @RequestParam(required = false) contextProviders: List<String>?,
         @RequestParam(required = false) appmapMode: String?,
+        @RequestParam(required = false) appmapModes: List<String>?,
         @RequestParam(defaultValue = "3") seeds: Int,
         session: HttpSession
     ): String {
-        // appmapMode auto-coercion: see prior comment in original implementation.
-        val effectiveAppmapMode =
-            if (contextProvider == "appmap-navie" && appmapMode.isNullOrBlank()) "OFF"
-            else appmapMode
-
-        // Coalesce single + multi inputs. A multi-select named "modelIds" sends
-        // one repeated form param per pick; the legacy "modelId" field is still
+        // Coalesce single + multi inputs across every dimension. The legacy
+        // singular form names (bugId/modelId/contextProvider/appmapMode) stay
         // accepted so curl scripts that POSTed the old shape keep working.
         val pickedModelIds = (modelIds.orEmpty() + listOfNotNull(modelId))
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         val pickedBugIds = (bugIds.orEmpty() + listOfNotNull(bugId))
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val pickedContexts = (contextProviders.orEmpty() + listOfNotNull(contextProvider))
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            .ifEmpty { listOf("none") }
+        val pickedAppmapRaw = (appmapModes.orEmpty() + listOfNotNull(appmapMode))
+            .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        // appmapMode is implicit OFF when *every* picked context is Navie
+        // (Navie does its own AppMap selection); the form's JS already
+        // disables the AppMap select in that case, which removes the field
+        // from the POST body. Without this fallback the launch would error
+        // with "Missing required field(s): appmapMode".
+        val pickedAppmap = if (pickedAppmapRaw.isEmpty()
+                && pickedContexts.all { it == "appmap-navie" }) listOf("OFF")
+            else pickedAppmapRaw
 
         val missing = buildList<String> {
             if (targetType.isNullOrBlank())  add("targetType")
             if (provider.isNullOrBlank())    add("provider")
             if (pickedModelIds.isEmpty())    add("modelId")
-            if (effectiveAppmapMode.isNullOrBlank()) add("appmapMode")
+            if (pickedAppmap.isEmpty())      add("appmapMode")
         }
         if (missing.isNotEmpty()) {
             val encoded = java.net.URLEncoder.encode(missing.joinToString(","), "UTF-8")
@@ -148,7 +158,6 @@ class RunLauncherController(
         }
         val targetTypeNN = targetType!!
         val providerNN = provider!!
-        val appmapModeNN = effectiveAppmapMode!!
 
         // Defense-in-depth: re-verify every (provider, model) pick against the
         // live registry. Reject the whole launch if any pick is unverified —
@@ -180,23 +189,33 @@ class RunLauncherController(
             else -> return "redirect:/run?error=unknown-target-type"
         }
 
-        // Cross-product: every (bug × model) → one run. The launches go in
-        // a stable order (bugs outer, models inner) so the dashboard groups
-        // them sensibly when sorted by start time.
+        // Full cross-product: bug × model × context × appmap. AppMap-Navie is
+        // a special case — it drives its own AppMap selection internally, so
+        // the only sensible pairing is (navie, OFF). When the user picked
+        // navie alongside several appmap modes, dedup so we don't queue the
+        // same (bug, model, navie, OFF) run multiple times.
         val launched = mutableListOf<String>()
+        val seenKeys = mutableSetOf<String>()
         for ((issueId, issueTitle) in targets) {
             for (m in resolvedModels) {
-                val run = benchmarkRuns.start(
-                    issueId = issueId,
-                    issueTitle = issueTitle,
-                    provider = providerNN,
-                    modelId = m.id,
-                    modelIdentifier = m.modelIdentifier,
-                    contextProvider = contextProvider,
-                    appmapMode = appmapModeNN,
-                    seeds = seeds
-                )
-                launched.add(run.id)
+                for (ctx in pickedContexts) {
+                    for (am in pickedAppmap) {
+                        val effectiveMode = if (ctx == "appmap-navie") "OFF" else am
+                        val key = "$issueId|${m.id}|$ctx|$effectiveMode"
+                        if (!seenKeys.add(key)) continue
+                        val run = benchmarkRuns.start(
+                            issueId = issueId,
+                            issueTitle = issueTitle,
+                            provider = providerNN,
+                            modelId = m.id,
+                            modelIdentifier = m.modelIdentifier,
+                            contextProvider = ctx,
+                            appmapMode = effectiveMode,
+                            seeds = seeds
+                        )
+                        launched.add(run.id)
+                    }
+                }
             }
         }
 

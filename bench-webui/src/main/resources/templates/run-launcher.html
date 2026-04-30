@@ -146,34 +146,6 @@
             </p>
         </fieldset>
 
-        <!-- Combinatorial summary — recalculated whenever the bug, model, or
-             seeds inputs change. Tells the operator exactly how many runs +
-             seeds they're about to launch BEFORE clicking the button so a
-             stray "select all" doesn't queue 100 runs by surprise. -->
-        <div id="launchSummary"
-             style="margin:0.75em 0; padding:0.6em 0.9em; border:1px solid #cbd5e1;
-                    border-radius:4px; background:#f8fafc">
-            <strong>Run plan</strong>
-            <span class="help-text">— what gets launched on click</span>
-            <div style="display:flex; flex-wrap:wrap; gap:0.5em 1.5em; margin-top:0.3em; align-items:baseline">
-                <span><span id="planBugs">0</span> bug<span id="planBugsS">s</span></span>
-                <span style="color:#9ca3af">×</span>
-                <span><span id="planModels">0</span> model<span id="planModelsS">s</span></span>
-                <span style="color:#9ca3af">=</span>
-                <span><strong id="planRuns">0</strong> run<span id="planRunsS">s</span></span>
-                <span style="color:#9ca3af">×</span>
-                <span><span id="planSeedsEach">1</span> seed<span id="planSeedsEachS">s</span> each</span>
-                <span style="color:#9ca3af">=</span>
-                <span style="background:#fde68a; padding:0.1em 0.5em; border-radius:3px">
-                    <strong id="planTotalSeeds">0</strong> total seeds
-                </span>
-            </div>
-            <p class="help-text" id="planWarning"
-               style="margin:0.4em 0 0 0; color:#b45309; display:none">
-                ⚠ Large launch — this will start many concurrent runs. Confirm before clicking Launch.
-            </p>
-        </div>
-
         <fieldset>
             <legend>Runtime options</legend>
 
@@ -182,8 +154,9 @@
                  to OFF below (Navie does its own AppMap vector search;
                  letting the harness packer also include traces would
                  double-count and inflate prompt tokens). -->
-            <label>Context provider:
-                <select name="contextProvider" id="rlContextProvider"
+            <label style="align-items:flex-start">Context provider(s):
+                <select name="contextProviders" id="rlContextProvider" multiple size="6"
+                        style="min-width:30em; vertical-align:top"
                         onchange="syncRlAppmapMode();">
                     <option value="none"
                             th:selected="${defaultContextProvider == 'none'}">None — problem statement only (no source)</option>
@@ -206,6 +179,13 @@
                     </option>
                 </select>
             </label>
+            <div class="button-row" style="margin:0.25em 0; gap:0.4em">
+                <button type="button" class="btn-sm" onclick="contextsSelectAll()">Select all</button>
+                <button type="button" class="btn-sm" onclick="contextsClear()">Clear</button>
+                <span class="help-text">
+                    Selected: <strong id="contextsSelectedCount">0</strong>
+                </span>
+            </div>
             <p class="help-text" id="rlContextHelp">
                 Picks how the harness chooses which source files to ship in the
                 prompt. Does <strong>not</strong> change which LLM is called.
@@ -234,8 +214,9 @@
                     setup page</a>.</li>
             </ul>
 
-            <label>AppMap mode:
-                <select name="appmapMode" id="rlAppmapMode" required>
+            <label style="align-items:flex-start">AppMap mode(s):
+                <select name="appmapModes" id="rlAppmapMode" multiple size="3"
+                        style="min-width:30em; vertical-align:top">
                     <option value="OFF"
                             th:selected="${defaultAppmapMode == 'OFF'}">OFF — No runtime traces collected</option>
                     <option value="ON_RECOMMENDED"
@@ -243,32 +224,52 @@
                     <option value="ON_ALL"
                             th:selected="${defaultAppmapMode == 'ON_ALL'}">ON_ALL — Full trace collection for all test executions</option>
                 </select>
-                <span class="help-text" id="rlAppmapModeHint" style="margin-left:0.5em"></span>
             </label>
+            <div class="button-row" style="margin:0.25em 0; gap:0.4em">
+                <button type="button" class="btn-sm" onclick="modesSelectAll()">Select all</button>
+                <button type="button" class="btn-sm" onclick="modesClear()">Clear</button>
+                <span class="help-text">
+                    Selected: <strong id="modesSelectedCount">0</strong>
+                    <span id="rlAppmapModeHint" style="margin-left:0.5em"></span>
+                </span>
+            </div>
             <script>
-                // Mirror /demo's auto-OFF behavior: when Context provider =
-                // AppMap Navie, force AppMap mode to OFF and disable the
-                // dropdown. Restore the prior choice when the user flips
-                // back to "None".
+                // Multi-select sync. AppMap Navie always pairs with mode=OFF
+                // (server-side: any (navie, *) row is force-coerced to
+                // (navie, OFF) and deduped before launch). When the
+                // operator picks Navie ALONGSIDE non-Navie contexts, the
+                // appmap select stays enabled — the picked modes apply to
+                // the non-Navie contexts; Navie still uses OFF. When
+                // Navie is the *only* picked context, the select is
+                // disabled and the field is omitted from the POST body
+                // (the controller falls back to OFF).
                 (function () {
                     var ctx = document.getElementById('rlContextProvider');
                     var mode = document.getElementById('rlAppmapMode');
                     var hint = document.getElementById('rlAppmapModeHint');
                     if (!ctx || !mode) return;
-                    var savedMode = mode.value;
+                    function selectedValues(sel) {
+                        return Array.prototype.map.call(sel.selectedOptions, function (o) { return o.value; });
+                    }
                     window.syncRlAppmapMode = function () {
-                        if (ctx.value === 'appmap-navie') {
-                            if (mode.value !== 'OFF') savedMode = mode.value;
-                            mode.value = 'OFF';
+                        var picked = selectedValues(ctx);
+                        var navieOnly = picked.length > 0 && picked.every(function (v) { return v === 'appmap-navie'; });
+                        var navieMixed = picked.indexOf('appmap-navie') >= 0 && !navieOnly;
+                        if (navieOnly) {
                             mode.disabled = true;
-                            hint.textContent =
-                                '— forced OFF: AppMap Navie selects relevant maps itself.';
+                            Array.prototype.forEach.call(mode.options, function (o) { o.selected = false; });
+                            hint.textContent = '— Navie context auto-uses OFF; AppMap mode is irrelevant.';
+                            hint.style.color = '#856404';
+                        } else if (navieMixed) {
+                            mode.disabled = false;
+                            hint.textContent = '— Navie rows force OFF; selected modes apply to other contexts.';
                             hint.style.color = '#856404';
                         } else {
                             mode.disabled = false;
-                            if (mode.value === 'OFF' && savedMode !== 'OFF') mode.value = savedMode;
                             hint.textContent = '';
+                            hint.style.color = '';
                         }
+                        if (typeof recomputeLaunchPlan === 'function') recomputeLaunchPlan();
                     };
                     syncRlAppmapMode();
                 })();
@@ -288,6 +289,45 @@
                 Typical: 3 for quick runs, 5-10 for statistical significance.
             </p>
         </fieldset>
+
+        <!-- Combinatorial summary — recalculated whenever any input
+             changes. Shows exactly how many runs + seeds the operator
+             is about to launch (after AppMap-Navie dedup) BEFORE
+             clicking the button so a stray "select all" doesn't queue
+             100 runs by surprise. Sits flush above the Launch button
+             so it's the last thing seen before the click. -->
+        <div id="launchSummary"
+             style="margin:0.75em 0; padding:0.6em 0.9em; border:1px solid #cbd5e1;
+                    border-radius:4px; background:#f8fafc">
+            <strong>Run plan</strong>
+            <span class="help-text">— what gets launched on click</span>
+            <div style="display:flex; flex-wrap:wrap; gap:0.5em 1.0em; margin-top:0.3em; align-items:baseline">
+                <span><span id="planBugs">0</span> bug<span id="planBugsS">s</span></span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planModels">0</span> model<span id="planModelsS">s</span></span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planContexts">0</span> ctx</span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planModes">0</span> mode<span id="planModesS">s</span></span>
+                <span style="color:#9ca3af">=</span>
+                <span><strong id="planRuns">0</strong> run<span id="planRunsS">s</span></span>
+                <span style="color:#9ca3af">×</span>
+                <span><span id="planSeedsEach">1</span> seed<span id="planSeedsEachS">s</span> each</span>
+                <span style="color:#9ca3af">=</span>
+                <span style="background:#fde68a; padding:0.1em 0.5em; border-radius:3px">
+                    <strong id="planTotalSeeds">0</strong> total seeds
+                </span>
+            </div>
+            <p class="help-text" id="planNavieNote"
+               style="margin:0.4em 0 0 0; display:none">
+                Note: AppMap Navie rows always pair with mode=OFF; duplicate
+                (navie × non-OFF) combinations are merged in the run count.
+            </p>
+            <p class="help-text" id="planWarning"
+               style="margin:0.4em 0 0 0; color:#b45309; display:none">
+                ⚠ Large launch — this will start many concurrent runs. Confirm before clicking Launch.
+            </p>
+        </div>
 
         <button type="submit" id="launchBtn">Launch benchmark</button>
     </form>
@@ -363,49 +403,107 @@
             Array.prototype.forEach.call(sel.options, function (o) { o.selected = false; });
             recomputeLaunchPlan();
         }
+        // Context provider + AppMap mode multi-selects. Disabled options
+        // (like the Agentic preview rows) are skipped from select-all so
+        // a click can't quietly enqueue a useless run.
+        function contextsSelectAll() {
+            var sel = document.getElementById('rlContextProvider');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) {
+                if (!o.disabled) o.selected = true;
+            });
+            if (typeof syncRlAppmapMode === 'function') syncRlAppmapMode();
+            recomputeLaunchPlan();
+        }
+        function contextsClear() {
+            var sel = document.getElementById('rlContextProvider');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = false; });
+            if (typeof syncRlAppmapMode === 'function') syncRlAppmapMode();
+            recomputeLaunchPlan();
+        }
+        function modesSelectAll() {
+            var sel = document.getElementById('rlAppmapMode');
+            if (!sel || sel.disabled) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = true; });
+            recomputeLaunchPlan();
+        }
+        function modesClear() {
+            var sel = document.getElementById('rlAppmapMode');
+            if (!sel) return;
+            Array.prototype.forEach.call(sel.options, function (o) { o.selected = false; });
+            recomputeLaunchPlan();
+        }
 
         function recomputeLaunchPlan() {
             var type = document.getElementById('targetType').value;
             var bugSel = document.getElementById('bugId');
             var modelSel = document.getElementById('modelId');
+            var ctxSel = document.getElementById('rlContextProvider');
+            var modeSel = document.getElementById('rlAppmapMode');
             var seedsEl = document.querySelector('input[name="seeds"]');
 
-            // Counts — bugs only matter for omnibank target. Enterprise is
-            // single-target so we treat its "bug count" as 1 in the plan.
             var bugTotal = bugSel ? bugSel.options.length : 0;
             var bugPicked = bugSel ? bugSel.selectedOptions.length : 0;
             var visibleModels = modelSel
                 ? Array.prototype.filter.call(modelSel.options, function (o) { return o.style.display !== 'none'; })
                 : [];
             var modelPicked = modelSel ? modelSel.selectedOptions.length : 0;
+            var ctxValues = ctxSel
+                ? Array.prototype.map.call(ctxSel.selectedOptions, function (o) { return o.value; })
+                : [];
+            var ctxPicked = ctxValues.length;
+            var modePicked = modeSel ? modeSel.selectedOptions.length : 0;
 
-            // Counter labels next to the multi-selects.
-            var bsc = document.getElementById('bugsSelectedCount');     if (bsc) bsc.textContent = bugPicked;
-            var btc = document.getElementById('bugsTotalCount');        if (btc) btc.textContent = bugTotal;
-            var msc = document.getElementById('modelsSelectedCount');   if (msc) msc.textContent = modelPicked;
-            var mvc = document.getElementById('modelsVisibleCount');    if (mvc) mvc.textContent = visibleModels.length;
-
-            // Plan box at the bottom of the form.
-            var seeds = seedsEl ? Math.max(1, parseInt(seedsEl.value, 10) || 1) : 1;
-            var bugsForPlan = (type === 'omnibank') ? bugPicked : 1;
-            var runs = bugsForPlan * modelPicked;
-            var totalSeeds = runs * seeds;
+            // Counter labels next to each multi-select.
             var setText = function (id, v) { var el = document.getElementById(id); if (el) el.textContent = v; };
             var setSuffix = function (id, n) {
                 var el = document.getElementById(id);
                 if (el) el.textContent = (n === 1) ? '' : 's';
             };
+            setText('bugsSelectedCount',     bugPicked);
+            setText('bugsTotalCount',        bugTotal);
+            setText('modelsSelectedCount',   modelPicked);
+            setText('modelsVisibleCount',    visibleModels.length);
+            setText('contextsSelectedCount', ctxPicked);
+            setText('modesSelectedCount',    modePicked);
+
+            // (ctx × mode) pair count, mirroring the controller's dedup:
+            // AppMap-Navie always pairs with mode=OFF (one row per
+            // (bug,model,navie) regardless of how many modes are
+            // picked). Other contexts contribute |modes| rows each.
+            var seeds = seedsEl ? Math.max(1, parseInt(seedsEl.value, 10) || 1) : 1;
+            var bugsForPlan = (type === 'omnibank') ? bugPicked : 1;
+            var ctxModePairs = 0;
+            var hasNavie = false;
+            ctxValues.forEach(function (v) {
+                if (v === 'appmap-navie') { ctxModePairs += 1; hasNavie = true; }
+                else                       { ctxModePairs += Math.max(1, modePicked); }
+            });
+            // When 0 modes picked but at least one non-navie context, the
+            // server falls back to OFF (or rejects) -- show 1 mode in the
+            // plan to match what the controller will end up doing.
+            var modesShown = (modePicked > 0) ? modePicked : (ctxValues.some(function (v) { return v !== 'appmap-navie'; }) ? 1 : 0);
+
+            var runs = bugsForPlan * modelPicked * ctxModePairs;
+            var totalSeeds = runs * seeds;
             setText('planBugs', bugsForPlan);   setSuffix('planBugsS',   bugsForPlan);
             setText('planModels', modelPicked); setSuffix('planModelsS', modelPicked);
+            setText('planContexts', ctxPicked);
+            setText('planModes', modesShown);   setSuffix('planModesS',  modesShown);
             setText('planRuns', runs);          setSuffix('planRunsS',   runs);
             setText('planSeedsEach', seeds);    setSuffix('planSeedsEachS', seeds);
             setText('planTotalSeeds', totalSeeds);
             var warn = document.getElementById('planWarning');
             if (warn) warn.style.display = (runs >= 10) ? '' : 'none';
+            var navieNote = document.getElementById('planNavieNote');
+            if (navieNote) navieNote.style.display =
+                (hasNavie && modePicked > 1) ? '' : 'none';
         }
 
         // Wire change events so the plan box updates live.
-        ['bugId', 'modelId', 'targetType', 'provider'].forEach(function (id) {
+        ['bugId', 'modelId', 'rlContextProvider', 'rlAppmapMode',
+         'targetType', 'provider'].forEach(function (id) {
             var el = document.getElementById(id);
             if (el) el.addEventListener('change', recomputeLaunchPlan);
         });
@@ -418,8 +516,16 @@
             var type = document.getElementById('targetType').value;
             var bugSelect = document.getElementById('bugId');
             var modelSelect = document.getElementById('modelId');
+            var ctxSelect = document.getElementById('rlContextProvider');
+            var modeSelect = document.getElementById('rlAppmapMode');
             var bugCount = bugSelect ? bugSelect.selectedOptions.length : 0;
             var modelCount = modelSelect ? modelSelect.selectedOptions.length : 0;
+            var ctxCount = ctxSelect ? ctxSelect.selectedOptions.length : 0;
+            var modeCount = modeSelect ? modeSelect.selectedOptions.length : 0;
+            var ctxValues = ctxSelect
+                ? Array.prototype.map.call(ctxSelect.selectedOptions, function (o) { return o.value; })
+                : [];
+            var navieOnly = ctxValues.length > 0 && ctxValues.every(function (v) { return v === 'appmap-navie'; });
             if (type === 'omnibank' && bugCount === 0) {
                 e.preventDefault(); alert('Please select at least one Bug ID for Omnibank runs.'); return;
             }
@@ -432,11 +538,24 @@
             if (modelCount === 0) {
                 e.preventDefault(); alert('Please select at least one model.'); return;
             }
+            if (ctxCount === 0) {
+                e.preventDefault(); alert('Please select at least one context provider.'); return;
+            }
+            // Mode selection is only required when at least one non-Navie
+            // context is picked (Navie-only runs auto-default to OFF).
+            if (!navieOnly && modeCount === 0) {
+                e.preventDefault(); alert('Please select at least one AppMap mode.'); return;
+            }
             // Cross-product warning: large launches produce many concurrent
-            // runs. Bail out gracefully so the operator can confirm.
+            // runs. Compute the same dedup the controller will apply.
             var seedsField = document.querySelector('input[name="seeds"]');
             var seedCount = seedsField ? Math.max(1, parseInt(seedsField.value, 10) || 1) : 1;
-            var totalRuns = (type === 'omnibank' ? bugCount : 1) * modelCount;
+            var ctxModePairs = 0;
+            ctxValues.forEach(function (v) {
+                if (v === 'appmap-navie') ctxModePairs += 1;
+                else                       ctxModePairs += Math.max(1, modeCount);
+            });
+            var totalRuns = (type === 'omnibank' ? bugCount : 1) * modelCount * ctxModePairs;
             if (totalRuns >= 10) {
                 if (!confirm('This will start ' + totalRuns + ' runs (' +
                              totalRuns * seedCount + ' total seeds). Proceed?')) {
