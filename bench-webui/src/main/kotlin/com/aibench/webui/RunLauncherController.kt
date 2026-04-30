@@ -135,16 +135,13 @@ class RunLauncherController(
         val pickedContexts = (contextProviders.orEmpty() + listOfNotNull(contextProvider))
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
             .ifEmpty { listOf("none") }
-        val pickedAppmapRaw = (appmapModes.orEmpty() + listOfNotNull(appmapMode))
+        // AppMap modes are now orthogonal to context providers — Navie
+        // SEARCHES traces but doesn't CREATE them, so the mode is just as
+        // relevant for navie context as for oracle/bm25/none. Default to
+        // OFF when no mode is explicitly selected.
+        val pickedAppmap = (appmapModes.orEmpty() + listOfNotNull(appmapMode))
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        // appmapMode is implicit OFF when *every* picked context is Navie
-        // (Navie does its own AppMap selection); the form's JS already
-        // disables the AppMap select in that case, which removes the field
-        // from the POST body. Without this fallback the launch would error
-        // with "Missing required field(s): appmapMode".
-        val pickedAppmap = if (pickedAppmapRaw.isEmpty()
-                && pickedContexts.all { it == "appmap-navie" }) listOf("OFF")
-            else pickedAppmapRaw
+            .ifEmpty { listOf("OFF") }
 
         val missing = buildList<String> {
             if (targetType.isNullOrBlank())  add("targetType")
@@ -189,20 +186,17 @@ class RunLauncherController(
             else -> return "redirect:/run?error=unknown-target-type"
         }
 
-        // Full cross-product: bug × model × context × appmap. AppMap-Navie is
-        // a special case — it drives its own AppMap selection internally, so
-        // the only sensible pairing is (navie, OFF). When the user picked
-        // navie alongside several appmap modes, dedup so we don't queue the
-        // same (bug, model, navie, OFF) run multiple times.
+        // Full cross-product: bug × model × context × appmap. Every
+        // combination produces one run; the AppMap mode controls which
+        // traces the run sees regardless of context. The TraceManager
+        // shares trace artifacts across runs that need the same coverage,
+        // so launching e.g. {oracle,navie} × {ON_RECOMMENDED} only
+        // generates the trace set once.
         val launched = mutableListOf<String>()
-        val seenKeys = mutableSetOf<String>()
         for ((issueId, issueTitle) in targets) {
             for (m in resolvedModels) {
                 for (ctx in pickedContexts) {
                     for (am in pickedAppmap) {
-                        val effectiveMode = if (ctx == "appmap-navie") "OFF" else am
-                        val key = "$issueId|${m.id}|$ctx|$effectiveMode"
-                        if (!seenKeys.add(key)) continue
                         val run = benchmarkRuns.start(
                             issueId = issueId,
                             issueTitle = issueTitle,
@@ -210,7 +204,7 @@ class RunLauncherController(
                             modelId = m.id,
                             modelIdentifier = m.modelIdentifier,
                             contextProvider = ctx,
-                            appmapMode = effectiveMode,
+                            appmapMode = am,
                             seeds = seeds
                         )
                         launched.add(run.id)

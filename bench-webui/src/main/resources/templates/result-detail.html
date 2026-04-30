@@ -55,7 +55,22 @@
                   th:text="'· runtime ' + (${run.durationMs} / 1000) + 's · started ' + ${#temporals.format(run.startedAt, 'HH:mm:ss')}"></span>
             <div style="height:6px; background:#e5e7eb; border-radius:3px;
                         margin-top:0.5em; overflow:hidden">
-                <div id="runProgress" th:style="'height:100%; width:' + ${run.percent} + '%; background:#0ea5e9; transition:width 250ms'"></div>
+                <!-- Server-rendered bar color must match the JS render()
+                     palette (PASSED=green, FAILED/ERRORED=red,
+                     CANCELED=gray, else blue). For terminal runs the
+                     polling loop bails on first tick, so the initial
+                     paint is what the operator sees forever — a blue
+                     "in-progress" bar on an ERRORED run was misleading.
+                     Width pinned to 100% on terminal states so the bar
+                     reads as "done" rather than half-empty. -->
+                <div id="runProgress"
+                     th:with="st=${run.status.name()},
+                              terminal=${st == 'PASSED' or st == 'FAILED' or st == 'ERRORED' or st == 'CANCELED'},
+                              barColor=${st == 'PASSED' ? '#16a34a' :
+                                          (st == 'FAILED' or st == 'ERRORED' ? '#dc2626' :
+                                          (st == 'CANCELED' ? '#6b7280' : '#0ea5e9'))},
+                              barWidth=${terminal ? 100 : run.percent}"
+                     th:style="'height:100%; width:' + ${barWidth} + '%; background:' + ${barColor} + '; transition:width 250ms'"></div>
             </div>
         </div>
 

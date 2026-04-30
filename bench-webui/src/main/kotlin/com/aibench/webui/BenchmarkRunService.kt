@@ -1,5 +1,6 @@
 package com.aibench.webui
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import java.time.Duration
@@ -26,10 +27,15 @@ class BenchmarkRunService(
     private val priceCatalog: ModelPriceCatalog,
     private val realExecutor: RealBenchmarkExecutor,
     private val bugCatalog: BugCatalog,
-    private val contextProvider: ContextProvider
+    private val contextProvider: ContextProvider,
+    private val traceManager: AppMapTraceManager
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
+    /** Reused Jackson ObjectMapper for parsing bridge responses. Single
+     *  instance is fine — ObjectMapper is documented thread-safe once
+     *  configuration is locked. */
+    private val jsonMapper = ObjectMapper()
 
     enum class Status { QUEUED, RUNNING, PASSED, FAILED, ERRORED, CANCELED }
 
@@ -330,33 +336,34 @@ class BenchmarkRunService(
         entry(run, Category.TEST, "Found ${failingTests.size} failing test(s):")
         failingTests.forEach { entry(run, Category.TEST, "  ✗ $it") }
 
-        // Phase 3: AppMap trace collection
+        // Phase 3: AppMap trace collection. Delegated to AppMapTraceManager
+        // which caches by (banking-app SHA, mode) and shares trace
+        // artifacts across benchmarks — so launching {oracle, navie} ×
+        // {ON_RECOMMENDED} only generates the recommended trace set
+        // once. Concurrent benchmarks waiting on the same key block on
+        // the manager's lock until the first finishes recording.
         var tracesRecorded = 0
         if (run.appmapMode != "OFF") {
-            phase(run, "collect-traces", "Recording AppMap traces from failing tests…")
-            for (t in failingTests) {
-                sleep(450)
-                val events = (300..2400).random()
-                val sql = (0..18).random()
-                val http = (0..6).random()
+            phase(run, "collect-traces",
+                "Ensuring AppMap traces (mode=${run.appmapMode}) — checking shared cache…")
+            val bug = bugCatalog.getBug(run.issueId)
+            val inv = traceManager.ensureTracesExist(run.appmapMode, bug) { msg ->
+                entry(run, Category.TRACE, msg)
+            }
+            tracesRecorded = inv.count()
+            run.stats = run.stats.copy(tracesRecorded = tracesRecorded)
+            if (inv.generated) {
                 entry(run, Category.TRACE,
-                    "Recorded trace for $t — $events events / $sql SQL / $http HTTP")
-                tracesRecorded++
-                run.stats = run.stats.copy(tracesRecorded = tracesRecorded)
+                    "Generated $tracesRecorded trace(s) at ${inv.cacheDir} — cached for sibling runs.")
+            } else {
+                entry(run, Category.TRACE,
+                    "Reused $tracesRecorded existing trace(s) from cache @ sha=${inv.sha} (no recording cost).")
             }
-            // ON_ALL also pulls passing-test traces for surrounding context.
-            if (run.appmapMode == "ON_ALL") {
-                val extras = listOf("ChartOfAccountsTest.gl_hierarchy_loads",
-                                    "PostingServiceImplTest.balanced_entry_posts")
-                for (t in extras) {
-                    sleep(280)
-                    val events = (180..900).random()
-                    entry(run, Category.TRACE, "Recorded trace for $t — $events events (passing test, context only)")
-                    tracesRecorded++
-                    run.stats = run.stats.copy(tracesRecorded = tracesRecorded)
-                }
+            if (inv.synthetic) {
+                entry(run, Category.INFO,
+                    "Note: traces are synthetic stubs (Layer B). Real `gradle test --appmap` " +
+                    "recording lands in a follow-up; cache + sharing semantics are real.")
             }
-            sleep(250)
         }
 
         // Phase 4: prime context
@@ -367,12 +374,15 @@ class BenchmarkRunService(
         // own AppMap-driven retrieval and tends to ship a smaller, more
         // focused source-file slice than the harness's default packer.
         val sourceFiles = if (isNavie) (4..8).random() else (8..14).random()
+        // tracesSubmitted reflects what the prompt actually carries.
+        // tracesRecorded is the cache size produced by TraceManager;
+        // ON_RECOMMENDED pre-trims at the cache level (3 traces for the
+        // hidden test + neighbors), ON_ALL hands the LLM the full set.
+        // Navie's own retrieval narrows the wider set down further but
+        // the count we report is "what Navie had to choose from."
         val tracesSubmitted = when {
             run.appmapMode == "OFF" -> 0
-            // Navie always pulls its own AppMap context regardless of
-            // mode (that's the point of the integration), so even
-            // mode=OFF surfaces traces here.
-            isNavie -> tracesRecorded.coerceAtLeast(1)
+            isNavie -> tracesRecorded
             run.appmapMode == "ON_RECOMMENDED" -> tracesRecorded.coerceAtMost(3)
             run.appmapMode == "ON_ALL" -> tracesRecorded
             else -> 0
@@ -847,17 +857,20 @@ class BenchmarkRunService(
                 return null
             }
             val payload = resp.body()
-            val promptTokens = Regex("\"prompt_tokens\"\\s*:\\s*(\\d+)")
-                .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: contextTokens
-            val completionTokens = Regex("\"completion_tokens\"\\s*:\\s*(\\d+)")
-                .find(payload)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val rawContent = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-                .find(payload)?.groupValues?.get(1) ?: ""
-            // Decode the JSON string escapes so downstream code (patch
-            // extractor, git apply) sees real newlines and quotes.
-            val content = rawContent
-                .replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
-                .replace("\\\"", "\"").replace("\\\\", "\\")
+            // Parse with Jackson rather than regex. Earlier impl used
+            // Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"") to
+            // pull the assistant message, which exhibits catastrophic
+            // backtracking on long responses with embedded escapes
+            // (gpt-5-2's verbose patches blew the JVM stack with
+            // StackOverflowError after 144s of regex recursion). Jackson
+            // gives correct, linear-time JSON parsing AND already
+            // unescapes string contents — no manual replace chain.
+            val tree = jsonMapper.readTree(payload)
+            val usage = tree.path("usage")
+            val promptTokens = usage.path("prompt_tokens").asInt(contextTokens)
+            val completionTokens = usage.path("completion_tokens").asInt(0)
+            val content = tree.path("choices").firstOrNull()
+                ?.path("message")?.path("content")?.asText("") ?: ""
             LlmCallResult(promptTokens, completionTokens, ms, content.length, content,
                 systemPrompt = systemPrompt, userPrompt = userPrompt,
                 resolvedContext = solver.resolvedContext)

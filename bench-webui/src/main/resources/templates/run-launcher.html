@@ -234,38 +234,24 @@
                 </span>
             </div>
             <script>
-                // Multi-select sync. AppMap Navie always pairs with mode=OFF
-                // (server-side: any (navie, *) row is force-coerced to
-                // (navie, OFF) and deduped before launch). When the
-                // operator picks Navie ALONGSIDE non-Navie contexts, the
-                // appmap select stays enabled — the picked modes apply to
-                // the non-Navie contexts; Navie still uses OFF. When
-                // Navie is the *only* picked context, the select is
-                // disabled and the field is omitted from the POST body
-                // (the controller falls back to OFF).
+                // AppMap modes are orthogonal to context provider. Navie
+                // SEARCHES existing traces, but it doesn't CREATE them —
+                // so picking Navie + ON_RECOMMENDED is a real combo (the
+                // harness ensures the recommended traces exist on disk
+                // first, then Navie searches them). The hint just
+                // reminds the operator of this distinction; the select
+                // stays fully enabled regardless.
                 (function () {
                     var ctx = document.getElementById('rlContextProvider');
                     var mode = document.getElementById('rlAppmapMode');
                     var hint = document.getElementById('rlAppmapModeHint');
                     if (!ctx || !mode) return;
-                    function selectedValues(sel) {
-                        return Array.prototype.map.call(sel.selectedOptions, function (o) { return o.value; });
-                    }
                     window.syncRlAppmapMode = function () {
-                        var picked = selectedValues(ctx);
-                        var navieOnly = picked.length > 0 && picked.every(function (v) { return v === 'appmap-navie'; });
-                        var navieMixed = picked.indexOf('appmap-navie') >= 0 && !navieOnly;
-                        if (navieOnly) {
-                            mode.disabled = true;
-                            Array.prototype.forEach.call(mode.options, function (o) { o.selected = false; });
-                            hint.textContent = '— Navie context auto-uses OFF; AppMap mode is irrelevant.';
-                            hint.style.color = '#856404';
-                        } else if (navieMixed) {
-                            mode.disabled = false;
-                            hint.textContent = '— Navie rows force OFF; selected modes apply to other contexts.';
+                        var picked = Array.prototype.map.call(ctx.selectedOptions, function (o) { return o.value; });
+                        if (picked.indexOf('appmap-navie') >= 0) {
+                            hint.textContent = '— Navie searches existing traces; mode controls which traces get recorded if absent.';
                             hint.style.color = '#856404';
                         } else {
-                            mode.disabled = false;
                             hint.textContent = '';
                             hint.style.color = '';
                         }
@@ -318,11 +304,6 @@
                     <strong id="planTotalSeeds">0</strong> total seeds
                 </span>
             </div>
-            <p class="help-text" id="planNavieNote"
-               style="margin:0.4em 0 0 0; display:none">
-                Note: AppMap Navie rows always pair with mode=OFF; duplicate
-                (navie × non-OFF) combinations are merged in the run count.
-            </p>
             <p class="help-text" id="planWarning"
                style="margin:0.4em 0 0 0; color:#b45309; display:none">
                 ⚠ Large launch — this will start many concurrent runs. Confirm before clicking Launch.
@@ -468,24 +449,14 @@
             setText('contextsSelectedCount', ctxPicked);
             setText('modesSelectedCount',    modePicked);
 
-            // (ctx × mode) pair count, mirroring the controller's dedup:
-            // AppMap-Navie always pairs with mode=OFF (one row per
-            // (bug,model,navie) regardless of how many modes are
-            // picked). Other contexts contribute |modes| rows each.
+            // Cross-product is now uniform — every (bug × model × ctx ×
+            // mode) is one run. The controller defaults appmap to OFF
+            // when no mode is picked, so the plan shows 1 in that case
+            // for honest accounting.
             var seeds = seedsEl ? Math.max(1, parseInt(seedsEl.value, 10) || 1) : 1;
             var bugsForPlan = (type === 'omnibank') ? bugPicked : 1;
-            var ctxModePairs = 0;
-            var hasNavie = false;
-            ctxValues.forEach(function (v) {
-                if (v === 'appmap-navie') { ctxModePairs += 1; hasNavie = true; }
-                else                       { ctxModePairs += Math.max(1, modePicked); }
-            });
-            // When 0 modes picked but at least one non-navie context, the
-            // server falls back to OFF (or rejects) -- show 1 mode in the
-            // plan to match what the controller will end up doing.
-            var modesShown = (modePicked > 0) ? modePicked : (ctxValues.some(function (v) { return v !== 'appmap-navie'; }) ? 1 : 0);
-
-            var runs = bugsForPlan * modelPicked * ctxModePairs;
+            var modesShown = Math.max(1, modePicked);
+            var runs = bugsForPlan * modelPicked * ctxPicked * modesShown;
             var totalSeeds = runs * seeds;
             setText('planBugs', bugsForPlan);   setSuffix('planBugsS',   bugsForPlan);
             setText('planModels', modelPicked); setSuffix('planModelsS', modelPicked);
@@ -497,8 +468,7 @@
             var warn = document.getElementById('planWarning');
             if (warn) warn.style.display = (runs >= 10) ? '' : 'none';
             var navieNote = document.getElementById('planNavieNote');
-            if (navieNote) navieNote.style.display =
-                (hasNavie && modePicked > 1) ? '' : 'none';
+            if (navieNote) navieNote.style.display = 'none';
         }
 
         // Wire change events so the plan box updates live.
@@ -525,7 +495,6 @@
             var ctxValues = ctxSelect
                 ? Array.prototype.map.call(ctxSelect.selectedOptions, function (o) { return o.value; })
                 : [];
-            var navieOnly = ctxValues.length > 0 && ctxValues.every(function (v) { return v === 'appmap-navie'; });
             if (type === 'omnibank' && bugCount === 0) {
                 e.preventDefault(); alert('Please select at least one Bug ID for Omnibank runs.'); return;
             }
@@ -541,21 +510,16 @@
             if (ctxCount === 0) {
                 e.preventDefault(); alert('Please select at least one context provider.'); return;
             }
-            // Mode selection is only required when at least one non-Navie
-            // context is picked (Navie-only runs auto-default to OFF).
-            if (!navieOnly && modeCount === 0) {
-                e.preventDefault(); alert('Please select at least one AppMap mode.'); return;
-            }
-            // Cross-product warning: large launches produce many concurrent
-            // runs. Compute the same dedup the controller will apply.
+            // AppMap mode is no longer special-cased per context. When
+            // none is picked the controller defaults to OFF, so 0 modes
+            // is allowed but a confirmation makes the implicit choice
+            // explicit.
+            // Cross-product = bugs × models × ctx × max(1, modes). Same
+            // formula the controller uses; no Navie carve-out anymore.
             var seedsField = document.querySelector('input[name="seeds"]');
             var seedCount = seedsField ? Math.max(1, parseInt(seedsField.value, 10) || 1) : 1;
-            var ctxModePairs = 0;
-            ctxValues.forEach(function (v) {
-                if (v === 'appmap-navie') ctxModePairs += 1;
-                else                       ctxModePairs += Math.max(1, modeCount);
-            });
-            var totalRuns = (type === 'omnibank' ? bugCount : 1) * modelCount * ctxModePairs;
+            var modesForRuns = Math.max(1, modeCount);
+            var totalRuns = (type === 'omnibank' ? bugCount : 1) * modelCount * ctxCount * modesForRuns;
             if (totalRuns >= 10) {
                 if (!confirm('This will start ' + totalRuns + ' runs (' +
                              totalRuns * seedCount + ' total seeds). Proceed?')) {
