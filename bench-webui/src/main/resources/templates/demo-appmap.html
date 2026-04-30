@@ -334,6 +334,9 @@
                     <input type="text" id="moduleSearch"
                            placeholder="Search modules (filters list)…"
                            style="flex:1 1 16em; padding:0.3em 0.5em; font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.85em">
+                    <button type="button" class="btn-sm btn-secondary" onclick="selectAllModules()"
+                            style="padding:0.3em 0.7em"
+                            title="Select every module currently visible after the search filter">Select all</button>
                     <button type="button" class="btn-sm btn-secondary" onclick="clearModuleSelection()"
                             style="padding:0.3em 0.7em">Clear selection</button>
                     <span class="help-text" id="moduleSelCount">0 selected</span>
@@ -426,6 +429,18 @@
                 sel.addEventListener('change', refreshCount);
                 window.clearModuleSelection = function () {
                     for (var i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
+                    refreshCount();
+                };
+                // Select-all only flips options that are currently visible
+                // after the search filter — so an operator searching for
+                // "payments" can pick every payments-* module in two clicks
+                // (filter, Select all) without losing other already-selected
+                // modules. With an empty filter this selects everything.
+                window.selectAllModules = function () {
+                    for (var i = 0; i < sel.options.length; i++) {
+                        var o = sel.options[i];
+                        if (o.style.display !== 'none') o.selected = true;
+                    }
                     refreshCount();
                 };
                 refreshCount();

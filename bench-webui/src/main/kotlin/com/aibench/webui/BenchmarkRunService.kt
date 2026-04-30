@@ -93,6 +93,17 @@ class BenchmarkRunService(
         val score: Double?
     )
 
+    /** Per-AppMap-trace detail captured on the SeedAudit so the audit
+     *  page shows exactly which trace files were available + which got
+     *  shipped to the LLM, plus the on-disk path the operator can
+     *  inspect directly. */
+    data class AuditTraceFile(
+        val name: String,
+        val path: String,
+        val sizeBytes: Long,
+        val submittedToPrompt: Boolean
+    )
+
     data class SeedAudit(
         val seed: Int,
         val systemPrompt: String? = null,
@@ -112,7 +123,20 @@ class BenchmarkRunService(
         val effectiveContextProvider: String? = null,
         val contextRationale: String? = null,
         val contextFellBack: Boolean = false,
-        val contextFiles: List<AuditContextFile> = emptyList()
+        val contextFiles: List<AuditContextFile> = emptyList(),
+        // ---- AppMap trace audit. Mode + cache key tell the operator
+        //      which trace inventory was used; traceFiles enumerates
+        //      every file in the cache so they can spot-check directly.
+        //      submittedToPrompt distinguishes "available for retrieval"
+        //      (Navie may pick a subset) from "actually packed in".
+        val traceMode: String? = null,
+        val traceCacheSha: String? = null,
+        val traceCacheDir: String? = null,
+        val traceCacheGenerated: Boolean = false,
+        val traceCacheSynthetic: Boolean = false,
+        val tracesAvailable: Int = 0,
+        val tracesSubmitted: Int = 0,
+        val traceFiles: List<AuditTraceFile> = emptyList()
     )
 
     data class RunStats(
@@ -343,6 +367,9 @@ class BenchmarkRunService(
         // once. Concurrent benchmarks waiting on the same key block on
         // the manager's lock until the first finishes recording.
         var tracesRecorded = 0
+        // Hoisted out of the phase block so each seed's audit can reference
+        // the inventory (cache key, paths, generated/reused, synthetic).
+        var traceInv: AppMapTraceManager.TraceInventory? = null
         if (run.appmapMode != "OFF") {
             phase(run, "collect-traces",
                 "Ensuring AppMap traces (mode=${run.appmapMode}) — checking shared cache…")
@@ -350,6 +377,7 @@ class BenchmarkRunService(
             val inv = traceManager.ensureTracesExist(run.appmapMode, bug) { msg ->
                 entry(run, Category.TRACE, msg)
             }
+            traceInv = inv
             tracesRecorded = inv.count()
             run.stats = run.stats.copy(tracesRecorded = tracesRecorded)
             if (inv.generated) {
@@ -562,6 +590,26 @@ class BenchmarkRunService(
                 contextFellBack = auditContext?.fellBack ?: false,
                 contextFiles = auditContext?.files?.map {
                     AuditContextFile(it.path, it.ref, it.content?.length ?: 0, it.score)
+                } ?: emptyList(),
+                // Trace audit: pulls everything from the TraceManager's
+                // inventory so the audit page can deep-link to the
+                // on-disk trace files. submittedToPrompt is `true` for
+                // the first `tracesSubmitted` files (the same dropoff
+                // the prompt assembler uses).
+                traceMode = run.appmapMode,
+                traceCacheSha = traceInv?.sha,
+                traceCacheDir = traceInv?.cacheDir?.absolutePath,
+                traceCacheGenerated = traceInv?.generated ?: false,
+                traceCacheSynthetic = traceInv?.synthetic ?: false,
+                tracesAvailable = traceInv?.count() ?: 0,
+                tracesSubmitted = tracesSubmitted,
+                traceFiles = traceInv?.tracePaths?.mapIndexed { i, f ->
+                    AuditTraceFile(
+                        name = f.nameWithoutExtension,
+                        path = f.absolutePath,
+                        sizeBytes = f.length(),
+                        submittedToPrompt = i < tracesSubmitted
+                    )
                 } ?: emptyList()
             )
             run.seedAudits = (run.seedAudits + audit).toList()

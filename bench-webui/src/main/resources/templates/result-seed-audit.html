@@ -157,6 +157,72 @@
         </p>
     </details>
 
+    <!-- ============== AppMap traces — recorded + shipped =============== -->
+    <details open style="margin-bottom:0.6em"
+             th:if="${audit != null and audit.traceMode != null and audit.traceMode != 'OFF'}">
+        <summary><h3 style="display:inline; margin:0">AppMap traces</h3>
+            <span class="help-text">— recorded once per (banking-app SHA, mode) and shared across runs</span>
+        </summary>
+        <table style="width:auto">
+            <tr><th>Mode</th>
+                <td><code th:text="${audit.traceMode}"></code></td></tr>
+            <tr th:if="${audit.traceCacheSha != null}">
+                <th>Cache key</th>
+                <td><code th:text="${audit.traceCacheSha}"></code> (banking-app HEAD SHA)</td>
+            </tr>
+            <tr th:if="${audit.traceCacheDir != null}">
+                <th>Cache dir</th>
+                <td><code th:text="${audit.traceCacheDir}"></code></td>
+            </tr>
+            <tr><th>This run</th>
+                <td>
+                    <span th:if="${audit.traceCacheGenerated}"
+                          style="color:#92400e">recorded the traces (cache MISS)</span>
+                    <span th:unless="${audit.traceCacheGenerated}"
+                          style="color:#16a34a">reused the cache (cache HIT — no recording cost)</span>
+                </td>
+            </tr>
+            <tr><th>Trace count</th>
+                <td>
+                    <span th:text="${audit.tracesSubmitted} + ' shipped to prompt of ' + ${audit.tracesAvailable} + ' available'"></span>
+                </td>
+            </tr>
+            <tr th:if="${audit.traceCacheSynthetic}">
+                <th>Synthetic</th>
+                <td style="color:#92400e">
+                    Yes — Layer-B stub bodies. Cache &amp; sharing semantics
+                    are real; Layer C will swap in actual
+                    <code>gradle test --appmap</code> recording.
+                </td>
+            </tr>
+        </table>
+        <h4 th:if="${!audit.traceFiles.isEmpty()}" style="margin-top:0.6em">Trace files</h4>
+        <table th:if="${!audit.traceFiles.isEmpty()}">
+            <thead><tr>
+                <th>Trace</th>
+                <th>On-disk path</th>
+                <th class="num">Size (bytes)</th>
+                <th>Shipped to prompt?</th>
+            </tr></thead>
+            <tbody>
+                <tr th:each="tf : ${audit.traceFiles}">
+                    <td><code th:text="${tf.name}"></code></td>
+                    <td><code th:text="${tf.path}" style="font-size:0.85em"></code></td>
+                    <td class="num" th:text="${#numbers.formatInteger(tf.sizeBytes, 1, 'COMMA')}"></td>
+                    <td>
+                        <span th:if="${tf.submittedToPrompt}" style="color:#16a34a">✓ yes</span>
+                        <span th:unless="${tf.submittedToPrompt}" style="color:#6b7280">— available only</span>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <p th:if="${audit.traceFiles.isEmpty()}" class="help-text">
+            Mode is <code th:text="${audit.traceMode}"></code> but no trace files exist on disk.
+            Possible cause: the cache directory was cleared between this run's start and the audit render,
+            or AppMap recording failed silently — check the run's TRACE log entries.
+        </p>
+    </details>
+
     <!-- ============== (b) Buggy source code shown to solver ============= -->
     <details style="margin-bottom:0.6em" th:if="${!buggyFiles.isEmpty()}">
         <summary><h3 style="display:inline; margin:0">Buggy source code (break branch)</h3>
