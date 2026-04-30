@@ -13,9 +13,9 @@ filesTouched:
 oracleDiffLines: 3
 
 hiddenTest:
-  class: com.omnibank.ledger.internal.LedgerQueriesImplIT
+  class: com.omnibank.ledger.internal.JournalHistoryQueryTest
   method: journal_history_issues_constant_number_of_queries
-  file: ledger-core/src/test/java/com/omnibank/ledger/internal/LedgerQueriesImplIT.java
+  file: ledger-core/src/test/java/com/omnibank/ledger/internal/JournalHistoryQueryTest.java
 
 problemStatement: |
   LedgerQueriesImpl.journalHistory lazily loads lines for each returned
