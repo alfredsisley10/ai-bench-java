@@ -210,8 +210,26 @@ class RealBenchmarkExecutor(
             // Persist patch to disk so 'git apply' has a clean stdin.
             val patchFile = File(seedRoot, ".llm-patch.diff")
             patchFile.writeText(patch + "\n")
+            // `--recount` makes git apply recompute the per-hunk line
+            // counts from the body rather than trusting the `@@ -a,b
+            // +c,d @@` header, AND lets a hunk apply at a different
+            // line offset when the body still matches. Both matter:
+            // LLMs (especially gpt-4.1) routinely emit hunks where
+            // the new-side line count is off by one (e.g. `+38,8`
+            // when the body actually adds only 7 new-side lines), and
+            // they also anchor the hunk at a wrong line number when
+            // the surrounding context has shifted in the file. Without
+            // --recount, both produced "corrupt patch at line N" /
+            // "patch does not apply" rejections that masked otherwise-
+            // correct edits. `--ignore-whitespace` adds tolerance for
+            // the LLM rewriting tabs as spaces or trimming trailing
+            // whitespace -- harmless on this codebase since gradle
+            // checkstyle/spotless reformats anyway, but it kills a
+            // class of "context lines have one trailing space" rejects.
             val applyProc = runProcess(
-                listOf("git", "apply", "--whitespace=nowarn", patchFile.absolutePath),
+                listOf("git", "apply", "--whitespace=nowarn",
+                    "--recount", "--ignore-whitespace",
+                    patchFile.absolutePath),
                 seedRoot, 30
             )
             if (applyProc.exitCode != 0) {
