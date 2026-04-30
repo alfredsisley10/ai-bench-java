@@ -15,7 +15,8 @@
         <a href="#login">Logging in</a> ·
         <a href="#bankingapp">Driving the demo banking app</a> ·
         <a href="#appmap">Recording AppMaps</a> ·
-        <a href="#troubleshooting">Troubleshooting</a>
+        <a href="#troubleshooting">Troubleshooting</a> ·
+        <a href="#reference">Reference docs</a>
     </nav>
 
     <section id="login">
@@ -160,6 +161,30 @@
         <p>The detached bootRun JVM may leave a Gradle daemon orphaned.
             Clean it up with <code>./gradlew --stop</code> from the
             <code>banking-app/</code> directory.</p>
+    </section>
+
+    <section id="reference">
+        <h3>Reference docs</h3>
+        <p>Each markdown file under <code>docs/</code> renders at
+            <code>/docs/{name}</code>. The current set:</p>
+        <ul>
+            <li><a href="/docs/bug-catalog-integrity">Bug catalog integrity report</a>
+                — which of the 12 bugs in <code>bugs/*.yaml</code> are
+                actually wired up vs. inert (break == fix on disk), with
+                a re-seeding recipe.</li>
+            <li><a href="/docs/eval-protocol">Eval protocol</a>
+                — how runs are scored end-to-end.</li>
+            <li><a href="/docs/architecture">Architecture</a>
+                — module layout for bench-cli / bench-harness / bench-webui.</li>
+            <li><a href="/docs/bug-catalog">Bug catalog</a>
+                — schema and conventions for <code>bugs/*.yaml</code>.</li>
+            <li><a href="/docs/llm-integrations">LLM integrations</a>
+                — Copilot bridge, Corp-OpenAI gateway, AppMap Navie.</li>
+            <li><a href="/docs/appmap-integration">AppMap integration</a>
+                — how AppMap traces feed the prompt.</li>
+            <li><a href="/docs/enterprise-builder">Enterprise builder</a>
+                · <a href="/docs/enterprise-build-troubleshooting">Enterprise build troubleshooting</a></li>
+        </ul>
     </section>
 
     <style>

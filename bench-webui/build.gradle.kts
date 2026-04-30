@@ -41,6 +41,11 @@ dependencies {
     // the "this file is in CSV format despite the extension" dialog
     // some tools throw when handed a renamed CSV.
     implementation("org.apache.poi:poi-ooxml:5.3.0")
+    // CommonMark — used by DocsController to render any docs/*.md file
+    // through /docs/{name} so reference docs (bug-catalog-integrity, etc.)
+    // are viewable in the WebUI without hand-crafting an HTML twin.
+    implementation("org.commonmark:commonmark:0.22.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.22.0")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Gradle 9 enforces an explicit JUnit Platform launcher on the test
