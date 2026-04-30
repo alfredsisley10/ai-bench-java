@@ -14,7 +14,7 @@ public interface JournalEntryRepository extends JpaRepository<JournalEntryEntity
 
     @Query("""
         select j from JournalEntryEntity j
-        join j.lines l
+        join fetch j.lines l
         where l.glAccount = :account
           and j.postingDate between :from and :to
         order by j.sequence

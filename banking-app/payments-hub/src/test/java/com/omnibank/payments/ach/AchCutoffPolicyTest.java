@@ -28,6 +28,13 @@ class AchCutoffPolicyTest {
     }
 
     @Test
+    void rejects_submission_exactly_at_final_cutoff() {
+        Instant t = ZonedDateTime.of(2026, 4, 14, 16, 45, 0, 0, ET).toInstant();
+        AchCutoffPolicy policy = new AchCutoffPolicy(Clock.fixed(t, ET));
+        assertThat(policy.isBeforeFinalSameDayCutoff()).isFalse();
+    }
+
+    @Test
     void rejects_submission_on_saturday() {
         Instant t = ZonedDateTime.of(2026, 4, 18, 10, 0, 0, 0, ET).toInstant();
         AchCutoffPolicy policy = new AchCutoffPolicy(Clock.fixed(t, ET));

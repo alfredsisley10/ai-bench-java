@@ -1,0 +1,37 @@
+package com.omnibank.ledger.internal;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.data.jpa.repository.Query;
+
+import java.lang.reflect.Method;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Hidden test for BUG-0009. Structural assertion: the
+ * findJournalsForAccount query must use JOIN FETCH on the lines
+ * collection, otherwise iterating the returned entries triggers
+ * one SQL per journal to lazily load its lines (N+1). Without a
+ * real DB harness, we verify the @Query JPQL string at the
+ * source-code level — sufficient to catch any regression that
+ * drops the fetch keyword.
+ */
+class JournalHistoryQueryTest {
+
+    @Test
+    void journal_history_issues_constant_number_of_queries() throws NoSuchMethodException {
+        Method m = JournalEntryRepository.class.getMethod(
+            "findJournalsForAccount", String.class,
+            java.time.LocalDate.class, java.time.LocalDate.class);
+        Query q = m.getAnnotation(Query.class);
+        assertThat(q).as("@Query annotation present").isNotNull();
+        String jpql = q.value().toLowerCase().replaceAll("\\s+", " ");
+        // The fix uses `join fetch j.lines l` so all lines arrive in
+        // the same query. The bug used plain `join j.lines l`, which
+        // returned the journals correctly but triggered a per-row
+        // SELECT for j.lines on access.
+        assertThat(jpql)
+            .as("JPQL must use JOIN FETCH to avoid N+1 over j.lines")
+            .contains("join fetch j.lines");
+    }
+}

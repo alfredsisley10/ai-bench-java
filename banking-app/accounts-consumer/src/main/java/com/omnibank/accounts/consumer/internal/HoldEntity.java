@@ -57,7 +57,7 @@ public class HoldEntity extends AuditableEntity {
     }
 
     public boolean isActive(Instant now) {
-        return releasedAt == null && now.isBefore(expiresAt);
+        return releasedAt == null && !now.isAfter(expiresAt);
     }
 
     public void release(Instant when) {
