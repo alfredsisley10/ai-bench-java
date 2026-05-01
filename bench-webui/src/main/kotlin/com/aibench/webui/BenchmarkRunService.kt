@@ -781,14 +781,35 @@ class BenchmarkRunService(
             block -- no prose, no commentary, no explanation. The diff must:
               * apply cleanly with `git apply` against the file(s) shown below
               * use the exact path shown in the diff header (`--- a/<path>`
-                and `+++ b/<path>`), NOT a placeholder
+                and `+++ b/<path>`), NOT a placeholder. Paths are MULTI-MODULE
+                (e.g. `shared-domain/src/main/java/com/omnibank/...`) -- do
+                NOT shorten to single-module form like `src/main/java/...`
+              * include a NUMERIC hunk header in the form
+                `@@ -<oldStart>,<oldLines> +<newStart>,<newLines> @@` --
+                `@@ ... @@` is NOT accepted by git apply and will be rejected
               * touch ONLY the file(s) shown -- do not invent or rename
               * be minimal -- change only what's needed to fix the bug,
                 ideally a single hunk of a few lines
+              * make a REAL change -- the `+` line MUST differ from the `-`
+                line. A no-op patch (identical `-` and `+` lines) will be
+                treated as a failed solution
               * preserve existing imports, package declarations, and formatting
             If you cannot solve the bug from the information given, still
             respond with a diff that takes a best-effort approach. A chat
             reply that isn't a diff will be rejected.
+
+            FORMAT TEMPLATE (the placeholders show shape only — fill them
+            with the real path / line numbers / code from the source files
+            shown above; do NOT copy these placeholder identifiers):
+            ```diff
+            --- a/<exact path from a File: header above>
+            +++ b/<same path>
+            @@ -<startLine>,<oldCount> +<startLine>,<newCount> @@
+             <unchanged context line copied verbatim from the file>
+            -<line you are removing, copied verbatim from the file>
+            +<line you are inserting, must differ from the removed line>
+             <unchanged context line copied verbatim from the file>
+            ```
         """.trimIndent()
         val sources = if (ctx.files.isEmpty()) {
             "[no source code provided -- context provider '${ctx.effectiveProvider}' " +

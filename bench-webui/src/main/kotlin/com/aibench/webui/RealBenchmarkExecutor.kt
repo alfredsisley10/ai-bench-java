@@ -210,6 +210,12 @@ class RealBenchmarkExecutor(
             // Persist patch to disk so 'git apply' has a clean stdin.
             val patchFile = File(seedRoot, ".llm-patch.diff")
             patchFile.writeText(patch + "\n")
+            // Snapshot file contents before apply so we can detect a no-op
+            // patch (identical -/+ lines that git apply silently accepts
+            // under --ignore-whitespace). Compared to seedDigestsAfter below.
+            val digestsBefore = touched.associateWith {
+                runCatching { File(seedRoot, it).readBytes().contentHashCode() }.getOrNull()
+            }
             // `--recount` makes git apply recompute the per-hunk line
             // counts from the body rather than trusting the `@@ -a,b
             // +c,d @@` header, AND lets a hunk apply at a different
@@ -237,6 +243,21 @@ class RealBenchmarkExecutor(
                 return ScoreResult(Outcome.FAILED_PATCH_APPLY, 0, 0,
                     System.currentTimeMillis() - started,
                     "git apply rejected the LLM's patch: ${applyProc.tail(300)}",
+                    extractedPatch = patch)
+            }
+            // No-op patch detection: with --ignore-whitespace, byte-identical
+            // `-` and `+` lines exit 0 but change nothing. Treat as a failed
+            // solution rather than letting it slip through to FAILED_TESTS,
+            // which is misleading -- the LLM didn't actually edit anything.
+            val seedDigestsAfter = touched.associateWith {
+                runCatching { File(seedRoot, it).readBytes().contentHashCode() }.getOrNull()
+            }
+            if (touched.isNotEmpty() && seedDigestsAfter == digestsBefore) {
+                logFn("Seed $seedNumber: ✗ patch applied but produced no file changes (no-op diff)")
+                return ScoreResult(Outcome.FAILED_PATCH_APPLY, 0, 0,
+                    System.currentTimeMillis() - started,
+                    "Patch applied but changed nothing -- the `-` and `+` lines were identical " +
+                        "(a no-op diff). Re-prompt the model for a real edit.",
                     extractedPatch = patch)
             }
             logFn("Seed $seedNumber: ✓ patch applied cleanly")
