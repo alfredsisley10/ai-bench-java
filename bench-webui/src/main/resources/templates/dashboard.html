@@ -43,13 +43,25 @@
           font-size: 0.85em; box-sizing: border-box;
       }
       #runsTable .num, #leaderboardTable .num { text-align: right; white-space: nowrap; }
-      /* Drop the table-scroll horizontal scrollbar on the dashboard —
-         table-layout + tightened padding keeps these tables inside their
-         container, so the scrollbar was firing on a few rendering quirks
-         (filter input widths, sub-pixel rounding) without anything to
-         actually scroll to. */
-      section .table-scroll:has(#runsTable),
-      section .table-scroll:has(#leaderboardTable) { overflow-x: hidden; }
+      /* Runs table fits the container with the existing tightening, so
+         hide its horizontal scrollbar (was firing on sub-pixel rounding
+         with nothing real to scroll to). */
+      section .table-scroll:has(#runsTable) { overflow-x: hidden; }
+      /* Leaderboard has 12 columns and *will* overflow on common laptop
+         widths -- show a horizontal scrollbar only when content actually
+         overflows, never clipping data off the right edge. The font +
+         padding shrink below buys a few hundred px of headroom before
+         the scrollbar engages. */
+      section .table-scroll:has(#leaderboardTable) { overflow-x: auto; }
+      #leaderboardTable {
+          font-size: 0.85em;
+          /* Let columns shrink to content rather than the auto layout
+             padding-driven minimum. Combined with the tighter cell
+             padding above this gets the table to fit ~1500px on a
+             laptop instead of needing the full 1700px container. */
+          table-layout: auto;
+      }
+      #leaderboardTable td, #leaderboardTable th { padding: 0.18em 0.4em; }
     </style>
     <section>
         <h2>Summary</h2>
