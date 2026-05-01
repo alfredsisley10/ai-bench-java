@@ -37,6 +37,25 @@ class DashboardController(
         val link: String
     )
 
+    /** Per-bug rollup for the leaderboard drilldown. Aggregates every
+     *  run a (provider, model, ctx, mode) configuration made against
+     *  this specific bug -- so the operator can see whether the
+     *  configuration solved the bug consistently across seeds, or
+     *  passed once-and-failed-twice, etc. */
+    data class BugDrilldown(
+        val bugId: String,
+        val difficulty: String,
+        val category: String,
+        val totalRuns: Int,
+        val passedRuns: Int,
+        val avgDurationMs: Long,
+        val avgCostUsd: Double,
+        /** Latest run id (any status) so the operator can deep-link
+         *  into /results/{runId} for the audit trail. */
+        val latestRunId: String,
+        val latestStatus: String
+    )
+
     /** A single PASSED run, denormalised against its bug metadata so the
      *  leaderboard can pivot on difficulty / category without a second
      *  catalog hit per row. */
@@ -66,6 +85,13 @@ class DashboardController(
         val cheapest: PassRecord?,
         val avgPassMs: Long,
         val avgPassCostUsd: Double,
+        /** Per-bug breakdown of every run that hit this exact
+         *  (provider, model, ctx, mode) configuration. Lets the
+         *  leaderboard drill in: click the expand chevron and see
+         *  "BUG-0001: 1/1 PASSED in 24s, $0.018 / BUG-0002: 0/1
+         *  FAILED_TESTS in 31s, $0.022 / ...". Empty when this
+         *  configuration has no runs at all. */
+        val bugBreakdown: List<BugDrilldown>,
         val solvedByDifficulty: Map<String, Int>,
         val solvedByCategory: Map<String, Int>
     )
@@ -123,8 +149,36 @@ class DashboardController(
                     )
                 }
             }
+        // Per-bug runs grouped by configuration -- includes ALL runs
+        // (passed AND failed) so the drilldown can show what
+        // happened, not just the wins.
+        val allRunsByCtx: Map<CtxKey, List<BenchmarkRunService.BenchmarkRun>> =
+            runs.groupBy(::keyOf)
         val leaderboard = passRecordsByCtx.map { (ctx, records) ->
             val totalForCtx = totalsByCtx[ctx] ?: records.size
+            // Per-bug rollup for the drilldown: every bug this ctx
+            // touched, with pass count + averages + a deep-link to
+            // the latest run's audit page.
+            val byBug = (allRunsByCtx[ctx] ?: emptyList()).groupBy { it.issueId }
+            val drilldown = byBug.map { (bugId, ctxBugRuns) ->
+                val passed = ctxBugRuns.count { it.status.name == "PASSED" }
+                val bug = bugCatalog.getBug(bugId)
+                val newest = ctxBugRuns.maxBy { it.startedAt }
+                BugDrilldown(
+                    bugId = bugId,
+                    difficulty = bug?.difficulty?.takeIf { it.isNotBlank() } ?: "(unknown)",
+                    category = bug?.category?.takeIf { it.isNotBlank() } ?: "(unknown)",
+                    totalRuns = ctxBugRuns.size,
+                    passedRuns = passed,
+                    avgDurationMs = ctxBugRuns.map { it.durationMs }.average().toLong(),
+                    avgCostUsd = ctxBugRuns.map { it.stats.estimatedCostUsd }.average(),
+                    latestRunId = newest.id,
+                    latestStatus = newest.status.name
+                )
+            }.sortedWith(
+                compareByDescending<BugDrilldown> { it.passedRuns }
+                    .thenBy { it.bugId }
+            )
             LeaderboardEntry(
                 modelId = ctx.modelId,
                 provider = ctx.provider,
@@ -137,6 +191,7 @@ class DashboardController(
                 cheapest = records.minByOrNull { it.costUsd },
                 avgPassMs = records.map { it.durationMs }.average().toLong(),
                 avgPassCostUsd = records.map { it.costUsd }.average(),
+                bugBreakdown = drilldown,
                 solvedByDifficulty = records.groupingBy { it.difficulty }.eachCount()
                     .toList().sortedByDescending { it.second }.toMap(LinkedHashMap()),
                 solvedByCategory = records.groupingBy { it.category }.eachCount()

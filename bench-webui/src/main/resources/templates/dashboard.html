@@ -247,8 +247,8 @@
                 </tr>
             </thead>
             <tbody>
-            <tr th:each="lb, iter : ${leaderboard}"
-                th:attr="data-model=${lb.modelId},
+            <th:block th:each="lb, iter : ${leaderboard}">
+            <tr th:attr="data-model=${lb.modelId},
                          data-provider=${lb.provider},
                          data-ctx=${lb.contextProvider},
                          data-appmap=${lb.appmapMode},
@@ -262,6 +262,13 @@
                          data-category=${#strings.listJoin(lb.solvedByCategory.keySet(), ',')}">
                 <td style="white-space:nowrap"
                     th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
+                    <!-- Drill-down chevron: click toggles the per-bug
+                         sibling row below this one. JS at the bottom
+                         of the leaderboard section handles the click. -->
+                    <button type="button" class="lb-drill" th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
+                            th:attr="data-target='lb-drill-' + ${iter.index}"
+                            style="border:none; background:none; cursor:pointer;
+                                   padding:0 0.2em; font-size:0.85em; color:#6b7280">▶</button>
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
@@ -333,8 +340,53 @@
                           th:text="${entry.key} + '×' + ${entry.value}"></span>
                 </td>
             </tr>
+            <!-- Drilldown row: hidden by default, toggled by the
+                 chevron in the Model cell above. Shows per-bug rollup
+                 for this exact (model, ctx, mode) configuration. Each
+                 row deep-links to the most recent run's audit page. -->
+            <tr th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
+                th:id="'lb-drill-' + ${iter.index}"
+                style="display:none; background:#f9fafb">
+                <td colspan="12" style="padding:0.4em 1em">
+                    <table style="width:auto; font-size:0.85em">
+                        <thead>
+                        <tr><th>Bug</th><th>Difficulty</th><th>Category</th>
+                            <th class="num">Pass</th>
+                            <th class="num">Avg time</th><th class="num">Avg cost</th>
+                            <th>Latest status</th><th>Audit</th></tr>
+                        </thead>
+                        <tbody>
+                        <tr th:each="b : ${lb.bugBreakdown}">
+                            <td><a th:href="'/demo/' + ${b.bugId}"><code th:text="${b.bugId}"></code></a></td>
+                            <td><span th:class="'badge ' + ${b.difficulty}" th:text="${b.difficulty}"></span></td>
+                            <td th:text="${b.category}"></td>
+                            <td class="num"
+                                th:text="${b.passedRuns} + '/' + ${b.totalRuns}"></td>
+                            <td class="num" th:text="${b.avgDurationMs / 1000} + 's'"></td>
+                            <td class="num" th:text="'$' + ${#numbers.formatDecimal(b.avgCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
+                            <td><span th:class="'badge ' + ${b.latestStatus}" th:text="${b.latestStatus}"></span></td>
+                            <td><a th:href="'/results/' + ${b.latestRunId}">→ open</a></td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </td>
+            </tr>
+            </th:block>
             </tbody>
         </table>
+        <script>
+          // Chevron toggle for the leaderboard drilldown rows above.
+          // Each chevron has data-target pointing at the sibling tr id.
+          document.querySelectorAll('#leaderboardTable .lb-drill').forEach(function(btn){
+            btn.addEventListener('click', function(){
+              var t = document.getElementById(btn.getAttribute('data-target'));
+              if (!t) return;
+              var open = t.style.display !== 'none';
+              t.style.display = open ? 'none' : '';
+              btn.textContent = open ? '▶' : '▼';
+            });
+          });
+        </script>
         </div>
 
         <!-- Pagination controls — populated by the JS below. Hidden when
