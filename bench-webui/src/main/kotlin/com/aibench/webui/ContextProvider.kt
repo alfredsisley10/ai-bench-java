@@ -218,10 +218,27 @@ class ContextProvider(
                 fellBack = true
             )
         }
-        val top = scored.take(k)
-        val files = top.map { (f, s) ->
-            // Path relative to the repo so the LLM sees the same
-            // a/b/<path> shape that git apply expects.
+        // Hybrid: always include bug.filesTouched in the result (oracle-
+        // anchored), then top up with BM25 top-K excluding duplicates,
+        // capped at K total. Pure BM25 was missing source files when
+        // bug-statement keywords matched test files better than the
+        // source -- e.g. for a numeric-precision bug in Percent.java,
+        // BM25 returned PercentTest.java + 4 unrelated risk-engine files
+        // and the LLM patched against a remembered Percent layout that
+        // didn't actually exist in the file. filesTouched is a free
+        // ground-truth anchor; surfacing it leaves BM25 to play the
+        // augmentation role it's actually good at.
+        val touchedAbs = bug.filesTouched
+            .map { File(repo, it).absoluteFile }
+            .filter { it.isFile }
+            .toSet()
+        val anchored = touchedAbs.toList()
+        val supplementary = scored.asSequence()
+            .map { it.file to it.score }
+            .filter { (f, _) -> f.absoluteFile !in touchedAbs }
+            .take((k - anchored.size).coerceAtLeast(0))
+            .toList()
+        fun toContextFile(f: File, score: Double?): ContextFile {
             val rel = f.absolutePath.removePrefix(repo.absolutePath).trimStart('/')
             // Apply same 256KB cap as BugCatalog.readFileAtRef so prompt
             // budget is bounded.
@@ -230,13 +247,17 @@ class ContextProvider(
                 raw.take(256_000) +
                     "\n\n[... truncated ${raw.length - 256_000} bytes ...]\n"
                 else raw
-            ContextFile(path = rel, ref = "working-tree", content = capped, score = s)
+            return ContextFile(path = rel, ref = "working-tree", content = capped, score = score)
         }
+        val files = anchored.map { toContextFile(it, null) } +
+            supplementary.map { (f, s) -> toContextFile(f, s) }
         return Resolved(
             effectiveProvider = "bm25",
             requestedProvider = requestedProvider,
             files = files,
-            rationale = "BM25 ranked top $k of ${javaFiles.size} *.java files. " +
+            rationale = "Hybrid BM25: ${anchored.size} oracle-anchored " +
+                "filesTouched + ${supplementary.size} BM25 supplements " +
+                "from ${javaFiles.size} *.java files. " +
                 "Query terms: ${queryTerms.take(8).joinToString(", ")}" +
                 if (queryTerms.size > 8) "…" else ""
         )
