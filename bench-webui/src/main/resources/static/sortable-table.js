@@ -66,7 +66,14 @@
         let match = true;
         for (let i = 0; i < terms.length; i++) {
           if (!terms[i]) continue;
-          const txt = (cells[i]?.textContent || '').toLowerCase();
+          // data-filter-col is the AUTHORITATIVE cell index. Filters
+          // skip the checkbox column 0, so filters[0] has
+          // data-filter-col="1". Reading cells[i] (filter array index)
+          // checks the wrong cell — every filter shifts left by one
+          // and only "works" by coincidence when adjacent columns
+          // share text. data-filter-col makes it exact.
+          const colIdx = parseInt(filters[i].getAttribute('data-filter-col'), 10);
+          const txt = (cells[colIdx]?.textContent || '').toLowerCase();
           if (!txt.includes(terms[i])) { match = false; break; }
         }
         row.classList.toggle('filtered-out', !match);
@@ -143,7 +150,14 @@
         let match = true;
         for (let i = 0; i < terms.length; i++) {
           if (!terms[i]) continue;
-          const txt = (cells[i]?.textContent || '').toLowerCase();
+          // data-filter-col is the AUTHORITATIVE cell index. Filters
+          // skip the checkbox column 0, so filters[0] has
+          // data-filter-col="1". Reading cells[i] (filter array index)
+          // checks the wrong cell — every filter shifts left by one
+          // and only "works" by coincidence when adjacent columns
+          // share text. data-filter-col makes it exact.
+          const colIdx = parseInt(filters[i].getAttribute('data-filter-col'), 10);
+          const txt = (cells[colIdx]?.textContent || '').toLowerCase();
           if (!txt.includes(terms[i])) { match = false; break; }
         }
         if (match && searchTerm) {
