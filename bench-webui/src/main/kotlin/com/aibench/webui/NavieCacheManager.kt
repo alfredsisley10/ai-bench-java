@@ -38,6 +38,12 @@ class NavieCacheManager(
     // the case for [NavieResult].
     private val mapper: ObjectMapper = ObjectMapper()
 
+    /** Stdout/stderr tail cap (chars) per active job. ~16K is enough
+     *  to span Navie's "configuration loaded -> classifying -> searching
+     *  -> reading file X" preamble plus a recent batch of progress
+     *  lines without growing unbounded. */
+    private val TAIL_CAP = 16_000
+
     /** Background precompute jobs the operator launched, keyed by bugId.
      *  Lives in-memory only — restarts wipe the running set, but the
      *  on-disk cache itself survives. */
@@ -78,7 +84,22 @@ class NavieCacheManager(
          *  appmap CLI is spawned. cancel() destroyForcibly's it.
          *  Null while we're in the "preparing"/"parsing" phases or
          *  after the job ends. */
-        @Volatile var process: Process? = null
+        @Volatile var process: Process? = null,
+        /** Heartbeat fields populated by the trajectory-watcher thread
+         *  in [precompute] every few seconds while the appmap CLI is
+         *  running. Lets the dashboard / admin UI distinguish "Navie
+         *  is slow" (events ticking, file growing) from "Navie hung"
+         *  (no progress for minutes despite still being process-alive).
+         *  Updated to null after the job ends. */
+        @Volatile var trajectoryEventsLive: Int? = null,
+        @Volatile var trajectoryBytesLive: Long? = null,
+        @Volatile var lastEventAt: Instant? = null,
+        /** Tail of the appmap CLI's stdout/stderr (combined; we
+         *  redirectErrorStream(true) when starting the subprocess).
+         *  Capped at TAIL_CAP chars so a multi-hour run doesn't
+         *  balloon memory; still enough to see what stage the CLI
+         *  is in. Surfaced on the per-bug detail page. */
+        @Volatile var stdoutTail: String? = null
     )
 
     /** Cancel an in-flight precompute. Kills the appmap subprocess,
@@ -177,14 +198,44 @@ class NavieCacheManager(
                     proc.destroyForcibly()
                 }}
                 runCatching { Runtime.getRuntime().addShutdownHook(shutdown) }
-                // Stream stdout to log so a hung Navie is visible.
+                // Heartbeat thread: poll the trajectory file every 5s so
+                // the dashboard can show "still progressing -- N events,
+                // last event Xs ago" vs "looks hung -- 0 events written
+                // in 60s". Cheap (just a stat + line-count); the read
+                // happens off the main wait thread so the subprocess
+                // I/O loop below isn't blocked.
+                val heartbeat = Thread({
+                    while (proc.isAlive && !Thread.currentThread().isInterrupted) {
+                        try {
+                            Thread.sleep(5000)
+                            if (trajFile.isFile) {
+                                val sz = trajFile.length()
+                                val ec = trajFile.useLines { it.count() }
+                                val mt = java.nio.file.Files.getLastModifiedTime(trajFile.toPath())
+                                job.trajectoryBytesLive = sz
+                                job.trajectoryEventsLive = ec
+                                job.lastEventAt = mt.toInstant()
+                            }
+                        } catch (_: InterruptedException) { break }
+                        catch (_: Exception) { /* ignore transient stat errors */ }
+                    }
+                }, "navie-heartbeat-${bug.id}").apply { isDaemon = true; start() }
+                // Stream combined stdout/stderr; keep a rolling tail in
+                // [job.stdoutTail] so the per-bug detail page can show
+                // recent CLI output without holding the full byte stream
+                // in memory.
                 val tail = StringBuilder()
                 proc.inputStream.bufferedReader().useLines { lines ->
                     for (ln in lines) {
-                        if (tail.length < 8_000) tail.appendLine(ln)
+                        tail.appendLine(ln)
+                        if (tail.length > TAIL_CAP) {
+                            tail.delete(0, tail.length - TAIL_CAP)
+                        }
+                        job.stdoutTail = tail.toString()
                         log.debug("navie[{}]: {}", bug.id, ln)
                     }
                 }
+                heartbeat.interrupt()
                 val exit = proc.waitFor()
                 val ms = System.currentTimeMillis() - started
                 if (exit != 0) {

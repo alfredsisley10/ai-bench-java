@@ -42,6 +42,7 @@
             <th>Status</th>
             <th title="Java source files Navie identified during its agentic search loop">Files</th>
             <th title="AppMap trace files Navie referenced (.appmap.json) — runtime side of its retrieval">Traces</th>
+            <th title="Live trajectory progress: events written + seconds since last event. Lets you tell 'still working' from 'wedged'.">Live progress</th>
             <th>Last cached</th>
             <th>Navie duration</th>
             <th>Action</th>
@@ -49,7 +50,7 @@
         </thead>
         <tbody>
         <tr th:each="r : ${rows}">
-            <td><code th:text="${r.id}"></code></td>
+            <td><a th:href="@{'/admin/navie/' + ${r.id}}"><code th:text="${r.id}"></code></a></td>
             <td th:text="${r.title}"></td>
             <td>
                 <span th:if="${r.activePhase != null}" style="color:#b45309"
@@ -64,6 +65,20 @@
             </td>
             <td th:text="${r.fileCount != null ? r.fileCount : '—'}"></td>
             <td th:text="${r.traceCount != null ? r.traceCount : '—'}"></td>
+            <td>
+                <span th:if="${r.activeEvents != null}">
+                    <strong th:text="${r.activeEvents}">0</strong> events
+                    <span th:if="${r.activeBytes != null}"
+                          th:text="'(' + ${r.activeBytes / 1024} + ' KB)'"
+                          style="color:#6b7280; font-size:0.85em"></span>
+                    <br>
+                    <span th:if="${r.secondsSinceLastEvent != null}"
+                          th:style="${r.secondsSinceLastEvent &gt; 60 ? 'color:#b91c1c' : 'color:#16a34a'}"
+                          th:text="'last: ' + ${r.secondsSinceLastEvent} + 's ago'"
+                          style="font-size:0.85em"></span>
+                </span>
+                <span th:unless="${r.activeEvents != null}" style="color:#9ca3af">—</span>
+            </td>
             <td style="font-size:0.85em" th:text="${r.cachedAt != null ? r.cachedAt : '—'}"></td>
             <td style="font-size:0.85em"
                 th:text="${r.durationMs != null ? r.durationMs / 1000 + 's' : '—'}"></td>

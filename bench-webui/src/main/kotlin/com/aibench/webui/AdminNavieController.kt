@@ -43,14 +43,23 @@ class AdminNavieController(
          *  parsed out of the cached trajectory by NavieCacheManager. */
         val traceCount: Int?,
         val activePhase: String?,
-        val activeError: String?
+        val activeError: String?,
+        /** Live-progress fields populated when activePhase != null:
+         *  trajectory event count + how long ago the last event landed.
+         *  Lets the operator distinguish "Navie is making progress,
+         *  just slow" from "Navie wedged silently for 5 minutes". */
+        val activeEvents: Int?,
+        val activeBytes: Long?,
+        val secondsSinceLastEvent: Long?
     )
 
     @GetMapping("/admin/navie")
     fun page(model: Model): String {
+        val now = java.time.Instant.now()
         val rows = bugCatalog.allBugs().map { bug ->
             val cached = navieCache.get(bug)
             val active = navieCache.activeJob(bug.id)
+            val isLive = active != null && active.endedAt == null
             Row(
                 id = bug.id,
                 title = bug.title,
@@ -60,7 +69,12 @@ class AdminNavieController(
                 fileCount = cached?.filesIdentified?.size,
                 traceCount = cached?.tracesIdentified?.size,
                 activePhase = active?.takeIf { it.endedAt == null }?.phase,
-                activeError = active?.error
+                activeError = active?.error,
+                activeEvents = if (isLive) active?.trajectoryEventsLive else null,
+                activeBytes = if (isLive) active?.trajectoryBytesLive else null,
+                secondsSinceLastEvent = if (isLive) active?.lastEventAt?.let {
+                    java.time.Duration.between(it, now).seconds
+                } else null
             )
         }
         model.addAttribute("rows", rows)
@@ -79,6 +93,25 @@ class AdminNavieController(
                 .onFailure { log.warn("navie precompute thread failed for {}: {}", bugId, it.message) }
         }
         return "redirect:/admin/navie?queued=$bugId"
+    }
+
+    /** Per-bug detail page: shows the cached NavieResult in full
+     *  (files identified, traces identified, full answer markdown,
+     *  metadata) plus -- when the job is currently in flight -- the
+     *  recent stdout tail and trajectory progress so the operator
+     *  can see what stage Navie is in without tail'ing /tmp. */
+    @GetMapping("/admin/navie/{bugId}")
+    fun detail(@org.springframework.web.bind.annotation.PathVariable bugId: String,
+               model: Model): String {
+        val bug = bugCatalog.getBug(bugId)
+            ?: return "redirect:/admin/navie?err=unknown-bug"
+        val cached = navieCache.get(bug)
+        val active = navieCache.activeJob(bugId)
+        model.addAttribute("bug", bug)
+        model.addAttribute("cached", cached)
+        model.addAttribute("active", active)
+        model.addAttribute("activeIsLive", active != null && active.endedAt == null)
+        return "admin-navie-detail"
     }
 
     /** Cancel an in-flight navie precompute. Kills the appmap CLI

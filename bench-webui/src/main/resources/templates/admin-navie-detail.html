@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Admin: Navie ' + ${bug.id}, ~{::main})}">
+<body>
+<main>
+    <p style="margin-bottom:0.5em">
+        <a href="/admin/navie">← back to Navie cache</a>
+    </p>
+    <h1>
+        <code th:text="${bug.id}">BUG-XXXX</code>:
+        <span th:text="${bug.title}">title</span>
+    </h1>
+    <p class="help-text" th:text="${bug.problemStatement.substring(0, T(java.lang.Math).min(bug.problemStatement.length(), 280))} + (bug.problemStatement.length() > 280 ? '…' : '')"></p>
+
+    <!-- Live progress (only when a precompute is currently running) -->
+    <section th:if="${activeIsLive}" style="margin:1em 0; padding:0.8em 1em;
+            background:#fef9c3; border:1px solid #fde68a; border-radius:4px">
+        <h2 style="margin-top:0">⟳ Live Navie precompute in flight</h2>
+        <table>
+            <tr><th>Phase</th><td><code th:text="${active.phase}"></code></td></tr>
+            <tr><th>Started</th><td th:text="${active.startedAt}"></td></tr>
+            <tr><th>Trajectory events</th>
+                <td><strong th:text="${active.trajectoryEventsLive ?: 0}">0</strong>
+                    (<span th:text="${(active.trajectoryBytesLive ?: 0) / 1024}">0</span> KB)</td></tr>
+            <tr><th>Last event</th>
+                <td th:text="${active.lastEventAt != null ? active.lastEventAt + ' (refresh page for delta)' : '(no events yet)'}"></td></tr>
+        </table>
+        <details style="margin-top:0.6em">
+            <summary><strong>appmap CLI stdout/stderr (tail)</strong></summary>
+            <pre style="background:#1f2937; color:#e5e7eb; padding:0.6em 1em;
+                       font-size:0.78em; max-height:32em; overflow:auto;
+                       white-space:pre-wrap"
+                 th:text="${active.stdoutTail ?: '(no output captured yet)'}"></pre>
+        </details>
+    </section>
+
+    <!-- Cached result -->
+    <section th:if="${cached != null}" style="margin:1em 0">
+        <h2>Cached result</h2>
+        <table>
+            <tr><th>Generated</th><td th:text="${cached.generatedAt}"></td></tr>
+            <tr><th>Break commit</th><td><code th:text="${cached.breakCommit}"></code></td></tr>
+            <tr><th>CLI version</th><td><code th:text="${cached.cliVersion ?: '?'}"></code></td></tr>
+            <tr><th>Model</th><td><code th:text="${cached.model ?: '?'}"></code></td></tr>
+            <tr><th>Trajectory events</th><td th:text="${cached.trajectoryEventCount}"></td></tr>
+            <tr><th>Duration</th><td th:text="${cached.durationMs / 1000} + 's'"></td></tr>
+            <tr><th>Files identified</th><td th:text="${#lists.size(cached.filesIdentified)}"></td></tr>
+            <tr><th>Traces referenced</th><td th:text="${#lists.size(cached.tracesIdentified)}"></td></tr>
+        </table>
+
+        <h3>Files Navie identified (<span th:text="${#lists.size(cached.filesIdentified)}">0</span>)</h3>
+        <p class="help-text">
+            Java source files Navie's agentic loop picked as relevant to the bug.
+            ContextProvider.appmap-navie ships these in the prompt for runs that
+            select Navie context.
+        </p>
+        <ul style="font-family:monospace; font-size:0.85em">
+            <li th:each="f : ${cached.filesIdentified}" th:text="${f}"></li>
+        </ul>
+
+        <h3>Traces Navie referenced (<span th:text="${#lists.size(cached.tracesIdentified)}">0</span>)</h3>
+        <p class="help-text">
+            <code>.appmap.json</code> trace files Navie's vector search referenced
+            during retrieval. ContextProvider matches these by name to the
+            on-disk pool from /admin/appmap-traces.
+        </p>
+        <ul style="font-family:monospace; font-size:0.85em">
+            <li th:each="t : ${cached.tracesIdentified}" th:text="${t}"></li>
+        </ul>
+
+        <h3>Full Navie answer (markdown)</h3>
+        <pre style="background:#f9fafb; padding:0.8em 1em; max-height:40em; overflow:auto;
+                   white-space:pre-wrap; font-size:0.85em"
+             th:text="${cached.answer}"></pre>
+    </section>
+
+    <p th:if="${cached == null and !activeIsLive}" style="margin:1em 0;
+            padding:0.8em 1em; background:#f3f4f6; border-radius:4px">
+        No cached result for this bug, and no precompute in flight.
+        Trigger one from <a href="/admin/navie">/admin/navie</a>.
+    </p>
+</main>
+</body>
+</html>
