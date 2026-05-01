@@ -320,11 +320,21 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         val repo = runCatching { bankingApp.bankingAppDir }.getOrNull()
             ?: return modules.associateWith { emptyList<File>() }
         return modules.associateWith { module ->
-            val dir = File(repo, "$module/tmp/appmap/junit")
-            if (dir.isDirectory)
-                dir.listFiles { f -> f.isFile && f.name.endsWith(".appmap.json") }?.toList()
-                    ?: emptyList()
-            else emptyList()
+            // Walk every subdir under <module>/tmp/appmap/ -- AppMap writes
+            // gradle-driven recordings to junit/ but operators may also
+            // record manually via the "Record from tests" button on
+            // /demo/appmap (lands under interactive/) or use other tools
+            // that drop to test/. Picking up every subdir means a manual
+            // recording the operator made for a tricky bug becomes
+            // available to BM25-trace-selection without any extra
+            // configuration. Skips dotfiles + the harness's own work
+            // dirs (lock files, the .generated marker, etc.).
+            val root = File(repo, "$module/tmp/appmap")
+            if (!root.isDirectory) emptyList()
+            else root.walkTopDown()
+                .onEnter { d -> !d.name.startsWith(".") }
+                .filter { it.isFile && it.name.endsWith(".appmap.json") }
+                .toList()
         }
     }
 
