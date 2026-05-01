@@ -12,6 +12,58 @@
     </h1>
     <p class="help-text" style="white-space:pre-wrap" th:text="${bug.problemStatement}"></p>
 
+    <!-- Plain-English explainer of what the precompute is doing.
+         Always visible so an operator who lands here mid-precompute
+         can immediately understand "why so many LLM calls" without
+         hunting through docs. -->
+    <details style="margin:1em 0; padding:0.6em 1em; background:#f0f9ff;
+                    border:1px solid #93c5fd; border-radius:4px">
+        <summary style="cursor:pointer">
+            <strong>What is the Navie precompute actually doing?</strong>
+            (click to expand)
+        </summary>
+        <div style="margin-top:0.6em">
+            <p>For this bug we run the local <code>appmap navie</code> CLI
+            once with the question shown above. Navie's CLI runs an
+            <strong>agentic loop</strong> -- each iteration is one LLM
+            round-trip through the local Copilot bridge. The loop has
+            roughly four stages:</p>
+            <ol>
+              <li><strong>classify</strong> (~1-2 LLM calls) -- Navie
+                  decides what kind of question it is and which agent
+                  to use (search / explain / plan / etc).</li>
+              <li><strong>search</strong> (~3-10 calls) -- Navie searches
+                  the AppMap index built from
+                  <code>banking-app/&lt;module&gt;/tmp/appmap/junit/*.appmap.json</code>
+                  for traces relevant to the bug's terms. Each search
+                  query is one LLM call.</li>
+              <li><strong>context-pack</strong> (~10-50 calls) -- Navie
+                  iteratively reads candidate source files. Each file
+                  read is one LLM call: Navie sends the file content
+                  + a "is this relevant?" prompt and the LLM responds.
+                  This stage dominates the wall-clock time.</li>
+              <li><strong>answer</strong> (~2-5 calls) -- Navie
+                  synthesizes the final markdown answer + the file
+                  list it identifies as relevant.</li>
+            </ol>
+            <p>Each LLM call goes through our local Copilot bridge,
+            which uses VSCode's LanguageModelChat to talk to Copilot.
+            Each round-trip averages 5-10 seconds for gpt-4.1.</p>
+            <p><strong>Total typical: 30-100 LLM calls per bug.</strong>
+            We cache the result keyed by (bugId, breakSha) at
+            <code>~/.ai-bench/navie-cache/</code> so this expensive
+            walk runs ONCE per bug -- subsequent benchmark runs that
+            need Navie's file selection read from the cache instantly.
+            Without the cache, every benchmark run that picks
+            <code>contextProvider=appmap-navie</code> would re-do
+            this 30-100 call walk.</p>
+            <p style="margin-bottom:0">The breakdown table below shows
+            what each completion request actually was -- you can
+            verify "Navie really needed to read PaymentServiceImpl.java
+            three times" or spot wasted iterations.</p>
+        </div>
+    </details>
+
     <!-- Live progress (only when a precompute is currently running) -->
     <section th:if="${activeIsLive}" style="margin:1em 0; padding:0.8em 1em;
             background:#fef9c3; border:1px solid #fde68a; border-radius:4px">

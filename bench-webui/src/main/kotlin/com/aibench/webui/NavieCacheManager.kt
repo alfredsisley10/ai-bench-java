@@ -287,26 +287,56 @@ class NavieCacheManager(
                 // in 60s". Cheap (just a stat + line-count); the read
                 // happens off the main wait thread so the subprocess
                 // I/O loop below isn't blocked.
+                // Heartbeat + per-round-trip log emitter. Polls the
+                // trajectory every 5s; when new 'received' events
+                // appear, parse them and write a plain-English log
+                // line so an operator tailing bench-webui.log sees
+                // real-time progress without opening the admin UI:
+                //   navie[BUG-0001] completion 7/30 (~23%, stage=
+                //     context-pack, 5.3s) sent=8.2KB role=user
+                //     "Read the file payments-hub/.../Payment.java"
+                //     -> recv 1.2KB
+                var lastLoggedSeq = 0
                 val heartbeat = Thread({
                     while (proc.isAlive && !Thread.currentThread().isInterrupted) {
                         try {
                             Thread.sleep(5000)
-                            if (trajFile.isFile) {
-                                val sz = trajFile.length()
-                                // Single pass to count both events and
-                                // round-trips (received messages).
-                                var ec = 0; var rt = 0
-                                trajFile.useLines { lines ->
-                                    for (ln in lines) {
-                                        ec++
-                                        if (ln.contains("\"type\":\"received\"")) rt++
-                                    }
+                            if (!trajFile.isFile) continue
+                            val sz = trajFile.length()
+                            var ec = 0; var rt = 0
+                            trajFile.useLines { lines ->
+                                for (ln in lines) {
+                                    ec++
+                                    if (ln.contains("\"type\":\"received\"")) rt++
                                 }
-                                val mt = java.nio.file.Files.getLastModifiedTime(trajFile.toPath())
-                                job.trajectoryBytesLive = sz
-                                job.trajectoryEventsLive = ec
-                                job.liveRoundTripCount = rt
-                                job.lastEventAt = mt.toInstant()
+                            }
+                            val mt = java.nio.file.Files.getLastModifiedTime(trajFile.toPath())
+                            job.trajectoryBytesLive = sz
+                            job.trajectoryEventsLive = ec
+                            job.liveRoundTripCount = rt
+                            job.lastEventAt = mt.toInstant()
+                            // Emit a per-completion log line for every
+                            // new round-trip since the last poll. The
+                            // parse is bounded to the new range by
+                            // skipping the seq numbers we already
+                            // logged. Cheap unless trajectory is huge.
+                            if (rt > lastLoggedSeq) {
+                                val all = parseRoundTrips(trajFile)
+                                for (r in all.drop(lastLoggedSeq)) {
+                                    val pct = if (medianCachedRoundTripCount() > 0)
+                                        " ~${(r.seq * 100 / medianCachedRoundTripCount()).coerceAtMost(100)}%"
+                                    else ""
+                                    log.info("navie[{}] completion {}{} stage={} {}s " +
+                                        "sent={}KB role={} \"{}\" -> recv={}KB \"{}\"",
+                                        bug.id, r.seq, pct, r.inferredStage,
+                                        r.durationMs / 1000.0,
+                                        r.sentChars / 1024,
+                                        r.sentRole,
+                                        r.sentPreview.replace('\n', ' ').take(120),
+                                        r.receivedChars / 1024,
+                                        r.receivedPreview.replace('\n', ' ').take(120))
+                                }
+                                lastLoggedSeq = rt
                             }
                         } catch (_: InterruptedException) { break }
                         catch (_: Exception) { /* ignore transient stat errors */ }
