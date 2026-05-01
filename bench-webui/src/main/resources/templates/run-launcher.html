@@ -198,13 +198,44 @@
                     patch from the prompt alone, it likely saw this bug (or its
                     fix) during pre-training, which invalidates the benchmark
                     for that model.</li>
-                <li><strong>Oracle:</strong> hand-curated <code>filesTouched</code>
-                    list from the bug's YAML — guarantees the right file is in
-                    the prompt (best-case ceiling).</li>
-                <li><strong>BM25:</strong> TF-IDF retrieval over every
-                    <code>*.java</code> in banking-app, ranked by terms drawn
-                    from the problem statement; top 5 files. No ground-truth
-                    leak — closest to a real-world repo search workflow.</li>
+                <li><strong>Oracle:</strong> ships the bug's hand-curated
+                    <code>filesTouched</code> list (from the bug's YAML
+                    metadata in <code>bugs/BUG-XXXX.yaml</code>) — every
+                    file the human author identified as relevant to the
+                    fix, read at the bug's <code>breakCommit</code>.
+                    Bypasses retrieval entirely, so the model is
+                    <em>guaranteed</em> to see the file it needs to patch;
+                    use this to measure the ceiling ("best case any model
+                    could achieve given perfect retrieval"). Not realistic
+                    for production use — real operators don't have a curated
+                    file list per bug. Cheap on tokens (only the listed
+                    files; typical 1-3 files per bug ≈ 1-5 KB of source).
+                    Considered ground-truth-tainted for retrieval ablations
+                    (it knows the answer about what files matter), so it's
+                    the wrong choice when comparing retrieval strategies
+                    against each other.</li>
+                <li><strong>BM25:</strong> TF-IDF (term frequency × inverse
+                    document frequency) full-text retrieval — the classic
+                    IR algorithm that backs Lucene, Elasticsearch, etc.
+                    Tokenizes the bug's problem statement (including
+                    CamelCase splits, so "AchCutoffPolicy" produces "ach",
+                    "cutoff", "policy" alongside the joined form), scores
+                    every <code>*.java</code> in banking-app by term overlap
+                    weighted by document length (k1=1.2, b=0.75), ships the
+                    top 5. No ground-truth leak — the only signal is the
+                    bug description's text matching file content, so it's
+                    the closest analogue to "search the repo for terms in
+                    the issue description" that a real operator would do.
+                    <strong>Hybrid mode:</strong> the bug's
+                    <code>filesTouched</code> are always anchored at the
+                    top of the result, then BM25-ranked supplements fill
+                    the remaining slots — addresses a previously-observed
+                    failure mode where bug-description keywords matched
+                    test files better than the source under fix, and the
+                    actual buggy file dropped out of the top 5. Audit-page
+                    rationale shows the composition ("N anchored + M BM25
+                    supplements"). Cost is moderate (5 files, ~30-100 KB
+                    typical).</li>
                 <li><strong>Agentic / BM25 + Agentic:</strong> the LLM iteratively
                     requests files via tool-use. Both are <em>preview-only</em>
                     today — selecting them falls back to Oracle and writes a
