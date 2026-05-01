@@ -242,9 +242,28 @@ class BenchmarkRunService(
     }
 
     private val runs = ConcurrentHashMap<String, BenchmarkRun>()
+    /**
+     * Multi-threaded executor — multiple benchmark runs proceed in
+     * parallel for everything EXCEPT the LLM call itself. The bridge
+     * call is the only step that must be serialized (Copilot /
+     * Corp-OpenAI rate-limit on concurrent requests); gradle build,
+     * patch apply, AppMap trace overlay, and prompt assembly are all
+     * happy to run concurrently and benefit from the parallelism.
+     * The LLM-only serialization is enforced by [llmCallMutex] in
+     * realLlmCall().
+     */
     private val executor = Executors.newCachedThreadPool { r ->
         Thread(r, "bench-run").apply { isDaemon = true }
     }
+    /**
+     * Process-wide gate around the bridge LLM call. Acquired in
+     * realLlmCall() so only ONE chat-completion request is in flight
+     * to Copilot / Corp-OpenAI at a time. Other run phases (gradle
+     * test, AppMap recording, etc.) bypass this lock and proceed in
+     * parallel. Fairness=true so callers are served FIFO and a
+     * burst of new requests can't starve a queued one.
+     */
+    private val llmCallMutex = java.util.concurrent.locks.ReentrantLock(true)
     /**
      * Single-threaded scheduler used for the per-run watchdog that
      * detects "stuck in QUEUED" runs. Daemon thread so it doesn't
@@ -280,20 +299,25 @@ class BenchmarkRunService(
         executor.submit { runCatching { simulate(run) }.onFailure { logRunError(run, it) } }
 
         // Watchdog: if simulate hasn't transitioned the run out of
-        // QUEUED within 15s, something is wrong (executor backlog,
-        // simulate threw before status update, etc.). Fail it loudly
-        // instead of leaving the operator staring at "Queued forever".
+        // QUEUED within 15s AND no other run is currently RUNNING,
+        // something is wrong (executor backlog, simulate threw before
+        // status update, etc.). With the single-threaded executor a
+        // queued run legitimately sits in QUEUED for hours when the
+        // worker is busy on prior submits — only mark ERRORED if
+        // we're in a "no worker is making progress" state.
         watchdog.schedule({
             val current = runs[id]
             if (current != null && current.status == Status.QUEUED) {
+                val workerBusy = runs.values.any { it.id != id && it.status == Status.RUNNING }
+                if (workerBusy) return@schedule
                 current.status = Status.ERRORED
                 current.endedAt = Instant.now()
                 entry(current, Category.ERROR,
-                    "Run never transitioned out of QUEUED within 15s. The simulate worker " +
-                    "did not start (executor backlog, JVM thread limit, or an exception " +
-                    "before the first status update). Try again or check bench-webui logs " +
-                    "for stack traces from BenchmarkRunService.")
-                log.warn("Benchmark run {} stuck in QUEUED >15s -- marked ERRORED", id)
+                    "Run never transitioned out of QUEUED within 15s and no other run is " +
+                    "active. The simulate worker did not start (executor died, JVM thread " +
+                    "limit, or an exception before the first status update). Try again or " +
+                    "check bench-webui logs for stack traces from BenchmarkRunService.")
+                log.warn("Benchmark run {} stuck in QUEUED >15s with no active worker -- marked ERRORED", id)
             }
         }, 15, java.util.concurrent.TimeUnit.SECONDS)
 
@@ -957,26 +981,48 @@ class BenchmarkRunService(
                 .build()
             val client = java.net.http.HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(3)).build()
-            // Send asynchronously so we can emit "still waiting…"
-            // progress entries every 20s. Without this, the log tail
-            // looks frozen for up to 3 minutes during slow Copilot
-            // responses -- the operator can't tell "stuck" from
-            // "working." Any polling client (result-detail's 1.5s
-            // tick) sees the periodic entries and the latest elapsed
-            // time, so the page never looks dead.
-            val future = client.sendAsync(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-            var resp: java.net.http.HttpResponse<String>? = null
-            while (resp == null) {
-                resp = try {
-                    future.get(20, java.util.concurrent.TimeUnit.SECONDS)
-                } catch (te: java.util.concurrent.TimeoutException) {
-                    val elapsed = (System.currentTimeMillis() - start) / 1000
-                    entry(run, Category.LLM,
-                        "Seed $seed … still waiting on bridge response (${elapsed}s elapsed)")
-                    null
-                }
+            // Serialize ONLY the bridge call, not the surrounding work.
+            // Copilot rate-limits concurrent requests; outside the lock,
+            // sibling benchmarks happily run gradle / overlay traces /
+            // assemble prompts in parallel. tryLock to surface "waiting
+            // on the LLM mutex" in the run log so the operator knows
+            // the queue depth at a glance — prior version made it look
+            // like the bridge was hung when in fact we were just
+            // waiting our turn.
+            if (!llmCallMutex.tryLock()) {
+                entry(run, Category.LLM,
+                    "Seed $seed: waiting for the per-bridge LLM mutex " +
+                    "(another run is mid-call) — non-LLM work in this " +
+                    "run already complete; gating the chat-completions POST.")
+                llmCallMutex.lock()
             }
-            val ms = System.currentTimeMillis() - start
+            val resp: java.net.http.HttpResponse<String>?
+            val ms: Long
+            try {
+                // Send asynchronously so we can emit "still waiting…"
+                // progress entries every 20s. Without this, the log tail
+                // looks frozen for up to 3 minutes during slow Copilot
+                // responses -- the operator can't tell "stuck" from
+                // "working." Any polling client (result-detail's 1.5s
+                // tick) sees the periodic entries and the latest elapsed
+                // time, so the page never looks dead.
+                val future = client.sendAsync(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                var pending: java.net.http.HttpResponse<String>? = null
+                while (pending == null) {
+                    pending = try {
+                        future.get(20, java.util.concurrent.TimeUnit.SECONDS)
+                    } catch (te: java.util.concurrent.TimeoutException) {
+                        val elapsed = (System.currentTimeMillis() - start) / 1000
+                        entry(run, Category.LLM,
+                            "Seed $seed … still waiting on bridge response (${elapsed}s elapsed)")
+                        null
+                    }
+                }
+                resp = pending
+                ms = System.currentTimeMillis() - start
+            } finally {
+                llmCallMutex.unlock()
+            }
             if (resp.statusCode() !in 200..299) {
                 entry(run, Category.ERROR,
                     "Bridge returned HTTP ${resp.statusCode()}: ${resp.body().take(200)}")
