@@ -367,19 +367,33 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
     )
 
     /** Run gradle :MODULE:test under the AppMap agent and report what
-     *  was produced. --no-configuration-cache works around a known
-     *  incompatibility between AppMap plugin 1.2.0 and Gradle 9's
-     *  configuration cache (the plugin calls Task.project at execution
-     *  time, which the cache rejects). Caller is responsible for
-     *  off-thread invocation -- a single module run takes 30s-5min. */
+     *  was produced. The flags below are all required to make traces
+     *  actually appear -- omit any one and gradle silently exits
+     *  SUCCESSFUL with zero .appmap.json files:
+     *    - --no-configuration-cache: AppMap plugin 1.2.0 calls
+     *      Task.project at execution time, which Gradle 9's
+     *      configuration cache rejects.
+     *    - --no-build-cache: gradle's build cache restores test
+     *      outputs FROM-CACHE on the second invocation (the test
+     *      sources/classpath are unchanged, so the cache key matches).
+     *      Without this, the test task body never runs and no agent
+     *      attaches.
+     *    - :MODULE:cleanTest: deletes the local test report dir so
+     *      the test task is no longer UP-TO-DATE for the local
+     *      avoidance check (this is necessary IN ADDITION to
+     *      --no-build-cache, not instead of).
+     *  Caller is responsible for off-thread invocation -- a single
+     *  module run takes 30s-5min depending on suite size. */
     fun generateRealTracesForModule(module: String): GenerationResult {
         val repo = bankingApp.bankingAppDir
         val started = System.currentTimeMillis()
         val proc = ProcessBuilder(
             File(repo, "gradlew").absolutePath,
+            ":$module:cleanTest",
             ":$module:test",
             "-Pappmap_enabled=true",
             "--no-configuration-cache",
+            "--no-build-cache",
             "--no-daemon",
             "-q"
         )
