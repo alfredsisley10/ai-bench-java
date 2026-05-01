@@ -148,6 +148,29 @@ class DashboardController(
      * (QUEUED / RUNNING) are skipped — the operator must cancel them
      * first; the response toast spells out exactly what happened.
      */
+    /**
+     * Cancel one in-flight run from the dashboard. Flips the run's
+     * status to CANCELED so the worker thread will bail out at the
+     * next checkpoint -- the LLM call already in flight still
+     * completes (we can't interrupt vscode.LanguageModelChat mid-
+     * stream), but no further bridge calls are made for this run
+     * and the queue-aware watchdog stops counting it as active.
+     * Useful when the bridge is rate-limited and the operator
+     * wants to stop wasting cycles on calls that won't succeed.
+     */
+    @PostMapping("/runs/{runId}/cancel")
+    fun cancelRun(
+        @org.springframework.web.bind.annotation.PathVariable runId: String,
+        session: HttpSession
+    ): String {
+        val ok = benchmarkRuns.cancel(runId)
+        session.setAttribute("runsDeleteResult", if (ok)
+            "Cancel signal sent to $runId. The current LLM call may complete; no new ones will fire."
+        else
+            "$runId is not active (already PASSED/FAILED/CANCELED) -- nothing to cancel.")
+        return "redirect:/"
+    }
+
     @PostMapping("/runs/delete")
     fun deleteRuns(
         @RequestParam(required = false) runIds: List<String>?,

@@ -49,7 +49,8 @@ class AdminTracesController(
         val startedAt: Instant,
         @Volatile var endedAt: Instant? = null,
         @Volatile var result: AppMapTraceManager.GenerationResult? = null,
-        @Volatile var error: String? = null
+        @Volatile var error: String? = null,
+        @Volatile var process: Process? = null
     )
 
     data class Row(
@@ -132,7 +133,9 @@ class AdminTracesController(
         activeJobs[module] = job
         executor.submit {
             try {
-                job.result = appmapTraces.generateRealTracesForModule(module)
+                job.result = appmapTraces.generateRealTracesForModule(module) { p ->
+                    job.process = p
+                }
                 if (job.result?.ok != true) {
                     job.error = "exit=${job.result?.exitCode}; tail: ${job.result?.tail?.takeLast(500)}"
                 }
@@ -143,6 +146,23 @@ class AdminTracesController(
                 job.endedAt = Instant.now()
             }
         }
+    }
+
+    /** Cancel an in-flight trace generation for a module. Kills the
+     *  gradle subprocess (and its descendants -- the test JVM is a
+     *  child) so CPU is freed immediately. */
+    @PostMapping("/admin/appmap-traces/cancel")
+    fun cancelOne(@RequestParam module: String): String {
+        val job = activeJobs[module] ?: return "redirect:/admin/appmap-traces?err=not-running"
+        if (job.endedAt != null) return "redirect:/admin/appmap-traces?err=not-running"
+        val p = job.process
+        if (p != null && p.isAlive) {
+            runCatching { p.descendants().forEach { it.destroyForcibly() } }
+            runCatching { p.destroyForcibly() }
+        }
+        job.error = "canceled by operator"
+        job.endedAt = Instant.now()
+        return "redirect:/admin/appmap-traces?canceled=$module"
     }
 
     /** Count `*Test.java` files per module under banking-app. Used to

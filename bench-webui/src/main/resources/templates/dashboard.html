@@ -419,7 +419,24 @@
                     <td th:title="${r.appmapMode}"
                         th:text="${r.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
                                   (r.appmapMode == 'ON_ALL' ? 'ALL' : r.appmapMode)}"></td>
-                    <td><span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span></td>
+                    <td>
+                        <span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span>
+                        <!-- Inline Cancel for QUEUED/RUNNING rows. Flips
+                             the run to CANCELED so the worker bails out
+                             at the next checkpoint and no further bridge
+                             calls fire (the LLM call already in flight
+                             still completes -- vscode.LanguageModelChat
+                             doesn't expose mid-stream cancellation). -->
+                        <form th:if="${r.status.name() == 'RUNNING' or r.status.name() == 'QUEUED'}"
+                              th:action="@{'/runs/' + ${r.id} + '/cancel'}" method="post"
+                              style="display:inline; margin-left:0.4em">
+                            <button type="submit"
+                                    style="font-size:0.75em; padding:1px 6px;
+                                           color:#7f1d1d; background:#fef2f2;
+                                           border:1px solid #fca5a5; border-radius:3px;
+                                           cursor:pointer">cancel</button>
+                        </form>
+                    </td>
                     <!-- Display values use comma thousands separators for
                          readability; the data-* attrs above stay raw so
                          the sortable-table helper compares them as

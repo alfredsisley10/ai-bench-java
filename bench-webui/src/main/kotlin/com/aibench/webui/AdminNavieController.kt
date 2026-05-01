@@ -77,6 +77,15 @@ class AdminNavieController(
         return "redirect:/admin/navie?queued=$bugId"
     }
 
+    /** Cancel an in-flight navie precompute. Kills the appmap CLI
+     *  subprocess immediately so the bridge stops getting hit; the
+     *  next queued bug starts (or the queue drains if this was last). */
+    @PostMapping("/admin/navie/cancel")
+    fun cancelOne(@RequestParam bugId: String): String {
+        val ok = navieCache.cancel(bugId)
+        return "redirect:/admin/navie?" + (if (ok) "canceled=$bugId" else "err=not-running")
+    }
+
     @PostMapping("/admin/navie/precompute-all")
     fun precomputeAll(): String {
         val bugs = bugCatalog.allBugs()

@@ -67,8 +67,31 @@ class NavieCacheManager(
         @Volatile var phase: String,
         @Volatile var endedAt: Instant? = null,
         @Volatile var error: String? = null,
-        @Volatile var result: NavieResult? = null
+        @Volatile var result: NavieResult? = null,
+        /** Live OS process backing this job, captured the moment the
+         *  appmap CLI is spawned. cancel() destroyForcibly's it.
+         *  Null while we're in the "preparing"/"parsing" phases or
+         *  after the job ends. */
+        @Volatile var process: Process? = null
     )
+
+    /** Cancel an in-flight precompute. Kills the appmap subprocess,
+     *  marks the job failed, and returns true when there was actually
+     *  something to cancel. The harness's bridge-mutex serialization
+     *  means the next queued job will start almost immediately. */
+    fun cancel(bugId: String): Boolean {
+        val job = activeJobs[bugId] ?: return false
+        if (job.endedAt != null) return false
+        val p = job.process
+        if (p != null && p.isAlive) {
+            runCatching { p.descendants().forEach { it.destroyForcibly() } }
+            runCatching { p.destroyForcibly() }
+        }
+        job.error = "canceled by operator"
+        job.phase = "canceled"
+        job.endedAt = Instant.now()
+        return true
+    }
 
     private val cacheRoot: File = File(System.getProperty("user.home"), ".ai-bench/navie-cache")
         .also { it.mkdirs() }
@@ -130,6 +153,16 @@ class NavieCacheManager(
                     .redirectErrorStream(true)
                     .also { it.environment().putAll(navieEnv()) }
                     .start()
+                job.process = proc
+                // Best-effort: kill the subprocess if the bench-webui
+                // JVM exits while this job is in flight. Without this
+                // hook the appmap CLI is orphaned to launchd/init and
+                // keeps hammering the bridge invisibly across restarts.
+                val shutdown = Thread { runCatching {
+                    proc.descendants().forEach { it.destroyForcibly() }
+                    proc.destroyForcibly()
+                }}
+                runCatching { Runtime.getRuntime().addShutdownHook(shutdown) }
                 // Stream stdout to log so a hung Navie is visible.
                 val tail = StringBuilder()
                 proc.inputStream.bufferedReader().useLines { lines ->

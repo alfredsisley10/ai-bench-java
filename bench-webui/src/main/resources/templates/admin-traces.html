@@ -75,6 +75,15 @@
                     <button type="submit" th:disabled="${r.running}"
                             th:text="${r.traceCount > 0 ? 'Regenerate' : 'Generate'}">Generate</button>
                 </form>
+                <form th:if="${r.running}" th:action="@{/admin/appmap-traces/cancel}"
+                      method="post" style="display:inline; margin-left:0.4em">
+                    <input type="hidden" name="module" th:value="${r.module}"/>
+                    <button type="submit"
+                            style="font-size:0.85em; color:#7f1d1d; background:#fef2f2;
+                                   border:1px solid #fca5a5; border-radius:3px; padding:1px 6px">
+                        cancel
+                    </button>
+                </form>
             </td>
         </tr>
         </tbody>

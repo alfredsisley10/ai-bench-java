@@ -384,7 +384,10 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
      *      --no-build-cache, not instead of).
      *  Caller is responsible for off-thread invocation -- a single
      *  module run takes 30s-5min depending on suite size. */
-    fun generateRealTracesForModule(module: String): GenerationResult {
+    fun generateRealTracesForModule(
+        module: String,
+        onProcessStarted: (Process) -> Unit = {}
+    ): GenerationResult {
         val repo = bankingApp.bankingAppDir
         val started = System.currentTimeMillis()
         val proc = ProcessBuilder(
@@ -400,6 +403,17 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
             .directory(repo)
             .redirectErrorStream(true)
             .start()
+        // Hand the live Process back to the caller (AdminTracesController)
+        // so a cancel button can destroyForcibly() it. Also register a
+        // shutdown hook so the gradle child dies when bench-webui dies
+        // -- otherwise it's orphaned to launchd and keeps thrashing
+        // CPU invisibly across restarts.
+        onProcessStarted(proc)
+        val shutdown = Thread { runCatching {
+            proc.descendants().forEach { it.destroyForcibly() }
+            proc.destroyForcibly()
+        }}
+        runCatching { Runtime.getRuntime().addShutdownHook(shutdown) }
         val tail = StringBuilder()
         proc.inputStream.bufferedReader().useLines { lines ->
             for (ln in lines) {
