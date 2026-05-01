@@ -305,6 +305,34 @@
                 Each seed uses a different random seed for the LLM, producing varied solutions for the same prompt.
                 Typical: 3 for quick runs, 5-10 for statistical significance.
             </p>
+
+            <fieldset style="margin:0.6em 0; padding:0.5em 0.8em; border:1px solid #cbd5e1;
+                             border-radius:4px; background:#f9fafb">
+                <legend style="font-weight:600">Launch mode</legend>
+                <label style="display:block; margin:0.25em 0; font-weight:normal">
+                    <input type="radio" name="launchMode" value="COST_OPTIMIZED" checked/>
+                    <strong>Cost-optimized (default)</strong> —
+                    for each (bug, seed), tries the cheapest selected
+                    (model × context × AppMap mode) tuple first, only
+                    advances to a more-expensive tuple if the cheaper
+                    one FAILED. Skips the rest once any tuple PASSes.
+                    Picks the budget-friendliest solver per bug.
+                </label>
+                <label style="display:block; margin:0.25em 0; font-weight:normal">
+                    <input type="radio" name="launchMode" value="FULL_MATRIX"/>
+                    <strong>Full matrix</strong> —
+                    runs every combination up-front (bug × model × context
+                    × AppMap mode × seed). Use this for cost / speed
+                    regression curves, comparing models head-to-head, or
+                    any time you need every cell of the matrix populated
+                    regardless of cheaper-tuple results.
+                </label>
+                <p class="help-text" style="margin:0.3em 0 0 0">
+                    Cost ranking uses the per-1K-token table at
+                    <a href="/admin/pricing">/admin/pricing</a>;
+                    unknown models sort to the back of each group.
+                </p>
+            </fieldset>
         </fieldset>
 
         <!-- Combinatorial summary — recalculated whenever any input

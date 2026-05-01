@@ -11,7 +11,8 @@ import org.springframework.web.bind.annotation.RequestParam
 class RunLauncherController(
     private val registeredModelsRegistry: RegisteredModelsRegistry,
     private val benchmarkRuns: BenchmarkRunService,
-    private val bridgeBudget: BridgeBudgetService
+    private val bridgeBudget: BridgeBudgetService,
+    private val costOptSupervisor: CostOptimizedLaunchSupervisor
 ) {
 
     // Built-in OmniBank issue titles. Mirrors DemoController.demoIssues
@@ -131,6 +132,7 @@ class RunLauncherController(
         @RequestParam(required = false) appmapMode: String?,
         @RequestParam(required = false) appmapModes: List<String>?,
         @RequestParam(defaultValue = "3") seeds: Int,
+        @RequestParam(defaultValue = "FULL_MATRIX") launchMode: String,
         session: HttpSession
     ): String {
         // Coalesce single + multi inputs across every dimension. The legacy
@@ -201,21 +203,53 @@ class RunLauncherController(
         // so launching e.g. {oracle,navie} × {ON_RECOMMENDED} only
         // generates the trace set once.
         val launched = mutableListOf<String>()
-        for ((issueId, issueTitle) in targets) {
-            for (m in resolvedModels) {
-                for (ctx in pickedContexts) {
-                    for (am in pickedAppmap) {
-                        val run = benchmarkRuns.start(
-                            issueId = issueId,
-                            issueTitle = issueTitle,
-                            provider = providerNN,
-                            modelId = m.id,
-                            modelIdentifier = m.modelIdentifier,
-                            contextProvider = ctx,
-                            appmapMode = am,
-                            seeds = seeds
-                        )
-                        launched.add(run.id)
+        if (launchMode.equals("COST_OPTIMIZED", ignoreCase = true)) {
+            // Cost-optimized: build per-(bug, seed) tuple lists, hand to
+            // the supervisor which fires the cheapest first and skips the
+            // rest once a passing solver is found for that bug+seed.
+            val groups = HashMap<Pair<String, Int>, MutableList<CostOptimizedLaunchSupervisor.Tuple>>()
+            for ((issueId, issueTitle) in targets) {
+                for (seed in 1..seeds) {
+                    val list = groups.getOrPut(issueId to seed) { mutableListOf() }
+                    for (m in resolvedModels) {
+                        for (ctx in pickedContexts) {
+                            for (am in pickedAppmap) {
+                                list += CostOptimizedLaunchSupervisor.Tuple(
+                                    issueId = issueId,
+                                    issueTitle = issueTitle,
+                                    provider = providerNN,
+                                    modelId = m.id,
+                                    modelIdentifier = m.modelIdentifier,
+                                    contextProvider = ctx,
+                                    appmapMode = am,
+                                    costScore = costOptSupervisor.costScore(m.id, ctx, am)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            val result = costOptSupervisor.submit(groups)
+            launched.addAll(result.initialRunIds)
+        } else {
+            // Full matrix: every combination produces one run up-front.
+            // Operator picks this for cost/speed regression curves.
+            for ((issueId, issueTitle) in targets) {
+                for (m in resolvedModels) {
+                    for (ctx in pickedContexts) {
+                        for (am in pickedAppmap) {
+                            val run = benchmarkRuns.start(
+                                issueId = issueId,
+                                issueTitle = issueTitle,
+                                provider = providerNN,
+                                modelId = m.id,
+                                modelIdentifier = m.modelIdentifier,
+                                contextProvider = ctx,
+                                appmapMode = am,
+                                seeds = seeds
+                            )
+                            launched.add(run.id)
+                        }
                     }
                 }
             }
