@@ -118,6 +118,14 @@ class NavieCacheManager(
 
     fun activeJob(bugId: String): JobStatus? = activeJobs[bugId]
 
+    /** Snapshot of every job currently in flight (endedAt == null).
+     *  Used by the dashboard's "background tasks" tile so the operator
+     *  sees Navie precomputes monopolizing the bridge without having
+     *  to navigate to /admin/navie. Newest-first. */
+    fun runningJobs(): List<JobStatus> =
+        activeJobs.values.filter { it.endedAt == null }
+            .sortedByDescending { it.startedAt }
+
     /**
      * Run `appmap navie` for the bug, write the result to cache. Blocks
      * the caller; intended to be invoked from a background executor in

@@ -148,6 +148,13 @@ class AdminTracesController(
         }
     }
 
+    /** Snapshot of every trace-gen job currently in flight (endedAt
+     *  == null). Used by the dashboard's "background tasks" tile so
+     *  the operator sees gradle running invisible to the runs table. */
+    fun runningJobs(): List<Job> =
+        activeJobs.values.filter { it.endedAt == null }
+            .sortedByDescending { it.startedAt }
+
     /** Cancel an in-flight trace generation for a module. Kills the
      *  gradle subprocess (and its descendants -- the test JVM is a
      *  child) so CPU is freed immediately. */

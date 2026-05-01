@@ -72,6 +72,50 @@
         </div>
     </section>
 
+    <!-- Background tasks tile. Surfaces in-flight Navie precomputes +
+         AppMap trace generations on the dashboard so the operator
+         knows when the bridge / gradle is being monopolized in the
+         background -- the runs table doesn't show those because they
+         aren't BenchmarkRuns. Hidden when nothing's running. The
+         page's existing 4s auto-refresh keeps the elapsed times
+         fresh; the watcher script in <script> below only swaps the
+         summary tiles + table bodies, not this tile, but a manual
+         refresh always shows the latest. -->
+    <section th:if="${not #lists.isEmpty(backgroundTasks)}">
+        <h2>Background tasks
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — <strong th:text="${#lists.size(backgroundTasks)}">0</strong> in flight
+                outside the runs table
+            </span>
+        </h2>
+        <table style="width:auto; min-width:30em">
+            <thead>
+            <tr>
+                <th>Kind</th>
+                <th>Target</th>
+                <th>Phase</th>
+                <th>Elapsed</th>
+                <th>Manage</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="t : ${backgroundTasks}">
+                <td th:text="${t.kind}"></td>
+                <td><code th:text="${t.target}"></code></td>
+                <td th:text="${t.phase}" style="color:#b45309">⟳ <span th:text="${t.phase}"></span></td>
+                <td>
+                    <span th:if="${t.elapsedSec &lt; 60}" th:text="${t.elapsedSec} + 's'"></span>
+                    <span th:if="${t.elapsedSec &gt;= 60 and t.elapsedSec &lt; 3600}"
+                          th:text="${t.elapsedSec / 60} + 'm ' + ${t.elapsedSec % 60} + 's'"></span>
+                    <span th:if="${t.elapsedSec &gt;= 3600}"
+                          th:text="${t.elapsedSec / 3600} + 'h ' + ${(t.elapsedSec % 3600) / 60} + 'm'"></span>
+                </td>
+                <td><a th:href="${t.link}">open admin →</a></td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
     <!-- Leaderboard — per-model summary of PASSED runs. Each row is one
          line: model+provider, pass rate, best/avg time, best/avg cost,
          and one-line tag clouds for difficulty + category. Sort/filter/
@@ -107,18 +151,18 @@
                data-search-target="#leaderboard-search">
             <thead>
                 <tr class="sort-row">
-                    <th data-sort-key="model">Model <span class="sort-indicator"></span></th>
-                    <th data-sort-key="provider">LLM Provider <span class="sort-indicator"></span></th>
-                    <th data-sort-key="ctx">Context Provider <span class="sort-indicator"></span></th>
-                    <th data-sort-key="appmap">AppMap <span class="sort-indicator"></span></th>
-                    <th data-sort-key="passrate" data-sort-numeric="true" class="num">Pass <span class="sort-indicator"></span></th>
-                    <th data-sort-key="solved" data-sort-numeric="true" class="num">Solved <span class="sort-indicator"></span></th>
-                    <th data-sort-key="fastest" data-sort-numeric="true" class="num">Best time <span class="sort-indicator"></span></th>
-                    <th data-sort-key="cheapest" data-sort-numeric="true" class="num">Best cost <span class="sort-indicator"></span></th>
-                    <th data-sort-key="avgms" data-sort-numeric="true" class="num">Avg time <span class="sort-indicator"></span></th>
-                    <th data-sort-key="avgcost" data-sort-numeric="true" class="num">Avg cost <span class="sort-indicator"></span></th>
-                    <th data-sort-key="difficulty">Difficulty <span class="sort-indicator"></span></th>
-                    <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
+                    <th data-sort-key="model" title="Model id (the bridge resolves this to a Copilot or upstream provider)">Model <span class="sort-indicator"></span></th>
+                    <th data-sort-key="provider" title="LLM provider routing this model — copilot, corp-openai, etc.">LLM Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="ctx" title="Context provider used to choose which source files were shipped in the prompt. Oracle is excluded from the leaderboard since it requires the curated filesTouched (not realistic for an unseen codebase).">Context Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="appmap" title="AppMap recording mode — OFF, ON_RECOMMENDED (REC; bug's recommended tests only), ON_ALL (every test in the bug's module)">AppMap <span class="sort-indicator"></span></th>
+                    <th data-sort-key="passrate" data-sort-numeric="true" class="num" title="Pass rate for this exact (model, ctx, appmap) configuration: passed runs / total runs">Pass <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solved" data-sort-numeric="true" class="num" title="Total passed runs for this configuration (each row = one (model, ctx, appmap) combo)">Solved <span class="sort-indicator"></span></th>
+                    <th data-sort-key="fastest" data-sort-numeric="true" class="num" title="Wall-clock duration of the FASTEST passing run (hover the cell to see which bug)">Best time <span class="sort-indicator"></span></th>
+                    <th data-sort-key="cheapest" data-sort-numeric="true" class="num" title="USD cost of the CHEAPEST passing run, using the per-1K table at /admin/pricing (hover the cell to see which bug)">Best cost <span class="sort-indicator"></span></th>
+                    <th data-sort-key="avgms" data-sort-numeric="true" class="num" title="Average wall-clock duration across all passing runs for this configuration">Avg time <span class="sort-indicator"></span></th>
+                    <th data-sort-key="avgcost" data-sort-numeric="true" class="num" title="Average USD cost across all passing runs (hover the cell for the raw decimal)">Avg cost <span class="sort-indicator"></span></th>
+                    <th data-sort-key="difficulty" title="Per-difficulty breakdown of bugs this configuration solved (TRIVIAL/EASY/MEDIUM/HARD from the bug catalog)">Difficulty <span class="sort-indicator"></span></th>
+                    <th data-sort-key="category" title="Per-category breakdown of bugs this configuration solved (NUMERIC, STATE_MACHINE, TIMING, etc. from the bug catalog)">Category <span class="sort-indicator"></span></th>
                 </tr>
                 <tr class="filter-row">
                     <th><input type="text" data-filter-col="0" placeholder="filter model"></th>
@@ -149,23 +193,32 @@
                          data-avgcost=${lb.avgPassCostUsd},
                          data-difficulty=${#strings.listJoin(lb.solvedByDifficulty.keySet(), ',')},
                          data-category=${#strings.listJoin(lb.solvedByCategory.keySet(), ',')}">
-                <td style="white-space:nowrap">
+                <td style="white-space:nowrap"
+                    th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
                 </td>
-                <td th:text="${lb.provider}"></td>
-                <td th:text="${lb.contextProvider}"></td>
+                <td th:text="${lb.provider}"
+                    th:title="'Provider routing — ' + ${lb.provider}"></td>
+                <td th:text="${lb.contextProvider}"
+                    th:title="${lb.contextProvider == 'none' ? 'No source — problem statement only' :
+                                (lb.contextProvider == 'bm25' ? 'TF-IDF retrieval over banking-app sources (hybrid: anchors filesTouched + BM25 supplements)' :
+                                (lb.contextProvider == 'appmap-navie' ? 'Navie agentic search (Layer-C cache; falls back to Oracle on cache miss)' :
+                                (lb.contextProvider == 'oracle' ? 'Curated filesTouched (excluded from leaderboard ranking)' : lb.contextProvider)))}"></td>
                 <td th:title="${lb.appmapMode}"
                     th:text="${lb.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
                               (lb.appmapMode == 'ON_ALL' ? 'ALL' : lb.appmapMode)}"></td>
                 <td class="num" style="white-space:nowrap"
+                    th:title="${lb.passedRuns} + ' passed of ' + ${lb.totalRuns} + ' total runs at this configuration'"
                     th:text="${#numbers.formatPercent(lb.passRate, 1, 0)} + ' (' +
                              ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
                              ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
-                <td class="num" th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></td>
+                <td class="num"
+                    th:title="${lb.passedRuns} + ' passing run(s) for this configuration'"
+                    th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
-                    th:title="'Bug: ' + ${lb.fastest.bugId}"
+                    th:title="'Fastest pass on ' + ${lb.fastest.bugId} + ' (' + ${lb.fastest.difficulty} + ' / ' + ${lb.fastest.category} + ') · ' + ${lb.fastest.durationMs} + ' ms wall clock'"
                     th:with="d=${lb.fastest.durationMs},
                              ms=${d % 1000},
                              sTotal=${d / 1000},
@@ -176,12 +229,13 @@
                                : (sTotal > 0
                                   ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
                                   : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
-                <td class="num" th:unless="${lb.fastest != null}">—</td>
+                <td class="num" th:unless="${lb.fastest != null}" title="No passing run for this configuration yet">—</td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.cheapest != null}"
-                    th:title="'Bug: ' + ${lb.cheapest.bugId}"
+                    th:title="'Cheapest pass on ' + ${lb.cheapest.bugId} + ' (' + ${lb.cheapest.difficulty} + ' / ' + ${lb.cheapest.category} + ') · $' + ${lb.cheapest.costUsd}"
                     th:text="'$' + ${#numbers.formatDecimal(lb.cheapest.costUsd, 1, 'COMMA', 6, 'POINT')}"></td>
-                <td class="num" th:unless="${lb.cheapest != null}">—</td>
+                <td class="num" th:unless="${lb.cheapest != null}" title="No passing run for this configuration yet">—</td>
                 <td class="num" style="white-space:nowrap"
+                    th:title="${lb.avgPassMs} + ' ms avg across ' + ${lb.passedRuns} + ' passing run(s)'"
                     th:with="d=${lb.avgPassMs},
                              ms=${d % 1000},
                              sTotal=${d / 1000},
@@ -193,16 +247,19 @@
                                   ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
                                   : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
                 <td class="num" style="white-space:nowrap"
+                    th:title="'Avg $' + ${lb.avgPassCostUsd} + ' across ' + ${lb.passedRuns} + ' passing run(s) — uses /admin/pricing per-1K rates'"
                     th:text="'$' + ${#numbers.formatDecimal(lb.avgPassCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
-                <td>
+                <td th:title="'Per-difficulty breakdown of bugs solved by this configuration (counts after × sign)'">
                     <span th:each="entry : ${lb.solvedByDifficulty}"
+                          th:title="${entry.key} + ' difficulty bugs solved: ' + ${entry.value}"
                           style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
                                  border:1px solid #d1d5db; border-radius:3px; font-size:0.8em;
                                  background:#f9fafb; white-space:nowrap"
                           th:text="${entry.key} + '×' + ${entry.value}"></span>
                 </td>
-                <td>
+                <td th:title="'Per-category breakdown of bugs solved by this configuration (counts after × sign)'">
                     <span th:each="entry : ${lb.solvedByCategory}"
+                          th:title="${entry.key} + ' category bugs solved: ' + ${entry.value}"
                           style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
                                  border:1px solid #c7d2fe; border-radius:3px; font-size:0.8em;
                                  background:#eef2ff; white-space:nowrap"

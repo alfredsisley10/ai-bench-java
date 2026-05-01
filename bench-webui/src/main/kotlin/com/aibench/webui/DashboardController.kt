@@ -20,8 +20,21 @@ import org.springframework.web.bind.annotation.RequestParam
 class DashboardController(
     private val benchmarkRuns: BenchmarkRunService,
     private val registeredModels: RegisteredModelsRegistry,
-    private val bugCatalog: BugCatalog
+    private val bugCatalog: BugCatalog,
+    private val navieCache: NavieCacheManager,
+    private val tracesAdmin: AdminTracesController
 ) {
+
+    /** Compact row for the dashboard's "Background tasks" tile. Mirrors
+     *  the per-task subset the operator needs to know about without
+     *  navigating to /admin/navie or /admin/appmap-traces. */
+    data class BackgroundTaskRow(
+        val kind: String,
+        val target: String,
+        val phase: String,
+        val elapsedSec: Long,
+        val link: String
+    )
 
     /** A single PASSED run, denormalised against its bug metadata so the
      *  leaderboard can pivot on difficulty / category without a second
@@ -141,6 +154,34 @@ class DashboardController(
                 .thenBy { it.avgPassMs }
         )
         model.addAttribute("leaderboard", leaderboard)
+
+        // Background-task tile: surface in-flight Navie precomputes +
+        // AppMap trace generations on the dashboard so the operator
+        // sees the bridge / gradle being monopolized without having
+        // to navigate to /admin/navie or /admin/appmap-traces. The
+        // page auto-refreshes every 4s while runs are queued/running,
+        // which keeps these elapsed times fresh too.
+        val now = java.time.Instant.now()
+        val backgroundTasks = mutableListOf<BackgroundTaskRow>()
+        for (job in navieCache.runningJobs()) {
+            backgroundTasks += BackgroundTaskRow(
+                kind = "Navie precompute",
+                target = job.bugId,
+                phase = job.phase,
+                elapsedSec = java.time.Duration.between(job.startedAt, now).seconds,
+                link = "/admin/navie"
+            )
+        }
+        for (job in tracesAdmin.runningJobs()) {
+            backgroundTasks += BackgroundTaskRow(
+                kind = "AppMap trace gen",
+                target = job.module,
+                phase = "running gradle test",
+                elapsedSec = java.time.Duration.between(job.startedAt, now).seconds,
+                link = "/admin/appmap-traces"
+            )
+        }
+        model.addAttribute("backgroundTasks", backgroundTasks)
         // Surface delete-result toast — set by deleteRuns() before
         // redirecting back here so the table re-renders with a one-
         // shot summary message.
