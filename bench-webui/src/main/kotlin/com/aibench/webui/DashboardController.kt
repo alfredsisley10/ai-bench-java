@@ -22,7 +22,8 @@ class DashboardController(
     private val registeredModels: RegisteredModelsRegistry,
     private val bugCatalog: BugCatalog,
     private val navieCache: NavieCacheManager,
-    private val tracesAdmin: AdminTracesController
+    private val tracesAdmin: AdminTracesController,
+    private val throttler: AdaptiveThrottler
 ) {
 
     /** Compact row for the dashboard's "Background tasks" tile. Mirrors
@@ -192,6 +193,7 @@ class DashboardController(
             )
         }
         model.addAttribute("backgroundTasks", backgroundTasks)
+        model.addAttribute("throttler", throttler.status())
         // Surface delete-result toast — set by deleteRuns() before
         // redirecting back here so the table re-renders with a one-
         // shot summary message.

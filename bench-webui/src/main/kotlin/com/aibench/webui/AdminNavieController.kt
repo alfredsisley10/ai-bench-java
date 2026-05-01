@@ -20,15 +20,15 @@ import java.util.concurrent.Executors
 @Controller
 class AdminNavieController(
     private val bugCatalog: BugCatalog,
-    private val navieCache: NavieCacheManager
+    private val navieCache: NavieCacheManager,
+    private val throttler: AdaptiveThrottler
 ) {
     private val log = LoggerFactory.getLogger(AdminNavieController::class.java)
 
-    /** Single-thread executor by design: Navie monopolizes the bridge
-     *  via the LLM mutex, so running 12 precomputes in parallel would
-     *  just queue them anyway -- and it's much harder to follow
-     *  progress when 12 jobs are interleaved. One at a time, FIFO. */
-    private val executor = Executors.newSingleThreadExecutor { r ->
+    /** Larger pool than the throttler's cap so the queue can absorb a
+     *  full precompute-all submission immediately; the throttler
+     *  decides how many actually run concurrently against the bridge. */
+    private val executor = Executors.newFixedThreadPool(8) { r ->
         Thread(r, "navie-precompute").apply { isDaemon = true }
     }
 
@@ -88,10 +88,7 @@ class AdminNavieController(
     fun precomputeOne(@RequestParam bugId: String): String {
         val bug = bugCatalog.getBug(bugId)
             ?: return "redirect:/admin/navie?err=unknown-bug"
-        executor.submit {
-            runCatching { navieCache.precompute(bug) }
-                .onFailure { log.warn("navie precompute thread failed for {}: {}", bugId, it.message) }
-        }
+        submitWithThrottle(bug)
         return "redirect:/admin/navie?queued=$bugId"
     }
 
@@ -131,11 +128,60 @@ class AdminNavieController(
             // per-bug cost again; operator can use single-bug precompute
             // to force a refresh.
             if (navieCache.status(bug) == "cached") continue
-            executor.submit {
-                runCatching { navieCache.precompute(bug) }
-                    .onFailure { log.warn("navie precompute thread failed for {}: {}", bug.id, it.message) }
-            }
+            submitWithThrottle(bug)
         }
         return "redirect:/admin/navie?queued=all"
+    }
+
+    /** Throttler-gated precompute submission. The thread that actually
+     *  runs blocks on throttler.acquire() before invoking the appmap
+     *  CLI -- so the queue can be 12 bugs deep but only N=currentCap
+     *  run concurrently against the bridge. After the subprocess
+     *  exits, parses its stdout tail for rate-limit signals (the
+     *  same isQuotaExhaustionError heuristic the bridge uses) and
+     *  reports to the throttler so it can shrink + cool down. */
+    private fun submitWithThrottle(bug: BugCatalog.BugMetadata) {
+        executor.submit {
+            try {
+                throttler.acquire()
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@submit
+            }
+            try {
+                val job = runCatching { navieCache.precompute(bug) }.getOrElse { e ->
+                    log.warn("navie precompute thread failed for {}: {}", bug.id, e.message)
+                    null
+                }
+                // Detect rate-limit pattern in the captured CLI output.
+                // The appmap CLI surfaces upstream Copilot quota errors
+                // in its stdout; if we see those, signal the throttler
+                // to back off before the next acquire.
+                val tail = job?.stdoutTail ?: ""
+                val errStr = job?.error ?: ""
+                if (looksLikeRateLimit(tail) || looksLikeRateLimit(errStr)) {
+                    throttler.reportRateLimit(
+                        "navie precompute ${bug.id}: " +
+                            (errStr.takeIf { it.isNotBlank() } ?: tail.takeLast(200))
+                    )
+                }
+            } finally {
+                throttler.release()
+            }
+        }
+    }
+
+    /** Heuristic for "the appmap CLI's output looked like Copilot
+     *  rejected us for rate-limit / quota reasons". Conservative --
+     *  false negatives over false positives so we don't shrink the
+     *  pool on every transient error. */
+    private fun looksLikeRateLimit(text: String): Boolean {
+        if (text.isBlank()) return false
+        val t = text.lowercase()
+        return t.contains("rate limit") || t.contains("rate_limit") ||
+            t.contains("rate-limited") || t.contains("ratelimited") ||
+            t.contains("quota") && t.contains("exceed") ||
+            t.contains("monthly limit") || t.contains("reached your monthly") ||
+            t.contains("429") || t.contains("too many requests")
     }
 }

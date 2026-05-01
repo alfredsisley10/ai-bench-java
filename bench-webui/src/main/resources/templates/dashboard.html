@@ -81,6 +81,49 @@
          fresh; the watcher script in <script> below only swaps the
          summary tiles + table bodies, not this tile, but a manual
          refresh always shows the latest. -->
+    <!-- Throttler tile: always visible so the operator knows the
+         current concurrency cap + whether we're in a rate-limit
+         cooldown. Updated each page refresh; the auto-refresh
+         loop swaps the runs table but not this section, so a
+         manual reload always shows the latest. -->
+    <section style="margin:0.6em 0">
+        <h2 style="margin-bottom:0.3em">LLM concurrency
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — adaptive cap on parallel bridge calls
+            </span>
+        </h2>
+        <div style="display:flex; flex-wrap:wrap; gap:0.4em 1.4em; font-size:0.9em;
+                    padding:0.5em 0.8em; border:1px solid #cbd5e1;
+                    border-radius:4px; background:#f9fafb">
+            <span>cap:
+                <strong th:text="${throttler.currentCap}">1</strong>
+                of <span th:text="${throttler.maxCap}">4</span>
+            </span>
+            <span>success streak:
+                <strong th:text="${throttler.successStreak}">0</strong>
+                of <span th:text="${throttler.growThreshold}">3</span>
+                <span class="help-text" style="font-size:0.85em">→ next +1 permit</span>
+            </span>
+            <span th:if="${throttler.cooldownActive}" style="color:#b91c1c">
+                ⚠ cooldown active until
+                <span th:text="${throttler.cooldownEndsIso}"></span>
+            </span>
+            <span th:if="${throttler.recentRateLimitCount > 0}"
+                  th:style="${throttler.cooldownActive ? '' : 'color:#b45309'}">
+                rate-limit hits in window:
+                <strong th:text="${throttler.recentRateLimitCount}">0</strong>
+                <span th:if="${throttler.mostRecentRateLimitIso != null}"
+                      style="font-size:0.85em">
+                    (last: <span th:text="${throttler.mostRecentRateLimitIso}"></span>)
+                </span>
+            </span>
+            <span th:if="${throttler.recentRateLimitCount == 0 and !throttler.cooldownActive}"
+                  style="color:#16a34a; font-size:0.85em">
+                ✓ no rate-limit signals
+            </span>
+        </div>
+    </section>
+
     <section th:if="${not #lists.isEmpty(backgroundTasks)}">
         <h2>Background tasks
             <span class="help-text" style="font-weight:normal; font-size:0.85em">
