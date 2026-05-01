@@ -145,19 +145,21 @@
                              ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
                 <td class="num" th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
+                    th:title="'Bug: ' + ${lb.fastest.bugId}"
                     th:with="d=${lb.fastest.durationMs},
                              ms=${d % 1000},
                              sTotal=${d / 1000},
                              s=${sTotal % 60},
                              m=${sTotal / 60}"
-                    th:text="(${m > 0
+                    th:text="${m > 0
                                ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
                                : (sTotal > 0
                                   ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
-                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}) + ' · ' + ${lb.fastest.bugId}"></td>
+                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
                 <td class="num" th:unless="${lb.fastest != null}">—</td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.cheapest != null}"
-                    th:text="'$' + ${#numbers.formatDecimal(lb.cheapest.costUsd, 1, 'COMMA', 6, 'POINT')} + ' · ' + ${lb.cheapest.bugId}"></td>
+                    th:title="'Bug: ' + ${lb.cheapest.bugId}"
+                    th:text="'$' + ${#numbers.formatDecimal(lb.cheapest.costUsd, 1, 'COMMA', 6, 'POINT')}"></td>
                 <td class="num" th:unless="${lb.cheapest != null}">—</td>
                 <td class="num" style="white-space:nowrap"
                     th:with="d=${lb.avgPassMs},
@@ -172,16 +174,18 @@
                                   : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
                 <td class="num" style="white-space:nowrap"
                     th:text="'$' + ${#numbers.formatDecimal(lb.avgPassCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
-                <td style="white-space:nowrap">
+                <td>
                     <span th:each="entry : ${lb.solvedByDifficulty}"
-                          style="display:inline-block; padding:0 0.35em; margin-right:0.2em;
-                                 border:1px solid #d1d5db; border-radius:3px; font-size:0.8em; background:#f9fafb"
+                          style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
+                                 border:1px solid #d1d5db; border-radius:3px; font-size:0.8em;
+                                 background:#f9fafb; white-space:nowrap"
                           th:text="${entry.key} + '×' + ${entry.value}"></span>
                 </td>
-                <td style="white-space:nowrap">
+                <td>
                     <span th:each="entry : ${lb.solvedByCategory}"
-                          style="display:inline-block; padding:0 0.35em; margin-right:0.2em;
-                                 border:1px solid #c7d2fe; border-radius:3px; font-size:0.8em; background:#eef2ff"
+                          style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
+                                 border:1px solid #c7d2fe; border-radius:3px; font-size:0.8em;
+                                 background:#eef2ff; white-space:nowrap"
                           th:text="${entry.key} + '×' + ${entry.value}"></span>
                 </td>
             </tr>
