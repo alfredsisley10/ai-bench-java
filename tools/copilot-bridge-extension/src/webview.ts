@@ -68,7 +68,7 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
     }
     panel = vscode.window.createWebviewPanel(
         'aiBenchCopilotStats',
-        'Copilot Bridge — usage',
+        'Copilot Bridge',
         vscode.ViewColumn.Active,
         // retainContextWhenHidden: keep the webview's JS state alive
         // across tab switches. The previous default (false) destroyed
@@ -430,6 +430,7 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 </div>
 <table id="recent"><thead><tr>
     <th></th><!-- expand chevron column -->
+    <th>Status</th>
     <th>When</th><th>Model</th><th>Client</th><th>Run ID</th><th>Via</th>
     <th class="num">Prompt</th><th class="num">Compl.</th><th class="num">Cost</th>
 </tr></thead><tbody></tbody></table>
@@ -678,17 +679,40 @@ function renderRecent(rows){
         var runIdCell = r.runId
             ? '<code style="font-size:0.85em;background:#1f2937;color:#e5e7eb;padding:1px 4px;border-radius:2px">' + escapeHtml(r.runId) + '</code>'
             : '<span class="help">—</span>';
+        // Status badge: pending = orange in-flight, success = green ✓,
+        // failed = red ✗ (with errorMessage in tooltip). Legacy
+        // records before the upgrade have no status — render as
+        // success so the panel doesn't lie about pre-upgrade calls.
+        var statusVal = r.status || 'success';
+        var statusBadge = '';
+        if (statusVal === 'pending') {
+            statusBadge = '<span title="Bridge received this request; '
+                + 'Copilot has not yet returned a response" '
+                + 'style="background:#fbbf24;color:#78350f;padding:1px 6px;'
+                + 'border-radius:8px;font-size:0.78em;font-weight:600">⟳ pending</span>';
+        } else if (statusVal === 'failed') {
+            var emsg = r.errorMessage || '';
+            statusBadge = '<span title="' + escapeHtml(emsg) + '" '
+                + 'style="background:#dc2626;color:#fff;padding:1px 6px;'
+                + 'border-radius:8px;font-size:0.78em;font-weight:600">✗ failed</span>';
+        } else {
+            statusBadge = '<span style="background:#16a34a;color:#fff;padding:1px 6px;'
+                + 'border-radius:8px;font-size:0.78em;font-weight:600">✓ ok</span>';
+        }
         var summary =
-            '<tr class="recent-row" data-idx="' + i + '" style="cursor:pointer">' +
+            '<tr class="recent-row" data-idx="' + i + '" data-status="' + statusVal + '" '
+                + 'style="cursor:pointer'
+                + (statusVal === 'pending' ? ';background:rgba(251,191,36,0.08)' : '') + '">' +
               '<td style="width:1.4em;color:#9ca3af">' + chevron + '</td>' +
+              '<td>' + statusBadge + '</td>' +
               '<td>' + escapeHtml(fmtTime(r.whenIso)) + '</td>' +
               '<td>' + escapeHtml(r.modelId) + '</td>' +
               '<td>' + escapeHtml(r.client) + '</td>' +
               '<td>' + runIdCell + '</td>' +
               '<td>' + escapeHtml(r.via) + '</td>' +
               '<td class="num">' + fmt(r.promptTokens) + '</td>' +
-              '<td class="num">' + fmt(r.completionTokens) + '</td>' +
-              '<td class="num">' + fmtUsd(r.estimatedCostUsd) + '</td>' +
+              '<td class="num">' + (statusVal === 'pending' ? '—' : fmt(r.completionTokens)) + '</td>' +
+              '<td class="num">' + (statusVal === 'pending' ? '—' : fmtUsd(r.estimatedCostUsd)) + '</td>' +
             '</tr>';
         if (!open) return summary;
         // Detail row spans the full width. Show prompt/completion side-
@@ -726,7 +750,7 @@ function renderRecent(rows){
             : '<div class="help">No prompt/completion text captured for this record. Records logged before the upgrade only retained summary stats; new requests after upgrading will include the click-to-expand preview.</div>';
         return summary +
           '<tr class="recent-detail" data-idx="' + i + '">' +
-            '<td colspan="9" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
+            '<td colspan="10" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
           '</tr>';
     }).join('');
     // Wire row clicks. Single delegated listener is replaced each render;

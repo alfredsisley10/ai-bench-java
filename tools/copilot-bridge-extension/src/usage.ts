@@ -5,6 +5,9 @@
 import * as vscode from 'vscode';
 import { approxTokens, estimateCost, priceFor } from './pricing';
 
+/** Lifecycle status for a bridge call. */
+export type CallStatus = 'pending' | 'success' | 'failed';
+
 interface RawRecord {
     ts: number;
     modelId: string;
@@ -34,6 +37,23 @@ interface RawRecord {
      *   * HTTP shim:  X-Run-Id request header
      */
     runId?: string;
+    /**
+     * Per-request lifecycle id assigned by the OpenAI shim / socket
+     * dispatcher. Stable for the duration of one bridge call — used
+     * by markPending → markSuccess / markFailed to mutate the same
+     * record in place rather than appending a second one.
+     */
+    reqId?: string;
+    /**
+     * 'pending' = received by the bridge, not yet fulfilled by Copilot.
+     * 'success' = response streamed back to the caller end-to-end.
+     * 'failed'  = the bridge call threw OR Copilot returned an error.
+     * Pre-existing records (logged before the upgrade) have no status
+     * and read as success at the UI level.
+     */
+    status?: CallStatus;
+    /** Error message captured when status='failed'. */
+    errorMessage?: string;
 }
 
 /** Max chars retained per side for the click-to-expand preview. */
@@ -88,6 +108,13 @@ export interface RecentEntry {
     completionPreview?: string;
     /** Caller-supplied correlation id (e.g. BenchmarkRun.id). */
     runId?: string;
+    /** Lifecycle status; absent = legacy record, treat as 'success'. */
+    status?: CallStatus;
+    /** When status='failed', the message the bridge surfaced. */
+    errorMessage?: string;
+    /** Bridge-internal request id; lets the UI dedupe pending → success
+     *  state transitions visually. */
+    reqId?: string;
 }
 
 /**
@@ -164,6 +191,103 @@ export class UsageTracker {
      * source so the UI can display a "approximate counts" disclaimer.
      */
     private firingListeners = false;
+
+    /**
+     * Insert a 'pending' record the moment the bridge accepts a
+     * request — BEFORE Copilot has responded. The UI shows it with a
+     * "in flight" badge so the operator can see currently-active
+     * traffic, not just completed transactions. Subsequently call
+     * markSuccess(reqId, ...) or markFailed(reqId, ...) to mutate
+     * the same record into its terminal state.
+     */
+    markPending(args: {
+        reqId: string;
+        modelId: string;
+        client: string;
+        promptText: string;
+        via: 'socket' | 'openai-http';
+        runId?: string;
+    }): void {
+        const promptTokens = approxTokens(args.promptText);
+        const rec: RawRecord = {
+            ts: Date.now(),
+            modelId: args.modelId,
+            client: args.client || 'anonymous',
+            promptTokens,
+            completionTokens: 0,
+            estimatedCostUsd: estimateCost(args.modelId, promptTokens, 0),
+            via: args.via,
+            promptPreview: truncatePreview(args.promptText),
+            completionPreview: undefined,
+            runId: args.runId && args.runId.trim().length > 0 ? args.runId.trim() : undefined,
+            reqId: args.reqId,
+            status: 'pending',
+        };
+        this.records.push(rec);
+        if (this.records.length > MAX_RECORDS) {
+            this.records.splice(0, this.records.length - MAX_RECORDS);
+        }
+        this.fullBodies.set(rec.ts,
+            { ts: rec.ts, promptFull: args.promptText, completionFull: '' });
+        this.evictExcessFullBodies();
+        this.context.globalState.update(STATE_KEY, this.records);
+        this.fireListeners();
+    }
+
+    /** Mutate a previously-pending record into 'success' state. */
+    markSuccess(args: {
+        reqId: string;
+        completionText: string;
+    }): void {
+        const rec = this.findByReqId(args.reqId);
+        if (rec == null) {
+            // Pending record never got created (older code path / race);
+            // log won't break the chat but the UI loses the pending
+            // → success transition for this call.
+            return;
+        }
+        rec.completionTokens = approxTokens(args.completionText);
+        rec.estimatedCostUsd = estimateCost(rec.modelId, rec.promptTokens, rec.completionTokens);
+        rec.completionPreview = truncatePreview(args.completionText);
+        rec.status = 'success';
+        const full = this.fullBodies.get(rec.ts);
+        if (full != null) {
+            this.fullBodies.set(rec.ts,
+                { ts: rec.ts, promptFull: full.promptFull, completionFull: args.completionText });
+        }
+        this.context.globalState.update(STATE_KEY, this.records);
+        this.fireListeners();
+    }
+
+    /** Mutate a previously-pending record into 'failed' state. */
+    markFailed(args: { reqId: string; errorMessage: string }): void {
+        const rec = this.findByReqId(args.reqId);
+        if (rec == null) return;
+        rec.status = 'failed';
+        rec.errorMessage = (args.errorMessage || '').slice(0, 500);
+        this.context.globalState.update(STATE_KEY, this.records);
+        this.fireListeners();
+    }
+
+    private findByReqId(reqId: string): RawRecord | null {
+        if (!reqId) return null;
+        // Walk newest-first; bridge calls are short-lived and the
+        // matching record is almost always at the tail.
+        for (let i = this.records.length - 1; i >= 0; i--) {
+            if (this.records[i].reqId === reqId) return this.records[i];
+        }
+        return null;
+    }
+
+    private evictExcessFullBodies(): void {
+        if (this.fullBodies.size <= FULL_BODY_LIMIT) return;
+        const it = this.fullBodies.keys();
+        while (this.fullBodies.size > FULL_BODY_LIMIT) {
+            const k = it.next().value;
+            if (k === undefined) break;
+            this.fullBodies.delete(k);
+        }
+    }
 
     record(args: {
         modelId: string;
@@ -289,6 +413,9 @@ export class UsageTracker {
             promptPreview: r.promptPreview ?? '',
             completionPreview: r.completionPreview ?? '',
             runId: r.runId,
+            status: r.status ?? 'success',
+            errorMessage: r.errorMessage,
+            reqId: r.reqId,
         }));
 
         return {
@@ -361,6 +488,9 @@ export class UsageTracker {
                 promptPreview: r.promptPreview ?? '',
                 completionPreview: r.completionPreview ?? '',
                 runId: r.runId,
+                status: r.status ?? 'success',
+                errorMessage: r.errorMessage,
+                reqId: r.reqId,
             }));
         return {
             runId,

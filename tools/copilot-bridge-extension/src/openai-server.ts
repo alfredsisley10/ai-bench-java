@@ -229,12 +229,26 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
             if (req.method === 'POST' && (url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions')) {
                 const reqId = args.newReqId();
                 const runIdHeader = req.headers['x-run-id'] != null ? String(req.headers['x-run-id']) : '-';
+                const runIdTag = (req.headers['x-run-id'] != null
+                    ? String(req.headers['x-run-id']) : undefined);
                 args.log(`[${reqId}] ← HTTP /v1/chat/completions client=${client} runId=${runIdHeader}`);
                 const raw = await readBody(req);
                 const body = raw ? JSON.parse(raw) : {};
                 const model = await args.logStage(reqId, 'pickModel', () => args.pickModel({ model: body.model }));
                 if (!model) {
                     args.log(`[${reqId}] ✗ no model available`);
+                    // Surface the failed lookup as an explicit failed
+                    // record so the activity panel shows it (was
+                    // previously invisible — only successful records
+                    // ever made it into the tracker).
+                    args.tracker.markPending({
+                        reqId, modelId: '(no model)', client,
+                        promptText: '(no body — pickModel returned null)',
+                        via: 'openai-http', runId: runIdTag,
+                    });
+                    args.tracker.markFailed({ reqId,
+                        errorMessage: 'no Copilot model available — start the bridge and grant consent',
+                    });
                     return send(res, 503, {
                         error: { message: 'no Copilot model available — start the bridge and grant consent', type: 'no_model' }
                     });
@@ -247,28 +261,33 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
                 const promptText = (body.messages ?? []).map((m: any) => String(m.content ?? '')).join('\n');
                 args.log(`[${reqId}] selected model=${model.id} (${model.name}); ${inputMessages.length} message(s), ${promptText.length} prompt chars`);
 
-                const token = new vscode.CancellationTokenSource().token;
-                const resp = await args.logStage(reqId, `model.sendRequest(${model.id})`,
-                    () => model.sendRequest(inputMessages, {}, token));
-                let content = '';
-                let frags = 0;
-                await args.logStage(reqId, 'stream response.text',
-                    async () => { for await (const frag of resp.text) { content += frag; frags++; } });
-                args.log(`[${reqId}] streamed ${frags} fragments, ${content.length} chars total → response sent`);
-
-                args.tracker.record({
-                    modelId: model.id, client,
-                    promptText, completionText: content,
-                    via: 'openai-http',
-                    // X-Run-Id is the HTTP-equivalent of the socket
-                    // protocol's `runId` JSON field. Tag every call
-                    // the harness makes for a specific BenchmarkRun
-                    // so the activity panel can filter to that run
-                    // and so the harness can query authoritative
-                    // totals via GET /v1/activity?runId=.
-                    runId: (req.headers['x-run-id'] != null
-                        ? String(req.headers['x-run-id']) : undefined),
+                // Insert the pending record BEFORE the bridge call.
+                // The activity panel renders this with an "in flight"
+                // badge so currently-active traffic is visible
+                // (previously the panel only showed completed calls).
+                args.tracker.markPending({
+                    reqId, modelId: model.id, client, promptText,
+                    via: 'openai-http', runId: runIdTag,
                 });
+
+                const token = new vscode.CancellationTokenSource().token;
+                let content = '';
+                try {
+                    const resp = await args.logStage(reqId, `model.sendRequest(${model.id})`,
+                        () => model.sendRequest(inputMessages, {}, token));
+                    let frags = 0;
+                    await args.logStage(reqId, 'stream response.text',
+                        async () => { for await (const frag of resp.text) { content += frag; frags++; } });
+                    args.log(`[${reqId}] streamed ${frags} fragments, ${content.length} chars total → response sent`);
+                    args.tracker.markSuccess({ reqId, completionText: content });
+                } catch (e: any) {
+                    const msg = e?.message ?? String(e);
+                    args.log(`[${reqId}] ✗ Copilot call FAILED: ${msg}`);
+                    args.tracker.markFailed({ reqId, errorMessage: msg });
+                    return send(res, 502, {
+                        error: { message: msg, type: 'copilot_call_failed' }
+                    });
+                }
 
                 return send(res, 200, {
                     id: 'chatcmpl-' + Date.now().toString(36),
