@@ -25,10 +25,15 @@ class AdminNavieController(
 ) {
     private val log = LoggerFactory.getLogger(AdminNavieController::class.java)
 
-    /** Larger pool than the throttler's cap so the queue can absorb a
-     *  full precompute-all submission immediately; the throttler
-     *  decides how many actually run concurrently against the bridge. */
-    private val executor = Executors.newFixedThreadPool(8) { r ->
+    /** Pool sized to handle the full bug catalog in parallel. The
+     *  precompute is now `appmap search` (sub-second per trace, no
+     *  LLM, no bridge), so there's no upstream rate-limit gate
+     *  forcing serialization -- precompute-all on 12 bugs runs
+     *  concurrently and finishes in seconds-not-minutes. The
+     *  AdaptiveThrottler bean is still injected (kept for future
+     *  bridge-bound work) but precompute submissions no longer
+     *  acquire a permit. */
+    private val executor = Executors.newFixedThreadPool(12) { r ->
         Thread(r, "navie-precompute").apply { isDaemon = true }
     }
 
@@ -149,30 +154,25 @@ class AdminNavieController(
         return "redirect:/admin/navie?queued=all"
     }
 
-    /** Throttler-gated precompute submission. The thread that actually
-     *  runs blocks on throttler.acquire() before invoking the appmap
-     *  CLI -- so the queue can be 12 bugs deep but only N=currentCap
-     *  run concurrently against the bridge. After the subprocess
-     *  exits, parses its stdout tail for rate-limit signals (the
-     *  same isQuotaExhaustionError heuristic the bridge uses) and
-     *  reports to the throttler so it can shrink + cool down. */
+    /** Submit a precompute. The new appmap-search-based precompute
+     *  has zero LLM dependency, so we don't gate on the throttler --
+     *  precompute-all on 12 bugs runs all 12 concurrently and finishes
+     *  in ~10-20s wall-clock instead of serialized 2-3min. The
+     *  rate-limit detection is preserved for future bridge-bound work
+     *  but only fires reportRateLimit (doesn't acquire/release a
+     *  permit) so the throttler state stays clean. */
     private fun submitWithThrottle(bug: BugCatalog.BugMetadata) {
         executor.submit {
-            try {
-                throttler.acquire()
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return@submit
-            }
             try {
                 val job = runCatching { navieCache.precompute(bug) }.getOrElse { e ->
                     log.warn("navie precompute thread failed for {}: {}", bug.id, e.message)
                     null
                 }
                 // Detect rate-limit pattern in the captured CLI output.
-                // The appmap CLI surfaces upstream Copilot quota errors
-                // in its stdout; if we see those, signal the throttler
-                // to back off before the next acquire.
+                // Currently a no-op for appmap-search (no upstream
+                // calls), but kept defensively so a future swap back
+                // to LLM-bound precompute re-engages the throttler
+                // signal automatically.
                 val tail = job?.stdoutTail ?: ""
                 val errStr = job?.error ?: ""
                 if (looksLikeRateLimit(tail) || looksLikeRateLimit(errStr)) {
@@ -181,8 +181,8 @@ class AdminNavieController(
                             (errStr.takeIf { it.isNotBlank() } ?: tail.takeLast(200))
                     )
                 }
-            } finally {
-                throttler.release()
+            } catch (e: Exception) {
+                log.warn("navie precompute outer catch for {}: {}", bug.id, e.message)
             }
         }
     }
