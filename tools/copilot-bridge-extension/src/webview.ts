@@ -307,7 +307,7 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
 </style>
 </head>
 <body>
-<h1>ai-bench Copilot Bridge — usage</h1>
+<h1>ai-bench Copilot Bridge</h1>
 
 <!-- Local IPC bridge — distinct panel, blue accent -->
 <div class="panel" style="border-left-color: #4a9be8">
