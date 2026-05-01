@@ -164,8 +164,14 @@ class NavieCacheManager(
     private val cacheRoot: File = File(System.getProperty("user.home"), ".ai-bench/navie-cache")
         .also { it.mkdirs() }
 
-    private fun cacheFile(bugId: String, breakSha: String): File =
-        File(cacheRoot, "${bugId}-${breakSha}.json")
+    private fun cacheFile(bugId: String, breakSha: String): File {
+        // Sanitize the sha-or-ref segment to a flat filename. breakCommit
+        // is a literal git ref ("bug/BUG-0001/break"), so the raw value
+        // has '/' in it -- joining with '-' would create unintended
+        // subdirectories. Map every non-[A-Za-z0-9._] char to '-'.
+        val safeSha = breakSha.replace(Regex("[^A-Za-z0-9._-]"), "-")
+        return File(cacheRoot, "${bugId}-${safeSha}.json")
+    }
 
     /** Cached result for the bug at its CURRENT break commit, or null. */
     fun get(bug: BugCatalog.BugMetadata): NavieResult? {
@@ -239,155 +245,106 @@ class NavieCacheManager(
             val cli = locateCli() ?: throw IllegalStateException(
                 "appmap CLI not found. Install JetBrains AppMap plugin or " +
                     "`npm install -g @appland/appmap`.")
-            // Per-job tmp files; Navie writes both the trajectory and the
-            // final answer file. We delete them after parsing.
-            val workDir = createTempDir("ai-bench-navie-${bug.id}-")
-            val trajFile = File(workDir, "trajectory.jsonl")
-            val answerFile = File(workDir, "answer.md")
-            try {
-                job.phase = "running navie"
-                val started = System.currentTimeMillis()
-                val argv = listOf(
-                    cli.absolutePath, "navie",
-                    "-d", repo.absolutePath,
-                    "--trajectory-file", trajFile.absolutePath,
-                    "-o", answerFile.absolutePath,
-                    buildQuestion(bug)
-                )
-                val env = navieEnv()
-                // Capture the exact command line + relevant env vars so
-                // the operator can copy-paste-rerun manually if they
-                // need to reproduce a specific Navie call. Quoting is
-                // approximate (good-enough); the question arg gets
-                // extra escaping since it's multiline.
-                fun shesc(s: String): String =
-                    if (s.matches(Regex("[A-Za-z0-9_/.:-]+"))) s
-                    else "'" + s.replace("'", "'\\''") + "'"
-                job.commandLine = (env.entries.joinToString(" ") {
-                    "${it.key}=${shesc(it.value)}"
-                }) + " " + argv.joinToString(" ") { shesc(it) }
-                val proc = ProcessBuilder(argv)
-                    .redirectErrorStream(true)
-                    .also { it.environment().putAll(env) }
-                    .start()
-                job.process = proc
-                job.liveTrajectoryFile = trajFile
-                // Best-effort: kill the subprocess if the bench-webui
-                // JVM exits while this job is in flight. Without this
-                // hook the appmap CLI is orphaned to launchd/init and
-                // keeps hammering the bridge invisibly across restarts.
-                val shutdown = Thread { runCatching {
-                    proc.descendants().forEach { it.destroyForcibly() }
-                    proc.destroyForcibly()
-                }}
-                runCatching { Runtime.getRuntime().addShutdownHook(shutdown) }
-                // Heartbeat thread: poll the trajectory file every 5s so
-                // the dashboard can show "still progressing -- N events,
-                // last event Xs ago" vs "looks hung -- 0 events written
-                // in 60s". Cheap (just a stat + line-count); the read
-                // happens off the main wait thread so the subprocess
-                // I/O loop below isn't blocked.
-                // Heartbeat + per-round-trip log emitter. Polls the
-                // trajectory every 5s; when new 'received' events
-                // appear, parse them and write a plain-English log
-                // line so an operator tailing bench-webui.log sees
-                // real-time progress without opening the admin UI:
-                //   navie[BUG-0001] completion 7/30 (~23%, stage=
-                //     context-pack, 5.3s) sent=8.2KB role=user
-                //     "Read the file payments-hub/.../Payment.java"
-                //     -> recv 1.2KB
-                var lastLoggedSeq = 0
-                val heartbeat = Thread({
-                    while (proc.isAlive && !Thread.currentThread().isInterrupted) {
-                        try {
-                            Thread.sleep(5000)
-                            if (!trajFile.isFile) continue
-                            val sz = trajFile.length()
-                            var ec = 0; var rt = 0
-                            trajFile.useLines { lines ->
-                                for (ln in lines) {
-                                    ec++
-                                    if (ln.contains("\"type\":\"received\"")) rt++
-                                }
-                            }
-                            val mt = java.nio.file.Files.getLastModifiedTime(trajFile.toPath())
-                            job.trajectoryBytesLive = sz
-                            job.trajectoryEventsLive = ec
-                            job.liveRoundTripCount = rt
-                            job.lastEventAt = mt.toInstant()
-                            // Emit a per-completion log line for every
-                            // new round-trip since the last poll. The
-                            // parse is bounded to the new range by
-                            // skipping the seq numbers we already
-                            // logged. Cheap unless trajectory is huge.
-                            if (rt > lastLoggedSeq) {
-                                val all = parseRoundTrips(trajFile)
-                                for (r in all.drop(lastLoggedSeq)) {
-                                    val pct = if (medianCachedRoundTripCount() > 0)
-                                        " ~${(r.seq * 100 / medianCachedRoundTripCount()).coerceAtMost(100)}%"
-                                    else ""
-                                    log.info("navie[{}] completion {}{} stage={} {}s " +
-                                        "sent={}KB role={} \"{}\" -> recv={}KB \"{}\"",
-                                        bug.id, r.seq, pct, r.inferredStage,
-                                        r.durationMs / 1000.0,
-                                        r.sentChars / 1024,
-                                        r.sentRole,
-                                        r.sentPreview.replace('\n', ' ').take(120),
-                                        r.receivedChars / 1024,
-                                        r.receivedPreview.replace('\n', ' ').take(120))
-                                }
-                                lastLoggedSeq = rt
-                            }
-                        } catch (_: InterruptedException) { break }
-                        catch (_: Exception) { /* ignore transient stat errors */ }
-                    }
-                }, "navie-heartbeat-${bug.id}").apply { isDaemon = true; start() }
-                // Stream combined stdout/stderr; keep a rolling tail in
-                // [job.stdoutTail] so the per-bug detail page can show
-                // recent CLI output without holding the full byte stream
-                // in memory.
-                val tail = StringBuilder()
-                proc.inputStream.bufferedReader().useLines { lines ->
-                    for (ln in lines) {
-                        tail.appendLine(ln)
-                        if (tail.length > TAIL_CAP) {
-                            tail.delete(0, tail.length - TAIL_CAP)
-                        }
-                        job.stdoutTail = tail.toString()
-                        log.debug("navie[{}]: {}", bug.id, ln)
-                    }
-                }
-                heartbeat.interrupt()
-                val exit = proc.waitFor()
-                val ms = System.currentTimeMillis() - started
-                if (exit != 0) {
-                    throw RuntimeException("appmap navie exit=$exit; tail:\n${tail.takeLast(2000)}")
-                }
-                job.phase = "parsing"
-                val files = parseFilesFromTrajectory(trajFile)
-                val traces = parseTracesFromTrajectory(trajFile)
-                val rounds = parseRoundTrips(trajFile)
-                val answer = if (answerFile.isFile) answerFile.readText() else ""
-                val eventCount = if (trajFile.isFile) trajFile.useLines { it.count() } else 0
-                val result = NavieResult(
-                    bugId = bug.id,
-                    breakCommit = bug.breakCommit,
-                    generatedAt = Instant.now().toString(),
-                    cliVersion = readCliVersion(cli),
-                    model = navieEnv()["APPMAP_NAVIE_MODEL"],
-                    filesIdentified = files,
-                    tracesIdentified = traces,
-                    answer = answer,
-                    trajectoryEventCount = eventCount,
-                    durationMs = ms,
-                    roundTrips = rounds
-                )
-                cacheFile(bug.id, bug.breakCommit).writeText(mapper.writeValueAsString(result))
-                job.result = result
-                job.phase = "cached"
-            } finally {
-                workDir.deleteRecursively()
+            val module = bug.module.takeIf { it.isNotBlank() }
+                ?: throw IllegalStateException("bug ${bug.id} has no module")
+            val traceRoot = File(repo, "$module/tmp/appmap")
+            val traces = if (traceRoot.isDirectory)
+                traceRoot.walkTopDown()
+                    .filter { it.isFile && it.name.endsWith(".appmap.json") }
+                    .toList()
+            else emptyList()
+            if (traces.isEmpty()) {
+                throw IllegalStateException(
+                    "no AppMap traces under ${traceRoot.absolutePath} -- " +
+                    "generate via /admin/appmap-traces first")
             }
+            // Use the bug title + first 200 chars of the problem statement
+            // as the search query. AppMap search tokenizes against the
+            // function names + classes captured in the trace, so concise
+            // domain-language terms (e.g. "ACH cutoff time") match best.
+            val query = (bug.title + " " + bug.problemStatement.take(200))
+                .replace(Regex("[^A-Za-z0-9 ]"), " ")
+                .replace(Regex(" +"), " ").trim()
+            log.info("appmap-search[{}] starting: module={} traces={} query=\"{}\"",
+                bug.id, module, traces.size, query.take(80))
+            // Reproducible command for the detail page
+            job.commandLine = "for trace in (${traces.size} traces under " +
+                "$module/tmp/appmap):\n  ${cli.absolutePath} search " +
+                "-a <trace> --find-events \"${query.take(80)}\""
+            val started = System.currentTimeMillis()
+            data class FileScore(val location: String, var totalScore: Double, var hitCount: Int)
+            val fileScores = HashMap<String, FileScore>()
+            val traceScores = HashMap<File, Double>()
+            val tail = StringBuilder()
+            // Per-trace search. Each invocation is sub-second; we get
+            // function-level relevance scores + the source-file
+            // location each function lives in. Aggregate by location.
+            for ((idx, trace) in traces.withIndex()) {
+                job.phase = "searching ${idx + 1}/${traces.size}"
+                job.liveRoundTripCount = idx + 1
+                val proc = ProcessBuilder(
+                    cli.absolutePath, "search",
+                    "-a", trace.absolutePath,
+                    "--find-events", query
+                ).redirectErrorStream(true).start()
+                val out = proc.inputStream.bufferedReader().readText()
+                val ok = proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+                if (!ok) { proc.destroyForcibly(); continue }
+                val node = runCatching { mapper.readTree(out) }.getOrNull() ?: continue
+                val results = node.get("results") ?: continue
+                var traceTotal = 0.0
+                var hits = 0
+                for (r in results) {
+                    val loc = r.get("location")?.asText() ?: continue
+                    val score = r.get("score")?.asDouble() ?: 0.0
+                    val pathOnly = loc.substringBeforeLast(":")
+                    fileScores.getOrPut(pathOnly) { FileScore(pathOnly, 0.0, 0) }
+                        .also { it.totalScore += score; it.hitCount++ }
+                    traceTotal += score
+                    hits++
+                }
+                if (traceTotal > 0) traceScores[trace] = traceTotal
+                val msg = "trace ${idx + 1}/${traces.size}: ${trace.name.take(60)} " +
+                    "-> ${hits} hits, score=${"%.2f".format(traceTotal)}"
+                tail.appendLine(msg)
+                if (tail.length > TAIL_CAP) tail.delete(0, tail.length - TAIL_CAP)
+                job.stdoutTail = tail.toString()
+                log.info("appmap-search[{}] {}", bug.id, msg)
+            }
+            val ms = System.currentTimeMillis() - started
+            val topFiles = fileScores.values.sortedByDescending { it.totalScore }
+                .take(10).map { it.location }
+            val topTraces = traceScores.entries.sortedByDescending { it.value }
+                .take(10).map {
+                    it.key.absolutePath.removePrefix(repo.absolutePath).trimStart('/')
+                }
+            val answer = buildString {
+                appendLine("AppMap search across ${traces.size} trace(s) for module '${bug.module}'.")
+                appendLine("Query: \"${query.take(120)}\"")
+                appendLine()
+                appendLine("Top files by aggregate relevance score:")
+                for ((i, fs) in fileScores.values.sortedByDescending { it.totalScore }.take(8).withIndex()) {
+                    appendLine("  ${i + 1}. ${fs.location} (score=${"%.2f".format(fs.totalScore)}, ${fs.hitCount} hit(s))")
+                }
+            }
+            log.info("appmap-search[{}] done in {}s: {} files, {} traces",
+                bug.id, ms / 1000, topFiles.size, topTraces.size)
+            val result = NavieResult(
+                bugId = bug.id,
+                breakCommit = bug.breakCommit,
+                generatedAt = Instant.now().toString(),
+                cliVersion = readCliVersion(cli),
+                model = "appmap-search",  // not Navie; no LLM model used
+                filesIdentified = topFiles,
+                tracesIdentified = topTraces,
+                answer = answer,
+                trajectoryEventCount = traces.size,
+                durationMs = ms,
+                roundTrips = emptyList()  // search makes no LLM calls
+            )
+            cacheFile(bug.id, bug.breakCommit).writeText(mapper.writeValueAsString(result))
+            job.result = result
+            job.phase = "cached"
         } catch (e: Exception) {
             log.warn("navie precompute failed for {}: {}", bug.id, e.message)
             job.phase = "failed"
