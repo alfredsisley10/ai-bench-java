@@ -105,7 +105,17 @@ export function openStatsPanel(hooks: WebviewHooks, context: vscode.ExtensionCon
     panel.webview.onDidReceiveMessage(async msg => {
         try {
             switch (msg?.type) {
-                case 'clear':               hooks.tracker.clear(); break;
+                case 'clear':
+                    // Route through the registered command rather than
+                    // calling tracker.clear() directly. The command
+                    // handler in extension.ts also calls notifyStateChanged()
+                    // which refreshes the activity-bar status item AND
+                    // the tree view; calling tracker.clear() inline only
+                    // fires the tracker's own listeners, leaving the
+                    // status bar showing stale "N req · $X.XXXX" text
+                    // until the next bridge call lands.
+                    await vscode.commands.executeCommand('aiBench.copilotBridge.clearStats');
+                    break;
                 case 'startBridge':         await hooks.startBridge(); break;
                 case 'stopBridge':          await hooks.stopBridge(); break;
                 case 'startOpenAi':         await hooks.startOpenAi(); break;
