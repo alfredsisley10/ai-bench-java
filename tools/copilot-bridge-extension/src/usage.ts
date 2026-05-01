@@ -54,6 +54,11 @@ interface RawRecord {
     status?: CallStatus;
     /** Error message captured when status='failed'. */
     errorMessage?: string;
+    /** Wall-clock ms when status transitioned out of 'pending' (success
+     *  OR failed). Combined with [ts] (the markPending timestamp) gives
+     *  the call's actual completion time. Absent for legacy records
+     *  without lifecycle tracking. */
+    completedAt?: number;
     /**
      * True when the failure looked like a Copilot/upstream quota or
      * rate-limit exhaustion (vs. a generic transient error). Set by
@@ -185,6 +190,11 @@ export interface RecentEntry {
     /** Bridge-internal request id; lets the UI dedupe pending → success
      *  state transitions visually. */
     reqId?: string;
+    /** Wall-clock duration of the call in ms. For success/failed,
+     *  this is completedAt - ts (true round-trip time). For pending,
+     *  it's "now - ts" so the UI can show a live "Xs in flight" cell.
+     *  null for legacy records without timestamps. */
+    durationMs?: number | null;
 }
 
 /**
@@ -320,6 +330,7 @@ export class UsageTracker {
         rec.estimatedCostUsd = estimateCost(rec.modelId, rec.promptTokens, rec.completionTokens);
         rec.completionPreview = truncatePreview(args.completionText);
         rec.status = 'success';
+        rec.completedAt = Date.now();
         const full = this.fullBodies.get(rec.ts);
         if (full != null) {
             this.fullBodies.set(rec.ts,
@@ -336,6 +347,7 @@ export class UsageTracker {
         rec.status = 'failed';
         rec.errorMessage = (args.errorMessage || '').slice(0, 500);
         rec.quotaExceeded = isQuotaExhaustionError(args.errorMessage);
+        rec.completedAt = Date.now();
         this.context.globalState.update(STATE_KEY, this.records);
         this.fireListeners();
     }
@@ -509,6 +521,7 @@ export class UsageTracker {
             .sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd);
         const perClient = [...perClientMap.values()]
             .sort((a, b) => b.requests - a.requests);
+        const nowMs = Date.now();
         const recent: RecentEntry[] = this.records.slice(-RECENT_LIMIT).reverse().map(r => ({
             whenIso: new Date(r.ts).toISOString(),
             modelId: r.modelId,
@@ -523,6 +536,8 @@ export class UsageTracker {
             status: r.status ?? 'success',
             errorMessage: r.errorMessage,
             reqId: r.reqId,
+            durationMs: r.completedAt != null ? r.completedAt - r.ts
+                : (r.status === 'pending' ? nowMs - r.ts : null),
         }));
 
         return {
@@ -582,6 +597,7 @@ export class UsageTracker {
             m.estimatedCostUsd += r.estimatedCostUsd;
             perModelMap.set(r.modelId, m);
         }
+        const nowMsRun = Date.now();
         const recent: RecentEntry[] = matched
             .slice(-RECENT_LIMIT).reverse()
             .map(r => ({
@@ -598,6 +614,8 @@ export class UsageTracker {
                 status: r.status ?? 'success',
                 errorMessage: r.errorMessage,
                 reqId: r.reqId,
+                durationMs: r.completedAt != null ? r.completedAt - r.ts
+                    : (r.status === 'pending' ? nowMsRun - r.ts : null),
             }));
         return {
             runId,

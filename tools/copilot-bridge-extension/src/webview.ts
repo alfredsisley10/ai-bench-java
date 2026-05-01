@@ -443,6 +443,7 @@ function renderHtml(initial: StatsSnapshot, runtime: RuntimeState): string {
     <th>Status</th>
     <th>When</th><th>Model</th><th>Client</th><th>Run ID</th><th>Via</th>
     <th class="num">Prompt</th><th class="num">Compl.</th><th class="num">Cost</th>
+    <th class="num" title="Wall-clock round-trip time. Pending rows show 'live' duration since the call started.">Time</th>
 </tr></thead><tbody></tbody></table>
 
 <div class="toolbar">
@@ -454,6 +455,18 @@ const vscode = acquireVsCodeApi();
 let state = ${initialPayload};
 function fmt(n){ return Number(n).toLocaleString(); }
 function fmtUsd(n){ return '$' + Number(n).toFixed(6); }
+function fmtDuration(ms, status){
+    // Pending rows: show live elapsed time so the operator can see
+    // "X seconds in flight" updating each refresh tick. Completed
+    // rows: show round-trip time. Legacy records (no timestamps)
+    // show '—'.
+    if (ms == null) return '—';
+    var s = Math.round(ms / 100) / 10;  // 1 decimal
+    var label = s < 1 ? Math.round(ms) + 'ms'
+              : s < 60 ? s + 's'
+              : Math.floor(s/60) + 'm ' + Math.round(s % 60) + 's';
+    return status === 'pending' ? '<span style="color:#fbbf24">' + label + '…</span>' : label;
+}
 function fmtTime(iso){ return new Date(iso).toLocaleTimeString(); }
 
 // Safety belt: every click optimistically disables its button so the
@@ -723,6 +736,7 @@ function renderRecent(rows){
               '<td class="num">' + fmt(r.promptTokens) + '</td>' +
               '<td class="num">' + (statusVal === 'pending' ? '—' : fmt(r.completionTokens)) + '</td>' +
               '<td class="num">' + (statusVal === 'pending' ? '—' : fmtUsd(r.estimatedCostUsd)) + '</td>' +
+              '<td class="num">' + fmtDuration(r.durationMs, statusVal) + '</td>' +
             '</tr>';
         if (!open) return summary;
         // Detail row spans the full width. Show prompt/completion side-
@@ -760,7 +774,7 @@ function renderRecent(rows){
             : '<div class="help">No prompt/completion text captured for this record. Records logged before the upgrade only retained summary stats; new requests after upgrading will include the click-to-expand preview.</div>';
         return summary +
           '<tr class="recent-detail" data-idx="' + i + '">' +
-            '<td colspan="10" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
+            '<td colspan="11" style="background:#0f1729;padding:0.6em 0.8em">' + body + '</td>' +
           '</tr>';
     }).join('');
     // Wire row clicks. Single delegated listener is replaced each render;
