@@ -310,8 +310,15 @@ class NavieCacheManager(
         "OPENAI_API_KEY" to (System.getenv("OPENAI_API_KEY") ?: "anything"),
         "OPENAI_BASE_URL" to (System.getenv("APPMAP_BRIDGE_URL")
             ?: "http://127.0.0.1:11434/v1"),
+        // VSCode's LanguageModelChat exposes Copilot's gpt-4.1 model
+        // under the literal id "gpt-4.1" (no "copilot-" prefix). Sending
+        // any other name like "copilot-gpt-4-1" used to hit the bridge's
+        // pickModel() which silently fell back to all[0] -- which is
+        // claude-sonnet-4.6, a premium model. The bridge's pickModel
+        // is now strict (rejects unknown names) AND it tries fuzzy
+        // matching, but we send the exact id here as primary defense.
         "APPMAP_NAVIE_MODEL" to (System.getenv("APPMAP_NAVIE_MODEL")
-            ?: "copilot-gpt-4-1")
+            ?: "gpt-4.1")
     )
 
     /** Walk the JSONL trajectory and pull every repo-relative

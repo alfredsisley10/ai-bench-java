@@ -152,7 +152,30 @@ async function pickModel(req: { model?: string }): Promise<vscode.LanguageModelC
     const all = await vscode.lm.selectChatModels({ vendor: 'copilot' });
     if (all.length === 0) return undefined;
     if (!req.model || req.model === 'auto') return all[0];
-    return all.find(m => m.id === req.model) ?? all[0];
+    // Exact-match first (cheapest, no surprises).
+    const exact = all.find(m => m.id === req.model);
+    if (exact) return exact;
+    // Fuzzy: strip the optional "copilot-" prefix, normalize dashes
+    // to dots so callers using "copilot-gpt-4-1" reach VSCode's
+    // "gpt-4.1". The mapping is conservative -- a request that
+    // doesn't normalize to ANY available id falls through to a
+    // strict no-match (returns undefined) rather than silently
+    // routing to all[0], which historically misrouted gpt-4.1
+    // requests to the first listed model (typically a premium
+    // claude/gpt-5 variant) and burned the operator's quota
+    // without any visibility.
+    const normalize = (s: string) =>
+        s.toLowerCase().replace(/^copilot-/, '').replace(/-/g, '.');
+    const want = normalize(req.model);
+    const fuzzy = all.find(m => normalize(m.id) === want);
+    if (fuzzy) {
+        log(`pickModel: fuzzy '${req.model}' -> '${fuzzy.id}'`);
+        return fuzzy;
+    }
+    log(`pickModel: '${req.model}' not found and no fuzzy match. ` +
+        `Available: ${all.map(m => m.id).join(', ')}. Returning undefined ` +
+        `so caller gets a clear 4xx instead of a silent wrong-model call.`);
+    return undefined;
 }
 
 async function handleSocketRequest(raw: string, socket: net.Socket): Promise<void> {
