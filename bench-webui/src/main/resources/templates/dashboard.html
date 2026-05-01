@@ -121,6 +121,30 @@
          and one-line tag clouds for difficulty + category. Sort/filter/
          paginate via the shared sortable-table helper.  Hidden when no
          model has solved anything yet. -->
+    <!-- Empty-leaderboard hint: shown when there ARE passing runs but
+         all of them used the Oracle context provider (which is excluded
+         from leaderboard ranking since it requires the curated
+         filesTouched list -- not realistic for an unseen codebase). Runs
+         still appear in the table below, just not the per-config
+         comparison up here. -->
+    <section th:if="${leaderboardEmptyOracleOnly}">
+        <h2>Leaderboard
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — empty: Oracle is excluded from ranking
+            </span>
+        </h2>
+        <p style="padding:0.5em 0.8em; background:#fef9c3; border:1px solid #fde68a;
+                  border-radius:4px; margin:0.5em 0">
+            All passing runs so far used the <strong>Oracle</strong> context
+            provider, which is excluded from the leaderboard since it ships
+            the bug's curated <code>filesTouched</code> list — useful for
+            ceiling measurement but not a realistic stand-in for what an
+            operator could deploy against an unseen codebase. Re-launch with
+            <strong>BM25</strong> or <strong>AppMap Navie</strong> as the
+            context provider to populate this section.
+        </p>
+    </section>
+
     <section th:unless="${#lists.isEmpty(leaderboard)}">
         <h2>Leaderboard
             <span class="help-text" id="leaderboard-count" style="font-weight:normal; font-size:0.85em"></span>

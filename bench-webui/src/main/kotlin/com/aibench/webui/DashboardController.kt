@@ -154,6 +154,16 @@ class DashboardController(
                 .thenBy { it.avgPassMs }
         )
         model.addAttribute("leaderboard", leaderboard)
+        // When the leaderboard is empty BUT we DO have passing oracle
+        // runs in the runs list, surface "Oracle is excluded from the
+        // ranking — try a non-Oracle context" instead of just hiding
+        // the section silently. Otherwise the operator sees passing
+        // runs in the table but no leaderboard with no explanation.
+        val hasOraclePass = runs.any {
+            it.status.name == "PASSED" && it.contextProvider.equals("oracle", ignoreCase = true)
+        }
+        model.addAttribute("leaderboardEmptyOracleOnly",
+            leaderboard.isEmpty() && hasOraclePass)
 
         // Background-task tile: surface in-flight Navie precomputes +
         // AppMap trace generations on the dashboard so the operator

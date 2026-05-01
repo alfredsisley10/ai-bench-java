@@ -338,16 +338,19 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         }
     }
 
-    /** ON_RECOMMENDED -> the bug's hidden-test trace + (best-effort)
-     *  one or two filesTouched-mentioning neighbors. ON_ALL -> every
-     *  trace under the bug's module. Empty when the bug has no module
-     *  or no real recordings exist for it yet. */
+    /** ON / ON_ALL -> every trace under the bug's module (selection of
+     *  which subset to ship is now done at prompt-build time by
+     *  ContextProvider.selectTracesForBug, dispatched on context
+     *  provider). ON_RECOMMENDED (legacy) -> the bug's hidden-test
+     *  trace + filesTouched-mentioning neighbors; kept so historical
+     *  runs that still record this mode value behave the same. Empty
+     *  when the bug has no module or no real recordings exist yet. */
     private fun realTracesForBug(mode: String, bug: BugCatalog.BugMetadata?): List<File> {
         val module = bug?.module?.takeIf { it.isNotBlank() } ?: return emptyList()
         val all = realTraceCoverage(listOf(module))[module].orEmpty()
         if (all.isEmpty()) return emptyList()
         return when (mode) {
-            "ON_ALL" -> all
+            "ON", "ON_ALL" -> all
             "ON_RECOMMENDED" -> {
                 val targetClass = bug.hiddenTestClass?.substringAfterLast('.')
                 val targetMethod = bug.hiddenTestMethod
