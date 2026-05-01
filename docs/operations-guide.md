@@ -88,6 +88,54 @@ against the demo banking-app and browse the resulting traces.
 - The viewer renders a server-side call tree with SQL and HTTP events
   highlighted. Click a node to expand it.
 
+## Admin caches (precompute these once before running benchmarks)
+
+Two operator-facing caches feed the context-provider machinery. Both
+take a one-time walk-away cost; once populated, benchmark runs read
+from them instantly.
+
+### `/admin/appmap-traces` — real AppMap recordings per module
+
+When `appmapMode != OFF`, benchmarks ship runtime traces alongside
+the source. Without real recordings the harness ships synthetic
+JSON stubs that parse but carry no useful runtime info — the page
+lets you generate the real ones per-module via
+`./gradlew :MODULE:cleanTest :MODULE:test -Pappmap_enabled=true
+--no-configuration-cache --no-build-cache`. (All four flags are
+required; omitting any causes gradle to silently skip the test
+task and exit SUCCESSFUL with zero new traces.)
+
+- **Generate traces for all uncovered modules** queues every
+  hand-written module that currently has zero traces. Single-thread
+  queue (no point parallelizing — gradle daemons thrash). 30s-5min
+  per module across the ~14 hand-written modules ≈ 30-60min total.
+  Pure local CPU; doesn't touch the bridge.
+- Generated-* modules (regional / channels / brands / swift / nacha)
+  are intentionally excluded — ~970 auto-generated tests dominate
+  the run time without adding benchmark value.
+
+### `/admin/navie` — Layer-C Navie context cache
+
+When `contextProvider = appmap-navie`, the harness reads from a
+per-bug cache populated by running the local `appmap navie` CLI
+against each bug's problem statement. Without a cached entry, the
+provider falls back to Oracle (`bug.filesTouched`) and the audit-
+page rationale notes the miss.
+
+- **Precompute all uncached bugs** queues every bug whose cache
+  entry is absent for the current break commit. Single-thread queue
+  (Navie monopolizes the bridge mutex regardless). ~15-30min per
+  bug × 12 bugs ≈ 4-6 hours through the local Copilot bridge —
+  start it before stepping away.
+- Cache files live at `~/.ai-bench/navie-cache/<bug-id>-<sha>.json`
+  and survive bench-webui restarts. Stale entries (CLI version
+  change, model change) aren't auto-invalidated — re-precompute
+  per-bug to refresh.
+- The CLI is auto-located at `~/.appmap/bin/appmap` (matches the
+  JetBrains AppMap plugin's install path); set `$APPMAP_CLI` to
+  override. Wired to the Copilot bridge via `OPENAI_BASE_URL` —
+  no additional auth needed.
+
 ## Troubleshooting
 
 ### Banking app shows ERROR right after Start
