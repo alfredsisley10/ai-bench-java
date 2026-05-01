@@ -246,14 +246,12 @@
             </ul>
 
             <label style="align-items:flex-start">AppMap mode(s):
-                <select name="appmapModes" id="rlAppmapMode" multiple size="3"
+                <select name="appmapModes" id="rlAppmapMode" multiple size="2"
                         style="min-width:30em; vertical-align:top">
                     <option value="OFF"
-                            th:selected="${defaultAppmapMode == 'OFF'}">OFF — No runtime traces collected</option>
-                    <option value="ON_RECOMMENDED"
-                            th:selected="${defaultAppmapMode == 'ON_RECOMMENDED'}">ON_RECOMMENDED — Traces for test cases most relevant to the bug</option>
-                    <option value="ON_ALL"
-                            th:selected="${defaultAppmapMode == 'ON_ALL'}">ON_ALL — Full trace collection for all test executions</option>
+                            th:selected="${defaultAppmapMode == 'OFF'}">OFF — No runtime traces shipped in the prompt</option>
+                    <option value="ON"
+                            th:selected="${defaultAppmapMode == 'ON' or defaultAppmapMode == 'ON_RECOMMENDED' or defaultAppmapMode == 'ON_ALL'}">ON — Ship runtime traces; selection routed by context provider</option>
                 </select>
             </label>
             <div class="button-row" style="margin:0.25em 0; gap:0.4em">
@@ -264,6 +262,23 @@
                     <span id="rlAppmapModeHint" style="margin-left:0.5em"></span>
                 </span>
             </div>
+            <p class="help-text" style="margin:0.25em 0 0.5em 0">
+                <strong>ON</strong> ensures real <code>.appmap.json</code> recordings
+                exist for the bug's module (generates via gradle test if missing,
+                takes 30-60s/module the first time) and bundles a selected
+                subset into the prompt. The selection is dispatched by context
+                provider:
+            </p>
+            <ul class="help-text" style="margin:0.25em 0 0.5em 1.2em">
+                <li><strong>AppMap Navie:</strong> Navie's own agentic loop picks
+                    which traces are relevant via vector search over the AppMap
+                    index (cached at <code>~/.ai-bench/navie-cache/</code>).
+                    Falls back to BM25 below when the Navie cache is empty.</li>
+                <li><strong>None / Oracle / BM25:</strong> harness BM25-ranks
+                    the available traces against the bug's problem statement
+                    and ships top 5. No ground-truth leak — the trace selection
+                    is independent of the curated <code>filesTouched</code> list.</li>
+            </ul>
             <script>
                 // AppMap modes are orthogonal to context provider. Navie
                 // SEARCHES existing traces, but it doesn't CREATE them —

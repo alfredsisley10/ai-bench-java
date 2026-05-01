@@ -400,11 +400,21 @@ class BenchmarkRunService(
         // Hoisted out of the phase block so each seed's audit can reference
         // the inventory (cache key, paths, generated/reused, synthetic).
         var traceInv: AppMapTraceManager.TraceInventory? = null
-        if (run.appmapMode != "OFF") {
+        // appmapMode used to be a tri-state (OFF / ON_RECOMMENDED / ON_ALL)
+        // where the *mode* picked which traces to bundle. Now it's a
+        // simple "ON" gate ("collapsedMode == ON" below); the actual
+        // selection of which traces to ship is dispatched at prompt-
+        // build time by ContextProvider.selectTracesForBug -- Navie
+        // ctx uses Navie's own picks, every other ctx uses BM25 over
+        // the available traces. ON_RECOMMENDED + ON_ALL incoming
+        // values are folded to ON for compatibility with older runs.
+        val collapsedMode =
+            if (run.appmapMode.equals("OFF", ignoreCase = true)) "OFF" else "ON"
+        if (collapsedMode == "ON") {
             phase(run, "collect-traces",
                 "Ensuring AppMap traces (mode=${run.appmapMode}) — checking shared cache…")
             val bug = bugCatalog.getBug(run.issueId)
-            val inv = traceManager.ensureTracesExist(run.appmapMode, bug) { msg ->
+            val inv = traceManager.ensureTracesExist(collapsedMode, bug) { msg ->
                 entry(run, Category.TRACE, msg)
             }
             traceInv = inv
@@ -841,7 +851,8 @@ class BenchmarkRunService(
         // is capped at TRACE_BODY_CAP chars so a single huge AppMap
         // (Layer C real recordings can hit MB) doesn't blow the prompt
         // window; aggregate across all traces is also bounded.
-        val tracesBlock = buildTracesBlock(traceInv, run.appmapMode)
+        val tracesBlock = buildTracesBlock(traceInv, run.appmapMode,
+            bug, run.contextProvider)
 
         val userPrompt = """
             Issue ${run.issueId}: ${run.issueTitle}
@@ -869,18 +880,39 @@ class BenchmarkRunService(
 
     private fun buildTracesBlock(
         inv: AppMapTraceManager.TraceInventory?,
-        mode: String
+        mode: String,
+        bug: BugCatalog.BugMetadata?,
+        contextProviderId: String
     ): String {
-        if (inv == null || inv.tracePaths.isEmpty() || mode == "OFF") return ""
+        if (inv == null || inv.tracePaths.isEmpty() ||
+            mode.equals("OFF", ignoreCase = true) || bug == null) return ""
+        // Trace SELECTION is dispatched by context provider:
+        //   - appmap-navie: traces Navie itself referenced (cache HIT)
+        //                   or BM25 fallback when cache is empty.
+        //   - any other:    BM25 over all available traces against the
+        //                   bug's problem statement.
+        // The harness used to ship every trace in [inv.tracePaths]
+        // capped only by the aggregate-byte budget; the targeted
+        // selection here means the LLM's prompt actually has a chance
+        // of staying focused on the bug at hand instead of getting
+        // lost in 90+ unrelated trace bodies.
+        val selection = contextProvider.selectTracesForBug(
+            bug = bug,
+            contextProvider = contextProviderId,
+            availableTraces = inv.tracePaths,
+            k = 5
+        )
+        if (selection.files.isEmpty()) return ""
         val sb = StringBuilder()
         sb.append("\n\nAppMap traces (recorded at runtime — call graphs / SQL / HTTP "
             + "captured while running the failing test and neighbors). "
-            + "Mode=").append(mode).append(", source=")
+            + "Selection: ").append(selection.method).append(" (")
+            .append(selection.rationale).append("); source=")
             .append(if (inv.synthetic) "synthetic stub (Layer B)" else "real recording")
             .append(":\n\n")
         var aggregate = 0
         var includedCount = 0
-        for (f in inv.tracePaths) {
+        for (f in selection.files) {
             val raw = runCatching { f.readText() }.getOrElse { e ->
                 "[unable to read trace ${f.name}: ${e.message}]"
             }
@@ -889,10 +921,8 @@ class BenchmarkRunService(
                     "\n\n[... truncated ${raw.length - TRACE_BODY_CAP} chars ...]\n"
                 else raw
             val piece = "Trace: ${f.nameWithoutExtension}\n```json\n$clipped\n```\n\n"
-            // Stop adding once the aggregate cap is hit; remaining traces
-            // are noted so the audit page still shows them as "available".
             if (aggregate + piece.length > TRACE_AGGREGATE_CAP && includedCount > 0) {
-                val skipped = inv.tracePaths.size - includedCount
+                val skipped = selection.files.size - includedCount
                 sb.append("[... ${skipped} additional trace(s) omitted to stay under "
                     + "${TRACE_AGGREGATE_CAP} chars; see /results/{run}/seed/{n}/audit "
                     + "for the full list]\n")

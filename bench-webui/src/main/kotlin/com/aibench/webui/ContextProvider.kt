@@ -307,6 +307,124 @@ class ContextProvider(
         )
     }
 
+    /** Trace selection result: which `.appmap.json` files to bundle in
+     *  the prompt + how they were chosen. The audit-page rationale
+     *  shows the operator "Navie picked these" vs "BM25 ranked these",
+     *  so an ablation comparing context providers includes the
+     *  trace-selection method as a known variable. */
+    data class TraceSelection(
+        val files: List<File>,
+        val method: String,
+        val rationale: String
+    )
+
+    /** Pick which traces to ship in the prompt for [bug] under [contextProvider].
+     *  Routing:
+     *    - appmap-navie: use the trace paths Navie referenced during its
+     *      agentic loop (read out of the cache); falls back to BM25 when
+     *      the cache is missing or empty so the prompt still ships SOME
+     *      runtime context.
+     *    - none / oracle / bm25 / anything else: BM25-rank the available
+     *      .appmap.json files for the bug's module against the bug's
+     *      problem statement; ship top-k.
+     *  Returns an empty selection (zero files) when no traces exist on
+     *  disk for the bug's module -- the operator should generate via
+     *  /admin/appmap-traces in that case. */
+    fun selectTracesForBug(
+        bug: BugCatalog.BugMetadata,
+        contextProvider: String,
+        availableTraces: List<File>,
+        k: Int = 5
+    ): TraceSelection {
+        if (availableTraces.isEmpty()) {
+            return TraceSelection(emptyList(), "none",
+                "no .appmap.json traces available for module '${bug.module}' " +
+                    "-- generate via /admin/appmap-traces")
+        }
+        if (contextProvider == "appmap-navie") {
+            // Navie cache holds repo-relative paths it referenced; map
+            // back to the actual File set we have on disk via name match.
+            val cached = navieCache.get(bug)
+            if (cached != null && cached.tracesIdentified.isNotEmpty()) {
+                val pickedNames = cached.tracesIdentified
+                    .map { it.substringAfterLast('/') }.toSet()
+                val matched = availableTraces.filter { it.name in pickedNames }
+                if (matched.isNotEmpty()) {
+                    return TraceSelection(matched.take(k),
+                        "navie",
+                        "Navie cache HIT: " + matched.size + " of " +
+                            cached.tracesIdentified.size +
+                            " trajectory-referenced traces matched on-disk; capped at " + k)
+                }
+                // Cached but no name overlap -> fall through to BM25.
+            }
+            return bm25TraceSelection(bug, availableTraces, k,
+                noteWhy = "Navie cache miss/empty -- using BM25 fallback")
+        }
+        return bm25TraceSelection(bug, availableTraces, k, noteWhy = null)
+    }
+
+    /** TF-IDF rank over [traces] using the bug's title + problem statement
+     *  as the query. Same tokenizer as [bm25] so the file-side and
+     *  trace-side rankings stay comparable. Returns top-k. */
+    private fun bm25TraceSelection(
+        bug: BugCatalog.BugMetadata,
+        traces: List<File>,
+        k: Int,
+        noteWhy: String?
+    ): TraceSelection {
+        val queryTerms = tokenize(bug.problemStatement + " " + bug.title +
+            " " + bug.tags.joinToString(" "))
+            .filter { it.length >= 3 }.take(40).toSet().toList()
+        if (queryTerms.isEmpty()) {
+            return TraceSelection(traces.take(k), "bm25-fallback",
+                "empty query -- shipped first " + k + " traces unranked" +
+                    (if (noteWhy != null) " (" + noteWhy + ")" else ""))
+        }
+        // BM25 over trace JSON. Same k1/b as the source-file BM25;
+        // .appmap.json bodies are dense with method names + SQL +
+        // class refs, which usually overlap well with bug-statement
+        // terms.
+        val k1 = 1.2; val b = 0.75
+        val docTerms = HashMap<File, Map<String, Int>>(traces.size)
+        val df = HashMap<String, Int>()
+        for (f in traces) {
+            val toks = runCatching { tokenize(f.readText()) }.getOrDefault(emptyList())
+            val counts = toks.groupingBy { it }.eachCount()
+            docTerms[f] = counts
+            for (t in queryTerms) {
+                if (counts.containsKey(t)) df.merge(t, 1, Int::plus)
+            }
+        }
+        val n = traces.size.toDouble()
+        val avgdl = docTerms.values.sumOf { it.values.sum() }.toDouble() / n.coerceAtLeast(1.0)
+        data class Scored(val file: File, val score: Double)
+        val scored = docTerms.map { (f, counts) ->
+            val dl = counts.values.sum().toDouble()
+            var s = 0.0
+            for (q in queryTerms) {
+                val tf = counts[q] ?: continue
+                val nq = df[q] ?: continue
+                val idf = kotlin.math.ln((n - nq + 0.5) / (nq + 0.5) + 1.0)
+                s += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
+            }
+            Scored(f, s)
+        }.filter { it.score > 0 }.sortedByDescending { it.score }
+        val picked = scored.take(k).map { it.file }
+        val rationale = if (picked.isEmpty()) {
+            "BM25 found no overlap between bug terms and any trace -- shipped " +
+                "first " + k + " traces unranked"
+        } else {
+            "BM25 ranked top " + picked.size + " of " + traces.size + " traces" +
+                (if (noteWhy != null) " (" + noteWhy + ")" else "")
+        }
+        return TraceSelection(
+            files = if (picked.isNotEmpty()) picked else traces.take(k),
+            method = "bm25",
+            rationale = rationale
+        )
+    }
+
     /** Lowercased alphanumeric tokens, length >= 2. Splits on
      *  CamelCase + snake_case so e.g. "AchCutoffPolicy" produces
      *  "ach", "cutoff", "policy" alongside the joined form. */
