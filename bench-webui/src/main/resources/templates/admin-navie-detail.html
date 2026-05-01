@@ -16,6 +16,23 @@
     <section th:if="${activeIsLive}" style="margin:1em 0; padding:0.8em 1em;
             background:#fef9c3; border:1px solid #fde68a; border-radius:4px">
         <h2 style="margin-top:0">⟳ Live Navie precompute in flight</h2>
+        <p th:if="${active.liveRoundTripCount != null and medianRounds > 0}"
+           style="font-size:1.05em; margin:0.2em 0">
+            <strong>Completion request</strong>
+            <strong style="color:#0369a1" th:text="${active.liveRoundTripCount ?: 0}">0</strong>
+            of ~<strong th:text="${medianRounds}">0</strong> typical
+            (<strong th:text="${T(java.lang.Math).min(100, (active.liveRoundTripCount ?: 0) * 100 / medianRounds)} + '%'"
+                     th:style="${(active.liveRoundTripCount ?: 0) > medianRounds ? 'color:#b45309' : ''}">0%</strong>
+            <span class="help-text" th:if="${(active.liveRoundTripCount ?: 0) > medianRounds}">
+                — exceeds median; this bug may be unusually deep
+            </span>)
+        </p>
+        <p th:if="${active.liveRoundTripCount != null and medianRounds == 0}"
+           style="font-size:1.05em">
+            <strong>Completion request</strong>
+            <strong th:text="${active.liveRoundTripCount}">0</strong>
+            <span class="help-text">— no median yet (no cached precomputes for comparison)</span>
+        </p>
         <table>
             <tr><th>Phase</th><td><code th:text="${active.phase}"></code></td></tr>
             <tr><th>Started</th><td th:text="${active.startedAt}"></td></tr>
@@ -25,6 +42,37 @@
             <tr><th>Last event</th>
                 <td th:text="${active.lastEventAt != null ? active.lastEventAt + ' (refresh page for delta)' : '(no events yet)'}"></td></tr>
         </table>
+
+        <!-- Per-round-trip table: shows what was actually sent for
+             completion N. Lets the operator validate "did Navie really
+             need to read AchCutoffPolicy.java twice?" without parsing
+             the raw trajectory. -->
+        <details th:if="${not #lists.isEmpty(liveRounds)}" open style="margin-top:0.8em">
+            <summary><strong>Per-completion request breakdown
+                (<span th:text="${#lists.size(liveRounds)}">0</span> so far)</strong></summary>
+            <table style="font-size:0.85em; margin-top:0.4em">
+                <thead>
+                <tr><th>#</th><th>Stage</th><th>Sent (role / preview)</th>
+                    <th class="num">Sent chars</th><th>Response preview</th>
+                    <th class="num">Resp chars</th><th class="num">Time</th></tr>
+                </thead>
+                <tbody>
+                <tr th:each="rt, iter : ${liveRounds}"
+                    th:style="${iter.last ? 'background:#fef3c7' : ''}">
+                    <td th:text="${rt.seq}">0</td>
+                    <td><code th:text="${rt.inferredStage}">?</code></td>
+                    <td>
+                        <span style="color:#6b7280; font-size:0.85em" th:text="${rt.sentRole}"></span>
+                        <code style="font-size:0.85em" th:text="${rt.sentPreview}"></code>
+                    </td>
+                    <td class="num" th:text="${#numbers.formatInteger(rt.sentChars, 1, 'COMMA')}"></td>
+                    <td><code style="font-size:0.85em" th:text="${rt.receivedPreview}"></code></td>
+                    <td class="num" th:text="${#numbers.formatInteger(rt.receivedChars, 1, 'COMMA')}"></td>
+                    <td class="num" th:text="${rt.durationMs / 1000} + 's'"></td>
+                </tr>
+                </tbody>
+            </table>
+        </details>
         <details th:if="${active.commandLine != null}" style="margin-top:0.6em">
             <summary><strong>appmap CLI command (copy-paste reproducible)</strong></summary>
             <pre style="background:#0f172a; color:#a5f3fc; padding:0.6em 1em;
@@ -73,6 +121,35 @@
         <ul style="font-family:monospace; font-size:0.85em">
             <li th:each="t : ${cached.tracesIdentified}" th:text="${t}"></li>
         </ul>
+
+        <h3 th:if="${not #lists.isEmpty(cached.roundTrips)}">
+            Per-completion request breakdown
+            (<span th:text="${#lists.size(cached.roundTrips)}">0</span> total)
+        </h3>
+        <details th:if="${not #lists.isEmpty(cached.roundTrips)}">
+            <summary class="help-text">expand to see what Navie sent on each LLM call</summary>
+            <table style="font-size:0.85em; margin-top:0.4em">
+                <thead>
+                <tr><th>#</th><th>Stage</th><th>Sent (role / preview)</th>
+                    <th class="num">Sent chars</th><th>Response preview</th>
+                    <th class="num">Resp chars</th><th class="num">Time</th></tr>
+                </thead>
+                <tbody>
+                <tr th:each="rt : ${cached.roundTrips}">
+                    <td th:text="${rt.seq}">0</td>
+                    <td><code th:text="${rt.inferredStage}">?</code></td>
+                    <td>
+                        <span style="color:#6b7280; font-size:0.85em" th:text="${rt.sentRole}"></span>
+                        <code style="font-size:0.85em" th:text="${rt.sentPreview}"></code>
+                    </td>
+                    <td class="num" th:text="${#numbers.formatInteger(rt.sentChars, 1, 'COMMA')}"></td>
+                    <td><code style="font-size:0.85em" th:text="${rt.receivedPreview}"></code></td>
+                    <td class="num" th:text="${#numbers.formatInteger(rt.receivedChars, 1, 'COMMA')}"></td>
+                    <td class="num" th:text="${rt.durationMs / 1000} + 's'"></td>
+                </tr>
+                </tbody>
+            </table>
+        </details>
 
         <h3>Full Navie answer (markdown)</h3>
         <pre style="background:#f9fafb; padding:0.8em 1em; max-height:40em; overflow:auto;

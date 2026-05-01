@@ -68,6 +68,12 @@
             <td th:text="${r.traceCount != null ? r.traceCount : '—'}"></td>
             <td>
                 <span th:if="${r.activeEvents != null}">
+                    <span th:if="${r.activeRoundTripCount != null}" style="display:block">
+                        <strong style="color:#0369a1"
+                                th:text="'completion ' + ${r.activeRoundTripCount}"></strong>
+                        <span th:if="${medianRounds > 0}" style="font-size:0.85em"
+                              th:text="' of ~' + ${medianRounds} + ' typical (' + ${T(java.lang.Math).min(100, r.activeRoundTripCount * 100 / medianRounds)} + '%)'"></span>
+                    </span>
                     <strong th:text="${r.activeEvents}">0</strong> events
                     <span th:if="${r.activeBytes != null}"
                           th:text="'(' + ${r.activeBytes / 1024} + ' KB)'"

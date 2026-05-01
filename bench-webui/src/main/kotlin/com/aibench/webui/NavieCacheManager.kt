@@ -49,6 +49,27 @@ class NavieCacheManager(
      *  on-disk cache itself survives. */
     private val activeJobs = ConcurrentHashMap<String, JobStatus>()
 
+    /** One LLM round-trip extracted from the appmap CLI's trajectory.
+     *  Pairs the most-recent 'sent' event(s) with the immediately
+     *  following 'received' so the operator can see WHAT Navie sent
+     *  Copilot for each completion -- not just "Requesting completion
+     *  / Received in 6.4s" with no idea why. */
+    data class RoundTrip @com.fasterxml.jackson.annotation.JsonCreator constructor(
+        @com.fasterxml.jackson.annotation.JsonProperty("seq") val seq: Int,
+        @com.fasterxml.jackson.annotation.JsonProperty("sentAtMs") val sentAtMs: Long,
+        @com.fasterxml.jackson.annotation.JsonProperty("receivedAtMs") val receivedAtMs: Long,
+        @com.fasterxml.jackson.annotation.JsonProperty("durationMs") val durationMs: Long,
+        @com.fasterxml.jackson.annotation.JsonProperty("sentRole") val sentRole: String,
+        @com.fasterxml.jackson.annotation.JsonProperty("sentPreview") val sentPreview: String,
+        @com.fasterxml.jackson.annotation.JsonProperty("sentChars") val sentChars: Int,
+        @com.fasterxml.jackson.annotation.JsonProperty("receivedPreview") val receivedPreview: String,
+        @com.fasterxml.jackson.annotation.JsonProperty("receivedChars") val receivedChars: Int,
+        /** Heuristic label of which Navie stage produced this call:
+         *  "classify" / "search" / "context-pack" / "answer" /
+         *  "tool-use" / "?". Inferred from the system-prompt content. */
+        @com.fasterxml.jackson.annotation.JsonProperty("inferredStage") val inferredStage: String
+    )
+
     data class NavieResult(
         val bugId: String,
         val breakCommit: String,
@@ -70,7 +91,13 @@ class NavieCacheManager(
          *  prompt context for the solver. */
         val answer: String,
         val trajectoryEventCount: Int,
-        val durationMs: Long
+        val durationMs: Long,
+        /** Per-LLM-call breakdown for inspection. Lets the operator
+         *  spot-check "did Navie really need 30 round-trips for a
+         *  3-line bug fix?" by seeing the actual sent/received
+         *  message previews and the inferred Navie stage. Empty for
+         *  legacy cache entries. */
+        val roundTrips: List<RoundTrip> = emptyList()
     )
 
     data class JobStatus(
@@ -104,7 +131,16 @@ class NavieCacheManager(
          *  spaces; quoting is approximate (good enough for an
          *  operator to copy-paste and rerun manually). Includes the
          *  Navie-relevant env vars prepended in `KEY=value` form. */
-        @Volatile var commandLine: String? = null
+        @Volatile var commandLine: String? = null,
+        /** Live round-trip count parsed from the in-flight trajectory.
+         *  Updated by the heartbeat thread along with trajectoryEventsLive
+         *  / lastEventAt. Lets the dashboard show "completion N of ~M
+         *  (Z%)" by comparing to the median across cached results. */
+        @Volatile var liveRoundTripCount: Int? = null,
+        /** Reference temp trajectory file for the per-round-trip
+         *  inspection table on the live detail page (parsed lazily by
+         *  the controller; null after the job ends). */
+        @Volatile var liveTrajectoryFile: java.io.File? = null
     )
 
     /** Cancel an in-flight precompute. Kills the appmap subprocess,
@@ -158,6 +194,34 @@ class NavieCacheManager(
         activeJobs.values.filter { it.endedAt == null }
             .sortedByDescending { it.startedAt }
 
+    /** Median round-trip count across all cached results in this
+     *  install. Used as a "typical N completions" denominator for the
+     *  live progress estimate ("8 of ~30 typical, ~27%"). Returns 0
+     *  when the cache is empty (the UI then just shows the raw
+     *  count without a percent). */
+    fun medianCachedRoundTripCount(): Int {
+        val counts = (cacheRoot.listFiles { f -> f.isFile && f.name.endsWith(".json") }
+            ?: emptyArray())
+            .mapNotNull {
+                runCatching { mapper.readValue(it, NavieResult::class.java).roundTrips.size }
+                    .getOrNull()?.takeIf { n -> n > 0 }
+            }
+            .sorted()
+        if (counts.isEmpty()) return 0
+        return counts[counts.size / 2]
+    }
+
+    /** Live round-trip table for the in-flight precompute -- parses
+     *  the temp trajectory file each call. Caller should already
+     *  guard on activeJob != null && job.endedAt == null. Returns
+     *  empty list when there's no live trajectory file (job in
+     *  preparing/parsing phase between subprocess events). */
+    fun liveRoundTrips(bugId: String): List<RoundTrip> {
+        val job = activeJobs[bugId] ?: return emptyList()
+        val tf = job.liveTrajectoryFile ?: return emptyList()
+        return parseRoundTrips(tf)
+    }
+
     /**
      * Run `appmap navie` for the bug, write the result to cache. Blocks
      * the caller; intended to be invoked from a background executor in
@@ -207,6 +271,7 @@ class NavieCacheManager(
                     .also { it.environment().putAll(env) }
                     .start()
                 job.process = proc
+                job.liveTrajectoryFile = trajFile
                 // Best-effort: kill the subprocess if the bench-webui
                 // JVM exits while this job is in flight. Without this
                 // hook the appmap CLI is orphaned to launchd/init and
@@ -228,10 +293,19 @@ class NavieCacheManager(
                             Thread.sleep(5000)
                             if (trajFile.isFile) {
                                 val sz = trajFile.length()
-                                val ec = trajFile.useLines { it.count() }
+                                // Single pass to count both events and
+                                // round-trips (received messages).
+                                var ec = 0; var rt = 0
+                                trajFile.useLines { lines ->
+                                    for (ln in lines) {
+                                        ec++
+                                        if (ln.contains("\"type\":\"received\"")) rt++
+                                    }
+                                }
                                 val mt = java.nio.file.Files.getLastModifiedTime(trajFile.toPath())
                                 job.trajectoryBytesLive = sz
                                 job.trajectoryEventsLive = ec
+                                job.liveRoundTripCount = rt
                                 job.lastEventAt = mt.toInstant()
                             }
                         } catch (_: InterruptedException) { break }
@@ -262,6 +336,7 @@ class NavieCacheManager(
                 job.phase = "parsing"
                 val files = parseFilesFromTrajectory(trajFile)
                 val traces = parseTracesFromTrajectory(trajFile)
+                val rounds = parseRoundTrips(trajFile)
                 val answer = if (answerFile.isFile) answerFile.readText() else ""
                 val eventCount = if (trajFile.isFile) trajFile.useLines { it.count() } else 0
                 val result = NavieResult(
@@ -274,7 +349,8 @@ class NavieCacheManager(
                     tracesIdentified = traces,
                     answer = answer,
                     trajectoryEventCount = eventCount,
-                    durationMs = ms
+                    durationMs = ms,
+                    roundTrips = rounds
                 )
                 cacheFile(bug.id, bug.breakCommit).writeText(mapper.writeValueAsString(result))
                 job.result = result
@@ -366,6 +442,76 @@ class NavieCacheManager(
             }
         }
         return seen.toList()
+    }
+
+    /** Walk the trajectory and pair each 'received' event with the
+     *  immediately-preceding contiguous block of 'sent' events into
+     *  a [RoundTrip]. Lets the detail page show "what was actually
+     *  sent for completion N" instead of just timings. The inferred-
+     *  stage classifier is heuristic -- looks at the most-recent
+     *  system-message content for keywords ("classify", "search",
+     *  "context", "answer") -- so it's a hint, not a guarantee. */
+    fun parseRoundTrips(trajFile: File): List<RoundTrip> {
+        if (!trajFile.isFile) return emptyList()
+        data class Sent(val ts: Long, val role: String, val content: String)
+        val pendingSent = mutableListOf<Sent>()
+        val out = mutableListOf<RoundTrip>()
+        var seq = 0
+        trajFile.useLines { lines ->
+            for (ln in lines) {
+                val node = runCatching { mapper.readTree(ln) }.getOrNull() ?: continue
+                val type = node.get("type")?.asText() ?: continue
+                val ts = parseTsToMs(node.get("timestamp")?.asText())
+                val msg = node.get("message")
+                val role = msg?.get("role")?.asText() ?: "?"
+                val content = (msg?.get("content")?.asText() ?: "")
+                if (type == "sent") {
+                    pendingSent.add(Sent(ts, role, content))
+                } else if (type == "received") {
+                    seq++
+                    val lastUserOrSystem = pendingSent.lastOrNull { it.role == "user" || it.role == "system" }
+                        ?: pendingSent.lastOrNull()
+                    val firstSentTs = pendingSent.firstOrNull()?.ts ?: ts
+                    val sentChars = pendingSent.sumOf { it.content.length }
+                    val sentPreview = lastUserOrSystem?.content?.take(280) ?: ""
+                    val sentRole = lastUserOrSystem?.role ?: "?"
+                    out += RoundTrip(
+                        seq = seq,
+                        sentAtMs = firstSentTs,
+                        receivedAtMs = ts,
+                        durationMs = (ts - firstSentTs).coerceAtLeast(0),
+                        sentRole = sentRole,
+                        sentPreview = sentPreview,
+                        sentChars = sentChars,
+                        receivedPreview = content.take(280),
+                        receivedChars = content.length,
+                        inferredStage = inferStage(pendingSent.map { it.content })
+                    )
+                    pendingSent.clear()
+                }
+            }
+        }
+        return out
+    }
+
+    private fun parseTsToMs(s: String?): Long {
+        if (s == null) return 0
+        return runCatching { Instant.parse(s).toEpochMilli() }.getOrDefault(0L)
+    }
+
+    private fun inferStage(sentContents: List<String>): String {
+        val all = sentContents.joinToString("\n").lowercase()
+        return when {
+            all.contains("classify") || all.contains("classification") -> "classify"
+            all.contains("search appmap") || all.contains("vector_search") ||
+                all.contains("search the appmap") -> "search"
+            all.contains("context.context") || all.contains("context-pack") ||
+                all.contains("read the file") || all.contains("file_contents") -> "context-pack"
+            all.contains("formulate the response") || all.contains("draft your answer") ||
+                all.contains("synthes") -> "answer"
+            all.contains("tool_call") || all.contains("function_call") -> "tool-use"
+            else -> "?"
+        }
     }
 
     /** Parse `.appmap.json` references out of the trajectory. Navie's

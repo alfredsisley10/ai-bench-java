@@ -55,7 +55,10 @@ class AdminNavieController(
          *  the list page in a collapsible <details> block so the
          *  operator can watch the live CLI without navigating to the
          *  per-bug detail page. */
-        val activeStdoutTail: String?
+        val activeStdoutTail: String?,
+        /** Live round-trip count from the in-flight precompute --
+         *  rendered alongside the median for progress estimation. */
+        val activeRoundTripCount: Int?
     )
 
     @GetMapping("/admin/navie")
@@ -80,13 +83,15 @@ class AdminNavieController(
                 secondsSinceLastEvent = if (isLive) active?.lastEventAt?.let {
                     java.time.Duration.between(it, now).seconds
                 } else null,
-                activeStdoutTail = if (isLive) active?.stdoutTail else null
+                activeStdoutTail = if (isLive) active?.stdoutTail else null,
+                activeRoundTripCount = if (isLive) active?.liveRoundTripCount else null
             )
         }
         model.addAttribute("rows", rows)
         model.addAttribute("cliPath", navieCache.locateCli()?.absolutePath
             ?: "(not found — see NavieCacheManager.locateCli for lookup order)")
         model.addAttribute("activeCount", rows.count { it.activePhase != null })
+        model.addAttribute("medianRounds", navieCache.medianCachedRoundTripCount())
         return "admin-navie"
     }
 
@@ -110,10 +115,15 @@ class AdminNavieController(
             ?: return "redirect:/admin/navie?err=unknown-bug"
         val cached = navieCache.get(bug)
         val active = navieCache.activeJob(bugId)
+        val isLive = active != null && active.endedAt == null
+        val liveRounds = if (isLive) navieCache.liveRoundTrips(bugId) else emptyList()
+        val median = navieCache.medianCachedRoundTripCount()
         model.addAttribute("bug", bug)
         model.addAttribute("cached", cached)
         model.addAttribute("active", active)
-        model.addAttribute("activeIsLive", active != null && active.endedAt == null)
+        model.addAttribute("activeIsLive", isLive)
+        model.addAttribute("liveRounds", liveRounds)
+        model.addAttribute("medianRounds", median)
         return "admin-navie-detail"
     }
 
