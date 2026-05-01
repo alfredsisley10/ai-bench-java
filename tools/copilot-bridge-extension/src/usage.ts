@@ -54,6 +54,76 @@ interface RawRecord {
     status?: CallStatus;
     /** Error message captured when status='failed'. */
     errorMessage?: string;
+    /**
+     * True when the failure looked like a Copilot/upstream quota or
+     * rate-limit exhaustion (vs. a generic transient error). Set by
+     * the quota-pattern matcher in markFailed so the budget endpoint
+     * can report "last quota-rejection seen at X" without re-parsing
+     * every error message on every poll.
+     */
+    quotaExceeded?: boolean;
+}
+
+/** Snapshot of the operator-configured token budget vs current usage.
+ *  Returned by /v1/budget so the harness can refuse to launch a batch
+ *  that would push the bridge over its monthly quota. */
+export interface BudgetSnapshot {
+    /** ISO timestamp of the start of the current accounting window. */
+    windowStartIso: string;
+    /** ISO timestamp of when the window resets (exclusive). */
+    windowEndIso: string;
+    /** "monthly" — only window currently supported. Reserved field
+     *  in case weekly / daily windows are added later. */
+    windowKind: 'monthly';
+    /** Operator-configured cap from VSCode settings; 0 means unlimited
+     *  (no enforcement, just reporting). */
+    budgetTokens: number;
+    /** Sum of prompt + completion tokens across every successful call
+     *  inside the current window. */
+    usedTokens: number;
+    /** Convenience: max(0, budgetTokens - usedTokens). 0 when budget=0
+     *  (treat the field as "unknown / unlimited" in that case). */
+    remainingTokens: number;
+    /** Sum of estimatedCostUsd across the same window — the same
+     *  per-model pricing the activity panel uses. */
+    estimatedCostUsd: number;
+    /** Most-recent ISO timestamp where a call failed with a quota-
+     *  exhaustion-shaped error, or null if none in the window. */
+    quotaExceededLastSeenIso: string | null;
+    /** How many quota-exhaustion failures inside the window. */
+    quotaExceededCount: number;
+}
+
+/**
+ * Heuristic: does this error message look like a Copilot/upstream
+ * quota or rate-limit exhaustion (vs. a generic transient error)?
+ *
+ * vscode.LanguageModelChat doesn't surface a typed error code we can
+ * key off, and the underlying ChatQuotaExceeded / ChatRateLimited
+ * names from the Copilot extension are private. The patterns below
+ * cover what bubbles up via LanguageModelError.message in practice:
+ * the Copilot extension stringifies its quota-exhaustion error as
+ * "You've reached your monthly limit..." or similar, and HTTP 429s
+ * get formatted with "rate limit" / "quota" / "exceeded" keywords.
+ *
+ * Conservative (false negatives over false positives): we'd rather
+ * miss flagging a true quota error than incorrectly mark a generic
+ * transient as quota-exhausted (which would make the budget endpoint
+ * lie about the user's real GitHub state).
+ */
+export function isQuotaExhaustionError(msg: string | undefined | null): boolean {
+    if (!msg) return false;
+    const m = msg.toLowerCase();
+    return (
+        m.includes('quota') ||
+        m.includes('rate limit') ||
+        m.includes('rate_limit') ||
+        m.includes('rate-limited') ||
+        m.includes('reached your monthly') ||
+        m.includes('monthly limit') ||
+        m.includes('exceeded') && (m.includes('quota') || m.includes('limit')) ||
+        m.includes('429')
+    );
 }
 
 /** Max chars retained per side for the click-to-expand preview. */
@@ -265,8 +335,45 @@ export class UsageTracker {
         if (rec == null) return;
         rec.status = 'failed';
         rec.errorMessage = (args.errorMessage || '').slice(0, 500);
+        rec.quotaExceeded = isQuotaExhaustionError(args.errorMessage);
         this.context.globalState.update(STATE_KEY, this.records);
         this.fireListeners();
+    }
+
+    /** Window-aware budget snapshot. budgetTokens=0 means the operator
+     *  hasn't configured a cap — usedTokens is still reported so the
+     *  harness can show consumption even without enforcement. */
+    budgetSnapshot(budgetTokens: number): BudgetSnapshot {
+        const now = new Date();
+        const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+        const windowEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+        let used = 0;
+        let cost = 0;
+        let qLast: number | null = null;
+        let qCount = 0;
+        const startMs = windowStart.getTime();
+        for (const r of this.records) {
+            if (r.ts < startMs) continue;
+            if (r.status === 'success' || r.status == null) {
+                used += r.promptTokens + r.completionTokens;
+                cost += r.estimatedCostUsd;
+            }
+            if (r.quotaExceeded) {
+                qCount++;
+                if (qLast == null || r.ts > qLast) qLast = r.ts;
+            }
+        }
+        return {
+            windowStartIso: windowStart.toISOString(),
+            windowEndIso: windowEnd.toISOString(),
+            windowKind: 'monthly',
+            budgetTokens: budgetTokens > 0 ? budgetTokens : 0,
+            usedTokens: used,
+            remainingTokens: budgetTokens > 0 ? Math.max(0, budgetTokens - used) : 0,
+            estimatedCostUsd: cost,
+            quotaExceededLastSeenIso: qLast != null ? new Date(qLast).toISOString() : null,
+            quotaExceededCount: qCount,
+        };
     }
 
     private findByReqId(reqId: string): RawRecord | null {

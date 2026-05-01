@@ -10,7 +10,8 @@ import org.springframework.web.bind.annotation.RequestParam
 @Controller
 class RunLauncherController(
     private val registeredModelsRegistry: RegisteredModelsRegistry,
-    private val benchmarkRuns: BenchmarkRunService
+    private val benchmarkRuns: BenchmarkRunService,
+    private val bridgeBudget: BridgeBudgetService
 ) {
 
     // Built-in OmniBank issue titles. Mirrors DemoController.demoIssues
@@ -104,6 +105,13 @@ class RunLauncherController(
         // want once they've confirmed the basic chain works.
         model.addAttribute("defaultAppmapMode", "OFF")
         model.addAttribute("defaultSeeds", 1)
+
+        // Bridge token-budget snapshot for the launcher's "you have X
+        // tokens remaining this month" tile. Null when the bridge is
+        // offline -- the template renders a "bridge offline" hint
+        // instead, since the harness can still launch (it'll fall back
+        // to simulated tokens).
+        model.addAttribute("budgetSnapshot", bridgeBudget.snapshot())
 
         return "run-launcher"
     }

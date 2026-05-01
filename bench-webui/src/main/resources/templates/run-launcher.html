@@ -282,6 +282,51 @@
              clicking the button so a stray "select all" doesn't queue
              100 runs by surprise. Sits flush above the Launch button
              so it's the last thing seen before the click. -->
+        <!-- Bridge token-budget tile. Pulled from the Copilot bridge's
+             /v1/budget endpoint via BridgeBudgetService (15s cached).
+             Lets the operator see "I have N tokens left this month"
+             before kicking off a batch. Renders an offline hint when
+             the bridge isn't reachable so the launcher still works. -->
+        <div th:if="${budgetSnapshot != null}"
+             style="margin:0.75em 0; padding:0.5em 0.9em; border:1px solid #cbd5e1;
+                    border-radius:4px; background:#f9fafb; font-size:0.9em">
+            <strong>Bridge token budget</strong>
+            <span class="help-text">— this calendar month, from /v1/budget</span>
+            <div style="display:flex; flex-wrap:wrap; gap:0.4em 1.4em; margin-top:0.2em">
+                <span>used:
+                    <strong th:text="${#numbers.formatInteger(budgetSnapshot.usedTokens, 1, 'COMMA')}">0</strong>
+                    tokens
+                    (~$<span th:text="${#numbers.formatDecimal(budgetSnapshot.estimatedCostUsd, 1, 'COMMA', 2, 'POINT')}">0.00</span>)
+                </span>
+                <span th:if="${budgetSnapshot.budgetTokens > 0}">
+                    cap:
+                    <strong th:text="${#numbers.formatInteger(budgetSnapshot.budgetTokens, 1, 'COMMA')}">0</strong>
+                </span>
+                <span th:if="${budgetSnapshot.budgetTokens > 0}">
+                    remaining:
+                    <strong th:style="${budgetSnapshot.remainingTokens &lt;= 0 ? 'color:#b91c1c' :
+                                       (budgetSnapshot.remainingTokens &lt; budgetSnapshot.budgetTokens / 10 ? 'color:#b45309' : 'color:#16a34a')}"
+                            th:text="${#numbers.formatInteger(budgetSnapshot.remainingTokens, 1, 'COMMA')}">0</strong>
+                </span>
+                <span th:if="${budgetSnapshot.quotaExceededCount > 0}" style="color:#b91c1c">
+                    ⚠ <strong th:text="${budgetSnapshot.quotaExceededCount}">0</strong>
+                    quota-rejection(s); last:
+                    <span th:text="${budgetSnapshot.quotaExceededLastSeenIso}"></span>
+                </span>
+                <span th:if="${budgetSnapshot.budgetTokens == 0}" class="help-text">
+                    (no cap configured —
+                    set <code>aiBench.copilotBridge.monthlyTokenBudget</code> in VSCode settings)
+                </span>
+            </div>
+        </div>
+        <div th:unless="${budgetSnapshot != null}"
+             style="margin:0.75em 0; padding:0.5em 0.9em; border:1px dashed #cbd5e1;
+                    border-radius:4px; background:#f9fafb; font-size:0.9em; color:#6b7280">
+            Bridge token-budget tile unavailable — VSCode Copilot bridge
+            isn't reachable on <code>127.0.0.1:11434</code>. Launches
+            still work but token usage won't be tracked.
+        </div>
+
         <div id="launchSummary"
              style="margin:0.75em 0; padding:0.6em 0.9em; border:1px solid #cbd5e1;
                     border-radius:4px; background:#f8fafc">

@@ -2,7 +2,7 @@
   "name": "copilot-bridge",
   "displayName": "ai-bench Copilot Bridge",
   "description": "Exposes the user's GitHub Copilot chat entitlement over a TCP localhost endpoint (and an optional OpenAI-compatible HTTP endpoint), with a usage-stats dashboard.",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "publisher": "ai-bench",
   "license": "MIT",
   "icon": "icon.png",
@@ -82,6 +82,11 @@
           "type": "boolean",
           "default": false,
           "description": "Require Bearer-token auth on the OpenAI endpoint. Default false — when bound to loopback (default), an unauthenticated endpoint is safe. Always true in effect when bound off-loopback."
+        },
+        "aiBench.copilotBridge.monthlyTokenBudget": {
+          "type": "number",
+          "default": 0,
+          "description": "Monthly token cap (prompt + completion across all calls). 0 = no enforcement, just reporting. The /v1/budget endpoint reports usedTokens regardless; the bench-webui benchmark controller can refuse to launch a batch when this would be exceeded."
         }
       }
     }

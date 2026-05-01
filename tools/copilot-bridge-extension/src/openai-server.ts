@@ -177,6 +177,22 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
             // Used by the webview's "View full prompt" button AND by
             // the bench-webui / claude-code agents that want to verify
             // exactly what reached Copilot — without parsing webview HTML.
+            // Token-budget snapshot for the current calendar month. The
+            // benchmark controller polls this before launching a batch
+            // so it can refuse / warn when the projected token spend
+            // would push us past the operator-configured cap. Cap is
+            // read from VSCode settings:
+            //     aiBench.copilotBridge.monthlyTokenBudget
+            // 0 (default) means "no cap" -- the endpoint still returns
+            // usedTokens so consumption is visible without enforcement.
+            if (req.method === 'GET' &&
+                (url.pathname === '/v1/budget' || url.pathname === '/budget')) {
+                const cfg = vscode.workspace.getConfiguration('aiBench.copilotBridge');
+                const budget = Number(cfg.get('monthlyTokenBudget') ?? 0);
+                return send(res, 200, args.tracker.budgetSnapshot(
+                    Number.isFinite(budget) && budget > 0 ? budget : 0));
+            }
+
             if (req.method === 'GET' &&
                 (url.pathname === '/v1/activity/full' || url.pathname === '/activity/full')) {
                 const wanted = url.searchParams.get('ts');
