@@ -17,9 +17,10 @@ hiddenTest:
   file: lending-corporate/src/test/java/com/omnibank/lending/corporate/api/LoanStatusTest.java
 
 problemStatement: |
-  LoanStatus.canTransitionTo(APPROVED → ACTIVE) currently returns true but
-  should return false — a loan must pass through FUNDED first so the
-  disbursement posting is recorded. Remove the illegal transition.
+  The loan state machine allows a direct transition from APPROVED to ACTIVE,
+  but this path is illegal — a loan must pass through FUNDED so the
+  disbursement posting is recorded before activation. The APPROVED → ACTIVE
+  transition must be rejected as an invalid state change.
 
 appmap:
   recommendedTests:

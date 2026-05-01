@@ -17,6 +17,8 @@ hiddenTest:
   file: shared-domain/src/test/java/com/omnibank/shared/domain/PercentTest.java
 
 problemStatement: |
-  Percent.of(Money) applies a BigDecimal multiplier then delegates to
-  Money.times, which re-rounds to the currency scale. An extra .setScale(10)
-  call left over from debugging breaks the final-scale guarantee. Remove it.
+  Applying a percentage to a monetary amount produces a result with 10 decimal
+  places instead of the currency's minor-unit scale. An extra `.setScale(10)`
+  call left over from debugging is applied before the final rounding step,
+  overriding the currency-scale guarantee. The stray scale call must be
+  removed.

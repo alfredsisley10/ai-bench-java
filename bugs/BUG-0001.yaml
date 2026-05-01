@@ -21,8 +21,10 @@ problemStatement: |
   Customers report that ACH submissions made exactly at the published 4:45 PM
   ET same-day final cutoff are sometimes accepted into the same-day window and
   sometimes rejected. The intended semantic is "on or after 16:45:00.000 ET"
-  must miss the same-day window. Fix AchCutoffPolicy.isBeforeFinalSameDayCutoff
-  so the comparison is strictly before (exclusive on cutoff).
+  must miss the same-day window. The boundary-instant comparison uses a
+  strictly-less-than operator instead of less-than-or-equal, so a submission
+  timestamped at exactly 16:45:00.000 ET passes the filter when it should be
+  rejected.
 
 hints:
   - "Look at how the comparison operator interacts with the cutoff constant."
