@@ -116,19 +116,44 @@ class AppMapService(
     }
 
     fun load(traceId: String): TraceDetail? {
-        val relativePath = decodeId(traceId) ?: return null
-        val absolute = bankingApp.bankingAppDir.toPath().resolve(relativePath)
+        val decoded = decodeId(traceId) ?: return null
+        // The encoded id can be either:
+        //   * a path relative to banking-app/ (legacy form for traces
+        //     in banking-app/**/tmp/appmap)
+        //   * an absolute path (new form for traces in the ai-bench
+        //     trace cache at ~/.ai-bench/appmap-traces). Path.resolve
+        //     trivially returns the given path unchanged when it's
+        //     already absolute.
+        val absolute = bankingApp.bankingAppDir.toPath().resolve(decoded)
         if (!Files.isRegularFile(absolute)) return null
-        // Forward-slash form — Windows paths use "\" so the literal
-        // "tmp/appmap" substring would never match without normalization.
-        if (!absolute.toFile().invariantSeparatorsPath.contains("tmp/appmap")) return null // path-traversal guard
-        val summary = runCatching { summarize(absolute, bankingApp.bankingAppDir.toPath()) }
+        // Path-traversal guard: the resolved absolute path MUST sit
+        // inside one of the allowed roots. Forward-slash normalization
+        // keeps the substring check working on Windows.
+        val absInv = absolute.toFile().invariantSeparatorsPath
+        val cacheRootInv = aiBenchTraceCacheRoot.invariantSeparatorsPath
+        val isInBankingApp = absInv.contains("tmp/appmap")
+        val isInCacheRoot = absInv.startsWith(cacheRootInv + "/")
+        if (!isInBankingApp && !isInCacheRoot) return null
+        // Pick the matching root so summarize() produces a clean
+        // relative path like `b39552ee/ON_RECOMMENDED/junit/X.json`
+        // rather than a tangle of `..` segments.
+        val rootForSummary = if (isInCacheRoot) aiBenchTraceCacheRoot.toPath()
+            else bankingApp.bankingAppDir.toPath()
+        val summary = runCatching { summarize(absolute, rootForSummary) }
             .getOrNull() ?: return null
         val root = mapper.readTree(absolute.toFile())
         val roots = buildCallTree(root.path("events"), root.path("classMap"))
         val flat = mutableListOf<FlatNode>()
         for (r in roots) flatten(r, 0, flat)
         return TraceDetail(summary, roots, flat)
+    }
+
+    /** Second allowed root for trace files: the ai-bench shared trace
+     *  cache populated by AppMapTraceManager. Resolved lazily and
+     *  canonicalized so the path-traversal substring check is exact. */
+    private val aiBenchTraceCacheRoot: java.io.File by lazy {
+        java.io.File(System.getProperty("user.home"), ".ai-bench/appmap-traces")
+            .canonicalFile
     }
 
     private fun flatten(node: CallNode, depth: Int, out: MutableList<FlatNode>) {

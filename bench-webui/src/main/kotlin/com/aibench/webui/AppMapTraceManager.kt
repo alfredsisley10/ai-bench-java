@@ -5,7 +5,9 @@ import org.springframework.stereotype.Component
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.channels.FileChannel
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Generates AppMap traces once and reuses them across benchmark runs.
@@ -44,6 +46,23 @@ import java.util.concurrent.TimeUnit
 class AppMapTraceManager(private val bankingApp: BankingAppManager) {
 
     private val log = LoggerFactory.getLogger(AppMapTraceManager::class.java)
+
+    /**
+     * In-process per-(sha,mode) mutex map. FileChannel.lock() is only
+     * exclusive across PROCESSES — within the same JVM, a second thread
+     * acquiring a lock on the same file path throws
+     * OverlappingFileLockException immediately rather than blocking. So
+     * when 12 benchmarks launched simultaneously and all wanted the
+     * same (sha, ON_RECOMMENDED) lock, exactly 1 succeeded and 6
+     * threads ERRORED with that exception. The fix: serialize first
+     * on a JVM-local ReentrantLock keyed by (sha,mode), then take the
+     * file-channel lock for cross-process coordination. Inside the
+     * JVM lock the file-channel call sees only one contender at a time
+     * and never trips the overlap check.
+     */
+    private val inProcessLocks = ConcurrentHashMap<String, ReentrantLock>()
+    private fun jvmLockFor(key: String): ReentrantLock =
+        inProcessLocks.computeIfAbsent(key) { ReentrantLock() }
 
     /** What `ensureTracesExist` returned: where the traces live and
      *  whether this call did the work or hit the cache. */
@@ -84,33 +103,50 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         val lockFile = File(rootDir, ".$sha-$mode.lock")
         rootDir.mkdirs()
 
-        // FileChannel.lock blocks; the second concurrent caller waits
-        // here while the first records, then sees the marker and
-        // returns the cached inventory without re-generating.
-        RandomAccessFile(lockFile, "rw").use { raf ->
-            val ch = raf.channel
-            val held = ch.lock()
-            try {
-                if (markerFile.isFile) {
-                    val files = listTraceFiles(cacheDir)
-                    log("AppMap mode=$mode: cache HIT @ $sha (${files.size} trace(s) — reused).")
-                    return TraceInventory(mode, sha, cacheDir, files, generated = false)
-                }
-                log("AppMap mode=$mode: cache MISS @ $sha — recording (synthetic stub) …")
-                cacheDir.mkdirs()
-                val generated = generateSynthetic(mode, bug, cacheDir, sha, log)
-                markerFile.writeText(buildString {
-                    appendLine("generatedAt=${java.time.Instant.now()}")
-                    appendLine("mode=$mode")
-                    appendLine("sha=$sha")
-                    appendLine("count=${generated.size}")
-                    appendLine("synthetic=true")
-                })
-                log("AppMap mode=$mode: recorded ${generated.size} synthetic trace(s) at $cacheDir.")
-                return TraceInventory(mode, sha, cacheDir, generated, generated = true)
-            } finally {
-                held.release()
+        // First serialize all in-JVM contenders on a ReentrantLock —
+        // see jvmLockFor doc. Only one in-JVM thread enters the
+        // file-channel section at a time, so OverlappingFileLockException
+        // can't fire. The file lock then handles cross-JVM coordination
+        // (a second bench-webui process on the same machine, etc).
+        val jvmLock = jvmLockFor("$sha/$mode")
+        jvmLock.lock()
+        try {
+            // Re-check the marker under the JVM lock — by the time we
+            // got here, a sibling thread that beat us into the section
+            // may have already populated the cache. Common case in a
+            // multi-launch matrix: 11 of 12 threads hit this fast path.
+            if (markerFile.isFile) {
+                val files = listTraceFiles(cacheDir)
+                log("AppMap mode=$mode: cache HIT @ $sha (${files.size} trace(s) — reused).")
+                return TraceInventory(mode, sha, cacheDir, files, generated = false)
             }
+            RandomAccessFile(lockFile, "rw").use { raf ->
+                val ch = raf.channel
+                val held = ch.lock()
+                try {
+                    if (markerFile.isFile) {
+                        val files = listTraceFiles(cacheDir)
+                        log("AppMap mode=$mode: cache HIT @ $sha (${files.size} trace(s) — reused).")
+                        return TraceInventory(mode, sha, cacheDir, files, generated = false)
+                    }
+                    log("AppMap mode=$mode: cache MISS @ $sha — recording (synthetic stub) …")
+                    cacheDir.mkdirs()
+                    val generated = generateSynthetic(mode, bug, cacheDir, sha, log)
+                    markerFile.writeText(buildString {
+                        appendLine("generatedAt=${java.time.Instant.now()}")
+                        appendLine("mode=$mode")
+                        appendLine("sha=$sha")
+                        appendLine("count=${generated.size}")
+                        appendLine("synthetic=true")
+                    })
+                    log("AppMap mode=$mode: recorded ${generated.size} synthetic trace(s) at $cacheDir.")
+                    return TraceInventory(mode, sha, cacheDir, generated, generated = true)
+                } finally {
+                    held.release()
+                }
+            }
+        } finally {
+            jvmLock.unlock()
         }
     }
 
@@ -145,12 +181,25 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         return testNames.map { name ->
             val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(180)
             val file = File(junitDir, "$safe.appmap.json")
-            // AppMap files are JSON with a 'metadata' block + 'classMap'
-            // + 'events' arrays. The stub here keeps the shape so a
-            // reader can parse it; bodies are empty until Layer C wires
-            // real recording. Identifiable as synthetic via the
-            // 'recorder' field so a downstream Navie call can refuse to
-            // search synthetic-only caches if desired.
+            // AppMap-format JSON. Earlier the stub had empty events +
+            // empty classMap, which left the embedded /demo/appmap/view
+            // page rendering "0 events" and the Vue-based AppMap
+            // component complaining "no $store found / no child
+            // component found" — the user's "viewer fails to load"
+            // symptom. Layer-B stubs now ship a minimal but valid
+            // call/return pair plus a classMap entry mirroring it so
+            // the viewer renders ONE non-trivial row. The defined_class
+            // / method_id come from the bug's hiddenTest + filesTouched
+            // when known so the synthetic call path at least references
+            // real code; otherwise we fall back to placeholder names
+            // that still parse.
+            val hiddenClass = bug?.hiddenTestClass ?: "com.example.placeholder.Test"
+            val hiddenMethod = bug?.hiddenTestMethod ?: "synthetic_stub_method"
+            val targetClass = bug?.filesTouched?.firstOrNull()
+                ?.removeSuffix(".java")?.substringAfterLast('/') ?: "PlaceholderImpl"
+            val targetPath = bug?.filesTouched?.firstOrNull() ?: "src/main/java/Placeholder.java"
+            val pkg = hiddenClass.substringBeforeLast('.', "com.example")
+            val testCls = hiddenClass.substringAfterLast('.')
             file.writeText(
                 """
                 {
@@ -163,8 +212,75 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
                     "recorder": {"name": "ai-bench-trace-stub", "type": "synthetic"},
                     "language": {"name": "java"}
                   },
-                  "classMap": [],
-                  "events": []
+                  "classMap": [
+                    {
+                      "name": "$pkg",
+                      "type": "package",
+                      "children": [
+                        {
+                          "name": "$testCls",
+                          "type": "class",
+                          "children": [
+                            {
+                              "name": "$hiddenMethod",
+                              "type": "function",
+                              "static": false,
+                              "location": "$targetPath:1"
+                            }
+                          ]
+                        },
+                        {
+                          "name": "$targetClass",
+                          "type": "class",
+                          "children": [
+                            {
+                              "name": "validate",
+                              "type": "function",
+                              "static": false,
+                              "location": "$targetPath:1"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ],
+                  "events": [
+                    {
+                      "id": 1,
+                      "event": "call",
+                      "thread_id": 1,
+                      "defined_class": "$hiddenClass",
+                      "method_id": "$hiddenMethod",
+                      "static": false,
+                      "path": "$targetPath",
+                      "lineno": 1
+                    },
+                    {
+                      "id": 2,
+                      "event": "call",
+                      "thread_id": 1,
+                      "parent_id": 1,
+                      "defined_class": "$pkg.$targetClass",
+                      "method_id": "validate",
+                      "static": false,
+                      "path": "$targetPath",
+                      "lineno": 1
+                    },
+                    {
+                      "id": 3,
+                      "event": "return",
+                      "thread_id": 1,
+                      "parent_id": 2,
+                      "elapsed": 0.001
+                    },
+                    {
+                      "id": 4,
+                      "event": "return",
+                      "thread_id": 1,
+                      "parent_id": 1,
+                      "elapsed": 0.002
+                    }
+                  ]
                 }
                 """.trimIndent()
             )

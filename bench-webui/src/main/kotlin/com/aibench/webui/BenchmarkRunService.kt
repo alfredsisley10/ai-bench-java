@@ -101,7 +101,13 @@ class BenchmarkRunService(
         val name: String,
         val path: String,
         val sizeBytes: Long,
-        val submittedToPrompt: Boolean
+        val submittedToPrompt: Boolean,
+        /** Base64-url-encoded absolute path. Audit page deep-links to
+         *  /demo/appmap/view?id=${viewerId} so the full embedded AppMap
+         *  viewer (sequence diagram + call tree) renders against the
+         *  cache trace just as it does for banking-app/**/tmp/appmap
+         *  traces. */
+        val viewerId: String
     )
 
     data class SeedAudit(
@@ -608,7 +614,14 @@ class BenchmarkRunService(
                         name = f.nameWithoutExtension,
                         path = f.absolutePath,
                         sizeBytes = f.length(),
-                        submittedToPrompt = i < tracesSubmitted
+                        submittedToPrompt = i < tracesSubmitted,
+                        // Same base64-url scheme AppMapService.encodeId
+                        // uses for banking-app traces — keeping it
+                        // identical means /demo/appmap/view's existing
+                        // controller can decode + load directly.
+                        viewerId = java.util.Base64.getUrlEncoder()
+                            .withoutPadding()
+                            .encodeToString(f.absolutePath.toByteArray(Charsets.UTF_8))
                     )
                 } ?: emptyList()
             )
