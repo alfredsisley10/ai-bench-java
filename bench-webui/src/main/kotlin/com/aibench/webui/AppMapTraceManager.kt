@@ -96,6 +96,18 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         if (mode == "OFF") {
             return TraceInventory(mode, "", null, emptyList(), generated = false)
         }
+        // Prefer real traces from banking-app/<module>/tmp/appmap/junit/
+        // if any exist for the bug's module — they're produced by the
+        // operator's `Generate traces` admin action and reflect the
+        // real test execution. Falls through to the synthetic-stub
+        // path below when no real traces are available.
+        val real = realTracesForBug(mode, bug)
+        if (real.isNotEmpty()) {
+            log("AppMap mode=$mode: using ${real.size} real recording(s) " +
+                "from banking-app/${bug?.module ?: "?"}/tmp/appmap/junit/.")
+            return TraceInventory(mode, headSha() ?: "unknown-sha", null,
+                real, generated = false, synthetic = false)
+        }
         val sha = headSha() ?: "unknown-sha"
         val rootDir = File(System.getProperty("user.home"), ".ai-bench/appmap-traces")
         val cacheDir = File(rootDir, "$sha/$mode")
@@ -286,6 +298,112 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
             )
             file
         }
+    }
+
+    // ---------------------- Real-trace surfacing -----------------------
+    //
+    // The synthetic-stub path above is the floor — it guarantees the
+    // bench has *something* to ship even on a fresh checkout. Real
+    // traces, written by `./gradlew :MODULE:test -Pappmap_enabled=true`,
+    // are vastly preferable: they're produced by actually running the
+    // module's JUnit tests under the AppMap Java agent, so the resulting
+    // .appmap.json files reflect the live call graph + SQL + HTTP path
+    // the bug touches. The admin page at /admin/appmap-traces lets the
+    // operator generate them per-module.
+
+    /** Map module name -> list of `*.appmap.json` files under
+     *  banking-app/<module>/tmp/appmap/junit/. Modules without any
+     *  recordings get an empty list rather than being omitted, so
+     *  the admin page can render every meaningful module + a "0 / N"
+     *  coverage cell. */
+    fun realTraceCoverage(modules: Collection<String>): Map<String, List<File>> {
+        val repo = runCatching { bankingApp.bankingAppDir }.getOrNull()
+            ?: return modules.associateWith { emptyList<File>() }
+        return modules.associateWith { module ->
+            val dir = File(repo, "$module/tmp/appmap/junit")
+            if (dir.isDirectory)
+                dir.listFiles { f -> f.isFile && f.name.endsWith(".appmap.json") }?.toList()
+                    ?: emptyList()
+            else emptyList()
+        }
+    }
+
+    /** ON_RECOMMENDED -> the bug's hidden-test trace + (best-effort)
+     *  one or two filesTouched-mentioning neighbors. ON_ALL -> every
+     *  trace under the bug's module. Empty when the bug has no module
+     *  or no real recordings exist for it yet. */
+    private fun realTracesForBug(mode: String, bug: BugCatalog.BugMetadata?): List<File> {
+        val module = bug?.module?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val all = realTraceCoverage(listOf(module))[module].orEmpty()
+        if (all.isEmpty()) return emptyList()
+        return when (mode) {
+            "ON_ALL" -> all
+            "ON_RECOMMENDED" -> {
+                val targetClass = bug.hiddenTestClass?.substringAfterLast('.')
+                val targetMethod = bug.hiddenTestMethod
+                val byClass = all.filter { f ->
+                    targetClass != null && f.name.contains(targetClass.replace('.', '_'))
+                }
+                val exact = if (targetMethod != null)
+                    byClass.firstOrNull { it.name.contains(targetMethod) } else null
+                val recommended = LinkedHashSet<File>().apply {
+                    exact?.let { add(it) }
+                    addAll(byClass.take(3))
+                }
+                if (recommended.isNotEmpty()) recommended.toList() else all.take(3)
+            }
+            else -> emptyList()
+        }
+    }
+
+    /** Result of a generateRealTraces invocation. */
+    data class GenerationResult(
+        val module: String,
+        val exitCode: Int,
+        val tracesAfter: Int,
+        val durationMs: Long,
+        val ok: Boolean,
+        val tail: String
+    )
+
+    /** Run gradle :MODULE:test under the AppMap agent and report what
+     *  was produced. --no-configuration-cache works around a known
+     *  incompatibility between AppMap plugin 1.2.0 and Gradle 9's
+     *  configuration cache (the plugin calls Task.project at execution
+     *  time, which the cache rejects). Caller is responsible for
+     *  off-thread invocation -- a single module run takes 30s-5min. */
+    fun generateRealTracesForModule(module: String): GenerationResult {
+        val repo = bankingApp.bankingAppDir
+        val started = System.currentTimeMillis()
+        val proc = ProcessBuilder(
+            File(repo, "gradlew").absolutePath,
+            ":$module:test",
+            "-Pappmap_enabled=true",
+            "--no-configuration-cache",
+            "--no-daemon",
+            "-q"
+        )
+            .directory(repo)
+            .redirectErrorStream(true)
+            .start()
+        val tail = StringBuilder()
+        proc.inputStream.bufferedReader().useLines { lines ->
+            for (ln in lines) {
+                if (tail.length < 8_000) tail.appendLine(ln)
+                log.debug("appmap-gen[{}]: {}", module, ln)
+            }
+        }
+        val exit = proc.waitFor()
+        val ms = System.currentTimeMillis() - started
+        val tracesAfter = realTraceCoverage(listOf(module))[module].orEmpty().size
+        return GenerationResult(
+            module = module,
+            exitCode = exit,
+            tracesAfter = tracesAfter,
+            durationMs = ms,
+            ok = exit == 0 && tracesAfter > 0,
+            tail = tail.takeLast(3000).toString()
+        )
     }
 
     /** Best-effort `git rev-parse --short HEAD` against the banking-app

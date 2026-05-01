@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Admin: AppMap traces', ~{::main})}">
+<body>
+<main>
+    <h1>AppMap trace coverage</h1>
+
+    <p>
+        With <code>appmapMode != OFF</code>, benchmarks ship runtime
+        traces alongside the source code so the LLM can see the call
+        graph the bug actually exercises. Real traces (under
+        <code>banking-app/&lt;module&gt;/tmp/appmap/junit/</code>) are
+        produced by running the module's JUnit suite under the AppMap
+        Java agent — they reflect the live execution path, not a
+        synthesized stub.
+    </p>
+    <p>
+        Without real traces, the harness falls back to synthetic JSON
+        stubs that parse correctly but don't carry useful runtime
+        information. Generating real traces is a one-time per-module
+        cost (30s–5min depending on suite size); subsequent benchmarks
+        pick up the cached <code>.appmap.json</code> files instantly.
+    </p>
+    <p style="font-size:0.9em; color:#555">
+        Banking-app totals:
+        <strong th:text="${totalTraces}">0</strong> traces /
+        <strong th:text="${totalTests}">0</strong> tests across the
+        modules below.
+        <span th:if="${activeCount > 0}" style="color:#b45309">
+            &nbsp;|&nbsp; <strong th:text="${activeCount}">0</strong> generation(s) in flight
+            — refresh to see updated status
+        </span>
+    </p>
+
+    <form th:action="@{/admin/appmap-traces/generate-all}" method="post"
+          style="margin:1em 0">
+        <button type="submit">Generate traces for all uncovered modules</button>
+    </form>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Module</th>
+            <th>Tests</th>
+            <th>Traces</th>
+            <th>Coverage</th>
+            <th>Status</th>
+            <th>Last duration</th>
+            <th>Action</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="r : ${rows}">
+            <td><code th:text="${r.module}"></code></td>
+            <td th:text="${r.testCount}"></td>
+            <td th:text="${r.traceCount}"></td>
+            <td>
+                <span th:if="${r.testCount > 0}"
+                      th:text="${#numbers.formatPercent(r.traceCount * 1.0 / r.testCount, 1, 0)}"></span>
+                <span th:if="${r.testCount == 0}">—</span>
+            </td>
+            <td>
+                <span th:if="${r.running}" style="color:#b45309">⟳ recording…</span>
+                <span th:if="${!r.running and r.traceCount > 0}" style="color:#16a34a">✓ ready</span>
+                <span th:if="${!r.running and r.traceCount == 0}" style="color:#6b7280">— empty</span>
+                <div th:if="${r.lastError != null}" style="color:#b91c1c; font-size:0.85em"
+                     th:text="${r.lastError}"></div>
+            </td>
+            <td style="font-size:0.85em"
+                th:text="${r.lastDurationMs != null ? r.lastDurationMs / 1000 + 's' : '—'}"></td>
+            <td>
+                <form th:action="@{/admin/appmap-traces/generate}" method="post"
+                      style="display:inline">
+                    <input type="hidden" name="module" th:value="${r.module}"/>
+                    <button type="submit" th:disabled="${r.running}"
+                            th:text="${r.traceCount > 0 ? 'Regenerate' : 'Generate'}">Generate</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <p style="margin-top:2em; font-size:0.85em; color:#555">
+        Generated-* modules (regional / channels / brands / swift / nacha)
+        are intentionally excluded — they hold ~970 auto-generated tests
+        that aren't useful for benchmarking. Add a module name to
+        <code>AdminTracesController.targetModules</code> if you need
+        coverage on something not listed.
+    </p>
+</main>
+</body>
+</html>
