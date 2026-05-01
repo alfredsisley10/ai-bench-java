@@ -2,7 +2,7 @@
   "name": "copilot-bridge",
   "displayName": "ai-bench Copilot Bridge",
   "description": "Exposes the user's GitHub Copilot chat entitlement over a TCP localhost endpoint (and an optional OpenAI-compatible HTTP endpoint), with a usage-stats dashboard.",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "publisher": "ai-bench",
   "license": "MIT",
   "icon": "icon.png",
@@ -75,8 +75,8 @@
         },
         "aiBench.copilotBridge.openAiAutoStart": {
           "type": "boolean",
-          "default": false,
-          "description": "Start the OpenAI-compatible endpoint automatically when VSCode launches."
+          "default": true,
+          "description": "Start the OpenAI-compatible endpoint automatically when VSCode launches. Default true so the bench-webui's launcher tile, /v1/budget, /v1/pricing, and Navie precompute work without an extra manual click each time VSCode boots; set to false if you want the endpoint dormant until you click Start."
         },
         "aiBench.copilotBridge.openAiAuthRequired": {
           "type": "boolean",
