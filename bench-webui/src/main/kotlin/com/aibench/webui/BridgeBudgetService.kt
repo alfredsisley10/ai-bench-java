@@ -1,5 +1,7 @@
 package com.aibench.webui
 
+import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -35,17 +37,20 @@ class BridgeBudgetService {
     private val cached = AtomicReference<Cached?>(null)
 
     /** Mirror of the bridge's BudgetSnapshot interface from usage.ts.
-     *  Field names match the JSON keys returned by /v1/budget. */
-    data class BudgetSnapshot(
-        val windowStartIso: String,
-        val windowEndIso: String,
-        val windowKind: String,
-        val budgetTokens: Long,
-        val usedTokens: Long,
-        val remainingTokens: Long,
-        val estimatedCostUsd: Double,
-        val quotaExceededLastSeenIso: String?,
-        val quotaExceededCount: Int
+     *  Field names match the JSON keys returned by /v1/budget.
+     *  @JsonCreator + @JsonProperty are required because we don't have
+     *  jackson-module-kotlin on the classpath -- without them Jackson
+     *  can't pick a constructor on a Kotlin data class. */
+    data class BudgetSnapshot @JsonCreator constructor(
+        @JsonProperty("windowStartIso") val windowStartIso: String,
+        @JsonProperty("windowEndIso") val windowEndIso: String,
+        @JsonProperty("windowKind") val windowKind: String,
+        @JsonProperty("budgetTokens") val budgetTokens: Long,
+        @JsonProperty("usedTokens") val usedTokens: Long,
+        @JsonProperty("remainingTokens") val remainingTokens: Long,
+        @JsonProperty("estimatedCostUsd") val estimatedCostUsd: Double,
+        @JsonProperty("quotaExceededLastSeenIso") val quotaExceededLastSeenIso: String?,
+        @JsonProperty("quotaExceededCount") val quotaExceededCount: Int
     )
 
     private data class Cached(val snapshot: BudgetSnapshot, val fetchedAt: Instant)
@@ -66,7 +71,7 @@ class BridgeBudgetService {
             return c.snapshot
         }
         return runCatching { fetchFromBridge() }
-            .onFailure { log.debug("budget fetch failed: {}", it.message) }
+            .onFailure { log.warn("budget fetch failed: {} ({})", it.message, it.javaClass.simpleName) }
             .getOrNull()
             ?.also { cached.set(Cached(it, now)) }
     }
