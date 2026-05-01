@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Admin: Navie cache', ~{::main})}">
+<body>
+<main>
+    <h1>AppMap Navie precompute cache</h1>
+
+    <p>
+        The <code>appmap-navie</code> context provider in Layer-C reads
+        from a per-bug cache populated by running the local
+        <code>appmap navie</code> CLI ahead of time. Without a cached
+        entry, the provider falls back to Oracle (the curated
+        <code>filesTouched</code> list) and the audit page rationale
+        notes the miss.
+    </p>
+    <p>
+        Each precompute fires a single Navie agentic run through the
+        Copilot bridge (model
+        <code th:text="${@environment.getProperty('APPMAP_NAVIE_MODEL', 'copilot-gpt-4-1')}">copilot-gpt-4-1</code>),
+        which can take 5-30 minutes per bug. Jobs run one at a time
+        (single-thread queue) since Navie monopolizes the bridge mutex
+        anyway.
+    </p>
+    <p style="font-size:0.9em; color:#555">
+        AppMap CLI: <code th:text="${cliPath}"></code>
+        <span th:if="${activeCount > 0}" style="color:#b45309">
+            &nbsp;|&nbsp; <strong th:text="${activeCount}">0</strong> precompute(s) in flight
+            — refresh to see updated status
+        </span>
+    </p>
+
+    <form th:action="@{/admin/navie/precompute-all}" method="post"
+          style="margin:1em 0">
+        <button type="submit">Precompute all uncached bugs</button>
+    </form>
+
+    <table>
+        <thead>
+        <tr>
+            <th>Bug</th>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Files</th>
+            <th>Last cached</th>
+            <th>Navie duration</th>
+            <th>Action</th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr th:each="r : ${rows}">
+            <td><code th:text="${r.id}"></code></td>
+            <td th:text="${r.title}"></td>
+            <td>
+                <span th:if="${r.activePhase != null}" style="color:#b45309"
+                      th:text="'⟳ ' + ${r.activePhase}"></span>
+                <span th:if="${r.activePhase == null and r.status == 'cached'}"
+                      style="color:#16a34a">✓ cached</span>
+                <span th:if="${r.activePhase == null and r.status == 'missing'}"
+                      style="color:#6b7280">— missing</span>
+                <div th:if="${r.activeError != null}" style="color:#b91c1c; font-size:0.85em">
+                    last error: <span th:text="${r.activeError}"></span>
+                </div>
+            </td>
+            <td th:text="${r.fileCount != null ? r.fileCount : '—'}"></td>
+            <td style="font-size:0.85em" th:text="${r.cachedAt != null ? r.cachedAt : '—'}"></td>
+            <td style="font-size:0.85em"
+                th:text="${r.durationMs != null ? r.durationMs / 1000 + 's' : '—'}"></td>
+            <td>
+                <form th:action="@{/admin/navie/precompute}" method="post"
+                      style="display:inline">
+                    <input type="hidden" name="bugId" th:value="${r.id}"/>
+                    <button type="submit" th:disabled="${r.activePhase != null}"
+                            th:text="${r.status == 'cached' ? 'Refresh' : 'Precompute'}">Precompute</button>
+                </form>
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+    <p style="margin-top:2em; font-size:0.85em; color:#555">
+        Cache files live at <code>~/.ai-bench/navie-cache/&lt;bug&gt;-&lt;sha&gt;.json</code>.
+        Stale entries (CLI version change, model change) are not
+        auto-invalidated — re-run precompute to refresh.
+    </p>
+</main>
+</body>
+</html>

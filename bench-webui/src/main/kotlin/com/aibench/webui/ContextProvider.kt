@@ -34,7 +34,8 @@ import java.io.File
 @Component
 class ContextProvider(
     private val bugCatalog: BugCatalog,
-    private val bankingApp: BankingAppManager
+    private val bankingApp: BankingAppManager,
+    private val navieCache: NavieCacheManager
 ) {
     private val log = LoggerFactory.getLogger(ContextProvider::class.java)
 
@@ -90,23 +91,16 @@ class ContextProvider(
                     "(curated filesTouched). Multi-turn tool-use loop is on the roadmap.",
                 fellBack = true
             )
-            // Layer-B AppMap-Navie wiring: until the full Navie CLI
-            // integration lands (Layer C — vector-search the AppMap
-            // trace cache + emit a pruned source set), Navie context
-            // ships Oracle's curated filesTouched as the source slice.
-            // The actual AppMap traces get embedded in the prompt
-            // separately by buildSolverPrompt's tracesBlock, so a
-            // (navie + ON_RECOMMENDED) run still gives the model the
-            // bug source AND the runtime traces — which is what
-            // operators expect when they pick Navie.
-            "appmap-navie" -> oracle(bug, providerId).copy(
-                requestedProvider = providerId,
-                rationale = "Layer-B Navie: source selection delegated to Oracle " +
-                    "(curated filesTouched). AppMap traces from the shared cache " +
-                    "are embedded in the user prompt regardless. Layer C will " +
-                    "replace this with real Navie CLI vector retrieval.",
-                fellBack = true
-            )
+            // Layer-C AppMap-Navie: read from the precomputed cache that
+            // NavieCacheManager populates by running the appmap CLI
+            // ahead of the benchmark. On cache miss we fall back to
+            // Oracle (Layer-B behavior) and surface a "miss — precompute
+            // via /admin/navie" hint in the audit rationale so the
+            // operator knows why Navie didn't actually run.
+            // The shared AppMap trace cache is still embedded in the
+            // user prompt separately by buildSolverPrompt's tracesBlock,
+            // independent of which file set Navie or Oracle picks.
+            "appmap-navie" -> appmapNavie(bug, providerId)
             else -> Resolved(providerId, providerId, emptyList(),
                 "Unknown context provider '$providerId'; sending no source.",
                 fellBack = true)
@@ -114,6 +108,56 @@ class ContextProvider(
     }
 
     // ---------------------- Provider impls ----------------------------
+
+    /** Layer-C Navie: read precomputed cache for the bug's current
+     *  break commit. On miss, fall back to Oracle and tell the operator
+     *  to precompute. The cache hit ships every Java file Navie
+     *  identified during its agentic search loop -- typically the
+     *  bug's source plus a handful of semantically-related files.
+     *  filesTouched are forced into the result so we never silently
+     *  drop the file the bug actually touches even if Navie's
+     *  trajectory regex missed it. */
+    private fun appmapNavie(bug: BugCatalog.BugMetadata, requestedProvider: String): Resolved {
+        val cached = navieCache.get(bug)
+        if (cached == null) {
+            return oracle(bug, requestedProvider).copy(
+                requestedProvider = requestedProvider,
+                rationale = "Navie cache MISS for ${bug.id}@${bug.breakCommit.take(8)} -- " +
+                    "fell back to Oracle. Precompute via /admin/navie to populate.",
+                fellBack = true
+            )
+        }
+        val repo = runCatching { bankingApp.bankingAppDir }.getOrNull()
+        // Union of Navie's selections + filesTouched -- belt-and-suspenders
+        // against the trajectory regex missing a file Navie clearly
+        // looked at. Order: filesTouched first (anchor), then Navie
+        // additions, dedup preserving first occurrence.
+        val combined = LinkedHashSet<String>().apply {
+            addAll(bug.filesTouched)
+            addAll(cached.filesIdentified)
+        }
+        val files = combined.map { path ->
+            val abs = repo?.let { File(it, path) }
+            val raw = if (abs != null && abs.isFile)
+                runCatching { abs.readText() }.getOrElse { e -> null.also {
+                    log.warn("appmap-navie: failed to read {}: {}", abs, e.message)
+                } }
+            else
+                bugCatalog.readFileAtRef(bug.breakCommit, path).content
+            ContextFile(path = path, ref = "navie@${bug.breakCommit.take(8)}",
+                content = raw)
+        }
+        return Resolved(
+            effectiveProvider = "appmap-navie",
+            requestedProvider = requestedProvider,
+            files = files,
+            rationale = "Navie cache HIT (${cached.trajectoryEventCount} trajectory events, " +
+                "${cached.durationMs / 1000}s, model=${cached.model ?: "?"}, " +
+                "cli=${cached.cliVersion ?: "?"}). Shipped ${files.size} file(s): " +
+                "${bug.filesTouched.size} filesTouched + " +
+                "${(combined.size - bug.filesTouched.size).coerceAtLeast(0)} Navie picks."
+        )
+    }
 
     private fun oracle(bug: BugCatalog.BugMetadata, requestedProvider: String): Resolved {
         val files = bug.filesTouched.map { path ->

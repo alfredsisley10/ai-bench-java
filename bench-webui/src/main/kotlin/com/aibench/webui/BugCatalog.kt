@@ -50,6 +50,18 @@ class BugCatalog(
     fun count(): Int =
         bugsDir?.listFiles { f -> f.isFile && f.name.endsWith(".yaml") }?.size ?: 0
 
+    /** Enumerate every parseable BUG-*.yaml in the bugs/ dir, in
+     *  filename-sort order. Used by the Navie precompute admin page
+     *  to render one row per bug; callers should be ready for an
+     *  empty list if the bugs/ dir isn't reachable. */
+    fun allBugs(): List<BugMetadata> {
+        val dir = bugsDir ?: return emptyList()
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".yaml") }
+            ?: return emptyList()
+        return files.sortedBy { it.name }
+            .mapNotNull { f -> getBug(f.nameWithoutExtension) }
+    }
+
     /** Bug metadata as the operator sees it on the run-detail audit. */
     data class BugMetadata(
         val id: String,
