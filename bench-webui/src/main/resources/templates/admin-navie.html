@@ -49,7 +49,8 @@
         </tr>
         </thead>
         <tbody>
-        <tr th:each="r : ${rows}">
+        <th:block th:each="r : ${rows}">
+        <tr>
             <td><a th:href="@{'/admin/navie/' + ${r.id}}"><code th:text="${r.id}"></code></a></td>
             <td th:text="${r.title}"></td>
             <td>
@@ -100,6 +101,28 @@
                 </form>
             </td>
         </tr>
+        <!-- Inline CLI-tail row, only visible when the bug has an
+             active precompute. Same collapsible pattern used on the
+             per-bug detail page; lets the operator watch the live
+             appmap CLI stdout/stderr without leaving the list. The
+             page auto-refreshes by default so each manual reload
+             shows the latest tail. -->
+        <tr th:if="${r.activeStdoutTail != null}">
+            <td colspan="7" style="background:#f9fafb; padding:0.4em 0.8em">
+                <details>
+                    <summary style="cursor:pointer; font-size:0.85em">
+                        ⟳ live appmap CLI tail —
+                        <code th:text="${r.id}"></code>
+                        (<span th:text="${r.activeStdoutTail.length()}">0</span> chars)
+                    </summary>
+                    <pre style="background:#1f2937; color:#e5e7eb; padding:0.6em 1em;
+                                font-size:0.78em; max-height:24em; overflow:auto;
+                                white-space:pre-wrap; margin:0.4em 0 0 0"
+                         th:text="${r.activeStdoutTail}"></pre>
+                </details>
+            </td>
+        </tr>
+        </th:block>
         </tbody>
     </table>
 

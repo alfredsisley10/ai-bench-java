@@ -10,7 +10,7 @@
         <code th:text="${bug.id}">BUG-XXXX</code>:
         <span th:text="${bug.title}">title</span>
     </h1>
-    <p class="help-text" th:text="${bug.problemStatement.substring(0, T(java.lang.Math).min(bug.problemStatement.length(), 280))} + (bug.problemStatement.length() > 280 ? '…' : '')"></p>
+    <p class="help-text" style="white-space:pre-wrap" th:text="${bug.problemStatement}"></p>
 
     <!-- Live progress (only when a precompute is currently running) -->
     <section th:if="${activeIsLive}" style="margin:1em 0; padding:0.8em 1em;

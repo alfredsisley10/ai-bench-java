@@ -50,7 +50,12 @@ class AdminNavieController(
          *  just slow" from "Navie wedged silently for 5 minutes". */
         val activeEvents: Int?,
         val activeBytes: Long?,
-        val secondsSinceLastEvent: Long?
+        val secondsSinceLastEvent: Long?,
+        /** Recent appmap CLI stdout/stderr tail. Surfaced per-row on
+         *  the list page in a collapsible <details> block so the
+         *  operator can watch the live CLI without navigating to the
+         *  per-bug detail page. */
+        val activeStdoutTail: String?
     )
 
     @GetMapping("/admin/navie")
@@ -74,7 +79,8 @@ class AdminNavieController(
                 activeBytes = if (isLive) active?.trajectoryBytesLive else null,
                 secondsSinceLastEvent = if (isLive) active?.lastEventAt?.let {
                     java.time.Duration.between(it, now).seconds
-                } else null
+                } else null,
+                activeStdoutTail = if (isLive) active?.stdoutTail else null
             )
         }
         model.addAttribute("rows", rows)
