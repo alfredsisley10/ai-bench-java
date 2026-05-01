@@ -28,7 +28,8 @@ class BenchmarkRunService(
     private val realExecutor: RealBenchmarkExecutor,
     private val bugCatalog: BugCatalog,
     private val contextProvider: ContextProvider,
-    private val traceManager: AppMapTraceManager
+    private val traceManager: AppMapTraceManager,
+    private val throttler: AdaptiveThrottler
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -249,21 +250,30 @@ class BenchmarkRunService(
      * Corp-OpenAI rate-limit on concurrent requests); gradle build,
      * patch apply, AppMap trace overlay, and prompt assembly are all
      * happy to run concurrently and benefit from the parallelism.
-     * The LLM-only serialization is enforced by [llmCallMutex] in
-     * realLlmCall().
+     * The LLM-only serialization was previously enforced by a
+     * ReentrantLock pinned at concurrency=1; replaced with the shared
+     * [AdaptiveThrottler] bean so concurrency adaptively scales with
+     * upstream rate-limit signals (HTTP 429 / quota errors halve the
+     * cap + open a 60s cooldown; sustained success grows it back up
+     * to a max of 4).
      */
     private val executor = Executors.newCachedThreadPool { r ->
         Thread(r, "bench-run").apply { isDaemon = true }
     }
-    /**
-     * Process-wide gate around the bridge LLM call. Acquired in
-     * realLlmCall() so only ONE chat-completion request is in flight
-     * to Copilot / Corp-OpenAI at a time. Other run phases (gradle
-     * test, AppMap recording, etc.) bypass this lock and proceed in
-     * parallel. Fairness=true so callers are served FIFO and a
-     * burst of new requests can't starve a queued one.
-     */
-    private val llmCallMutex = java.util.concurrent.locks.ReentrantLock(true)
+    /** Heuristic match for rate-limit-shaped bridge responses. Same
+     *  patterns as usage.ts's isQuotaExhaustionError on the VSIX side --
+     *  we keep them in lockstep so a 429 downstream produces the same
+     *  throttler signal whether it surfaces via the bridge return code
+     *  or via the upstream Copilot error message. */
+    private fun looksLikeRateLimit(text: String): Boolean {
+        if (text.isBlank()) return false
+        val t = text.lowercase()
+        return t.contains("rate limit") || t.contains("rate_limit") ||
+            t.contains("rate-limited") || t.contains("ratelimited") ||
+            (t.contains("quota") && t.contains("exceed")) ||
+            t.contains("monthly limit") || t.contains("reached your monthly") ||
+            t.contains("429") || t.contains("too many requests")
+    }
     /**
      * Single-threaded scheduler used for the per-run watchdog that
      * detects "stuck in QUEUED" runs. Daemon thread so it doesn't
@@ -1038,21 +1048,19 @@ class BenchmarkRunService(
                 .build()
             val client = java.net.http.HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(3)).build()
-            // Serialize ONLY the bridge call, not the surrounding work.
-            // Copilot rate-limits concurrent requests; outside the lock,
-            // sibling benchmarks happily run gradle / overlay traces /
-            // assemble prompts in parallel. tryLock to surface "waiting
-            // on the LLM mutex" in the run log so the operator knows
-            // the queue depth at a glance — prior version made it look
-            // like the bridge was hung when in fact we were just
-            // waiting our turn.
-            if (!llmCallMutex.tryLock()) {
-                entry(run, Category.LLM,
-                    "Seed $seed: waiting for the per-bridge LLM mutex " +
-                    "(another run is mid-call) — non-LLM work in this " +
-                    "run already complete; gating the chat-completions POST.")
-                llmCallMutex.lock()
-            }
+            // Gate the bridge call on the AdaptiveThrottler so multiple
+            // benchmarks scale up / down with upstream rate-limit signals
+            // instead of being permanently capped at 1 by the old
+            // ReentrantLock. The throttler starts at cap=1 and grows on
+            // sustained success; on a 429 / quota error it halves the
+            // cap and opens a 60s cooldown. This is the same code path
+            // the navie precompute submitter uses (when it had an LLM
+            // dependency) -- one shared throttler bean per JVM.
+            val capBefore = throttler.status().currentCap
+            entry(run, Category.LLM,
+                "Seed $seed: acquiring throttler permit (cap=${capBefore}, " +
+                "${throttler.status().recentRateLimitCount} recent rate-limits)")
+            throttler.acquire()
             val resp: java.net.http.HttpResponse<String>?
             val ms: Long
             try {
@@ -1078,11 +1086,22 @@ class BenchmarkRunService(
                 resp = pending
                 ms = System.currentTimeMillis() - start
             } finally {
-                llmCallMutex.unlock()
+                throttler.release()
             }
             if (resp.statusCode() !in 200..299) {
+                // Detect rate-limit signal in the bridge response so the
+                // throttler shrinks the permit cap before the next call.
+                // Pattern matches isQuotaExhaustionError -- 429, "rate
+                // limit", "quota exceeded", etc.
+                val body = resp.body()
+                if (resp.statusCode() == 429 || looksLikeRateLimit(body)) {
+                    throttler.reportRateLimit("HTTP ${resp.statusCode()}: ${body.take(160)}")
+                    entry(run, Category.LLM,
+                        "Seed $seed: rate-limit signal -- throttler cap " +
+                        "${throttler.status().currentCap} (cooldown 60s)")
+                }
                 entry(run, Category.ERROR,
-                    "Bridge returned HTTP ${resp.statusCode()}: ${resp.body().take(200)}")
+                    "Bridge returned HTTP ${resp.statusCode()}: ${body.take(200)}")
                 return null
             }
             val payload = resp.body()
