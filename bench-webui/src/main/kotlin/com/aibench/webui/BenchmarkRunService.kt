@@ -449,10 +449,16 @@ class BenchmarkRunService(
         // Navie's own retrieval narrows the wider set down further but
         // the count we report is "what Navie had to choose from."
         val tracesSubmitted = when {
-            run.appmapMode == "OFF" -> 0
+            run.appmapMode.equals("OFF", ignoreCase = true) -> 0
             isNavie -> tracesRecorded
-            run.appmapMode == "ON_RECOMMENDED" -> tracesRecorded.coerceAtMost(3)
-            run.appmapMode == "ON_ALL" -> tracesRecorded
+            // ON / ON_ALL / unknown-but-not-OFF -> ContextProvider's
+            // BM25 selector picks top 5 from the available pool, so
+            // that's what actually lands in the prompt. The prior
+            // ON_RECOMMENDED behavior (cap at 3) is preserved as a
+            // legacy alias.
+            run.appmapMode.equals("ON_RECOMMENDED", ignoreCase = true) ->
+                tracesRecorded.coerceAtMost(3)
+            tracesRecorded > 0 -> tracesRecorded.coerceAtMost(5)
             else -> 0
         }
         val basePrompt = 6000 + sourceFiles * 600
