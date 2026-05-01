@@ -25,7 +25,13 @@
             <tr><th>Last event</th>
                 <td th:text="${active.lastEventAt != null ? active.lastEventAt + ' (refresh page for delta)' : '(no events yet)'}"></td></tr>
         </table>
-        <details style="margin-top:0.6em">
+        <details th:if="${active.commandLine != null}" style="margin-top:0.6em">
+            <summary><strong>appmap CLI command (copy-paste reproducible)</strong></summary>
+            <pre style="background:#0f172a; color:#a5f3fc; padding:0.6em 1em;
+                       font-size:0.78em; overflow:auto; white-space:pre-wrap"
+                 th:text="${active.commandLine}"></pre>
+        </details>
+        <details style="margin-top:0.6em" open>
             <summary><strong>appmap CLI stdout/stderr (tail)</strong></summary>
             <pre style="background:#1f2937; color:#e5e7eb; padding:0.6em 1em;
                        font-size:0.78em; max-height:32em; overflow:auto;

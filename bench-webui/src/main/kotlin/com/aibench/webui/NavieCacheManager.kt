@@ -99,7 +99,12 @@ class NavieCacheManager(
          *  Capped at TAIL_CAP chars so a multi-hour run doesn't
          *  balloon memory; still enough to see what stage the CLI
          *  is in. Surfaced on the per-bug detail page. */
-        @Volatile var stdoutTail: String? = null
+        @Volatile var stdoutTail: String? = null,
+        /** Reproducible command line that was launched. Joined with
+         *  spaces; quoting is approximate (good enough for an
+         *  operator to copy-paste and rerun manually). Includes the
+         *  Navie-relevant env vars prepended in `KEY=value` form. */
+        @Volatile var commandLine: String? = null
     )
 
     /** Cancel an in-flight precompute. Kills the appmap subprocess,
@@ -178,15 +183,28 @@ class NavieCacheManager(
             try {
                 job.phase = "running navie"
                 val started = System.currentTimeMillis()
-                val proc = ProcessBuilder(
+                val argv = listOf(
                     cli.absolutePath, "navie",
                     "-d", repo.absolutePath,
                     "--trajectory-file", trajFile.absolutePath,
                     "-o", answerFile.absolutePath,
                     buildQuestion(bug)
                 )
+                val env = navieEnv()
+                // Capture the exact command line + relevant env vars so
+                // the operator can copy-paste-rerun manually if they
+                // need to reproduce a specific Navie call. Quoting is
+                // approximate (good-enough); the question arg gets
+                // extra escaping since it's multiline.
+                fun shesc(s: String): String =
+                    if (s.matches(Regex("[A-Za-z0-9_/.:-]+"))) s
+                    else "'" + s.replace("'", "'\\''") + "'"
+                job.commandLine = (env.entries.joinToString(" ") {
+                    "${it.key}=${shesc(it.value)}"
+                }) + " " + argv.joinToString(" ") { shesc(it) }
+                val proc = ProcessBuilder(argv)
                     .redirectErrorStream(true)
-                    .also { it.environment().putAll(navieEnv()) }
+                    .also { it.environment().putAll(env) }
                     .start()
                 job.process = proc
                 // Best-effort: kill the subprocess if the bench-webui
@@ -305,11 +323,20 @@ class NavieCacheManager(
     /** Wires Navie's LangChain OpenAI client at the local Copilot
      *  bridge. APPMAP_NAVIE_MODEL is read by the AppMap CLI even
      *  though it isn't documented in --help; the source uses it
-     *  in `local-navie` config. */
+     *  in `local-navie` config.
+     *  APPMAP_API_KEY is set to a sentinel so Navie doesn't print
+     *  "Warning: No license key provided. Please set the APPMAP_API_KEY
+     *  environment variable." on every invocation -- our local-only
+     *  setup doesn't need an AppMap-hosted license but the CLI's
+     *  warning message clutters the stdout tail and slows the
+     *  startup banner. The sentinel is treated as "no real key" by
+     *  the CLI but suppresses the noisy warning. */
     private fun navieEnv(): Map<String, String> = mapOf(
         "OPENAI_API_KEY" to (System.getenv("OPENAI_API_KEY") ?: "anything"),
         "OPENAI_BASE_URL" to (System.getenv("APPMAP_BRIDGE_URL")
             ?: "http://127.0.0.1:11434/v1"),
+        "APPMAP_API_KEY" to (System.getenv("APPMAP_API_KEY")
+            ?: "no-license-local-only"),
         // VSCode's LanguageModelChat exposes Copilot's gpt-4.1 model
         // under the literal id "gpt-4.1" (no "copilot-" prefix). Sending
         // any other name like "copilot-gpt-4-1" used to hit the bridge's
