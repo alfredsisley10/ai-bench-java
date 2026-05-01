@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Admin: Pricing', ~{::main})}">
+<body>
+<main>
+    <h1>Model pricing</h1>
+
+    <p>
+        Per-1K-token cost table used by the leaderboard's cost columns
+        and (next commit) the cost-optimized launcher. The bench-webui
+        keeps a local copy at <code>~/.ai-bench/pricing.json</code>;
+        the Copilot bridge VSIX keeps its own copy in VSCode globalState.
+        Use this page to view the drift, edit the local copy, and push
+        edits to the bridge.
+    </p>
+
+    <p th:if="${pricingResult}"
+       style="padding:0.4em 0.8em; background:#ecfdf5; border:1px solid #86efac;
+              border-radius:4px; color:#065f46"
+       th:text="${pricingResult}"></p>
+
+    <div style="display:flex; gap:1em; flex-wrap:wrap; margin:1em 0; align-items:center">
+        <form th:action="@{/admin/pricing/pull}" method="post" style="display:inline">
+            <button type="submit" th:disabled="${!hasBridge}">Pull from bridge</button>
+        </form>
+        <form th:action="@{/admin/pricing/push}" method="post" style="display:inline">
+            <button type="submit" th:disabled="${!hasLocal or !hasBridge}">Push to bridge</button>
+        </form>
+        <form th:action="@{/admin/pricing/clear-local}" method="post" style="display:inline">
+            <button type="submit" th:disabled="${!hasLocal}"
+                    style="color:#7f1d1d; background:#fef2f2; border:1px solid #fca5a5">
+                Clear local store
+            </button>
+        </form>
+        <span th:if="${driftCount > 0}" style="color:#b45309">
+            ⚠ <strong th:text="${driftCount}">0</strong> entries drift between local and bridge.
+        </span>
+    </div>
+
+    <div th:unless="${hasLocal or hasBridge}"
+         style="padding:1em; background:#fef9c3; border:1px solid #fde68a; border-radius:4px">
+        Neither local store nor bridge has any pricing data. Start the
+        VSCode Copilot bridge (so <code>/v1/pricing</code> answers) and
+        click "Pull from bridge" to populate the local store with
+        the VSIX defaults.
+    </div>
+
+    <div th:if="${hasBridge}" style="margin:1em 0">
+        <h2>Bridge state</h2>
+        <p class="help-text">
+            <code>/v1/pricing</code> on the running VSIX.
+            <span th:if="${bridge.isOverride}" style="color:#0369a1">
+                Currently using an operator override
+                (<span th:text="${bridge.entries.size}">0</span> entries,
+                last updated <span th:text="${bridge.lastUpdatedIso}"></span>;
+                defaults had <span th:text="${bridge.defaultEntryCount}">0</span> entries).
+            </span>
+            <span th:unless="${bridge.isOverride}">
+                Using baked-in defaults
+                (<span th:text="${bridge.entries.size}">0</span> entries).
+            </span>
+        </p>
+    </div>
+
+    <div th:if="${hasLocal}" style="margin:1em 0">
+        <h2>Local store (editable)</h2>
+        <p class="help-text">
+            <code>~/.ai-bench/pricing.json</code> · source:
+            <code th:text="${local.source}"></code> · last updated:
+            <span th:text="${local.lastUpdatedIso}"></span>
+        </p>
+        <form th:action="@{/admin/pricing/save}" method="post">
+            <table style="font-size:0.9em">
+                <thead>
+                <tr>
+                    <th style="text-align:left">Pattern</th>
+                    <th>Flags</th>
+                    <th>Prompt /1K</th>
+                    <th>Completion /1K</th>
+                    <th style="text-align:left">Label</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="e : ${local.entries}">
+                    <td><input type="text" name="pattern" th:value="${e.pattern}"
+                               style="width:18em; font-family:monospace; font-size:0.85em"/></td>
+                    <td><input type="text" name="flags" th:value="${e.flags}"
+                               style="width:3em; font-family:monospace"/></td>
+                    <td><input type="number" step="0.000001" name="promptPer1k"
+                               th:value="${e.promptPer1k}" style="width:7em; text-align:right"/></td>
+                    <td><input type="number" step="0.000001" name="completionPer1k"
+                               th:value="${e.completionPer1k}" style="width:7em; text-align:right"/></td>
+                    <td><input type="text" name="label" th:value="${e.label}"
+                               style="width:14em"/></td>
+                </tr>
+                </tbody>
+            </table>
+            <p style="margin-top:0.6em">
+                <button type="submit">Save local edits</button>
+                <span class="help-text">
+                    — saves to <code>~/.ai-bench/pricing.json</code>;
+                    use Push to bridge to sync the VSIX.
+                </span>
+            </p>
+        </form>
+    </div>
+
+    <p style="margin-top:2em; font-size:0.85em; color:#555">
+        Pattern matching follows JS RegExp semantics (the bridge compiles
+        the pattern + flags into a <code>RegExp</code>). Order matters:
+        the bridge walks entries top-down and stops at the first match,
+        so list more-specific patterns
+        (<code>^gpt-4\.1</code>, <code>^gpt-4o-mini</code>) before
+        less-specific ones (<code>^gpt-4o</code>, <code>^gpt-4</code>).
+    </p>
+</main>
+</body>
+</html>
