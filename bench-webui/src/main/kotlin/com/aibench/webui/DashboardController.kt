@@ -128,7 +128,15 @@ class DashboardController(
                 solvedByCategory = records.groupingBy { it.category }.eachCount()
                     .toList().sortedByDescending { it.second }.toMap(LinkedHashMap())
             )
-        }.sortedWith(
+        }
+        // Disqualify Oracle context entries from the leaderboard. Oracle
+        // ships the bug's hand-curated filesTouched list -- essential for
+        // benchmarking and ceiling-measurement, but not a real-world
+        // "leader" since an operator wouldn't have a curated file list
+        // per bug in production. Oracle runs still appear in the runs
+        // table; this only filters them out of the per-config ranking.
+        .filter { it.contextProvider.lowercase() != "oracle" }
+        .sortedWith(
             compareByDescending<LeaderboardEntry> { it.passedRuns }
                 .thenBy { it.avgPassMs }
         )
