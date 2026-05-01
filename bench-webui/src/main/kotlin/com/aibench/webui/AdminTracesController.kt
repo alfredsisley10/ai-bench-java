@@ -70,18 +70,22 @@ class AdminTracesController(
         val fromBugs = bugCatalog.allBugs().mapNotNull {
             it.module.takeIf { m -> m.isNotBlank() }
         }.toSet()
-        // Hand-written modules in the banking-app product surface. Pulled
-        // statically rather than walked because we deliberately want to
-        // exclude generated-* and exclude any module whose tests aren't
-        // worth recording (e.g. demo apps).
-        val handWritten = setOf(
-            "shared-domain", "ledger-core",
-            "accounts-consumer", "accounts-business",
-            "payments-hub", "cards", "lending-corporate", "lending-consumer",
-            "fraud-detection", "compliance", "reg-reporting",
-            "risk-engine", "statements", "app-bootstrap"
-        )
-        return (fromBugs + handWritten).sorted()
+        // Auto-discover top-level gradle modules by walking
+        // banking-app/<dir>/build.gradle.kts -- each subdir with a
+        // build.gradle.kts is a gradle subproject. Drops the
+        // generated:* product-flavor modules (~70+ auto-generated,
+        // not useful for benchmarking) by excluding the "generated"
+        // dir entirely. Survives banking-app adding / renaming /
+        // removing modules with no code change here.
+        val repo = runCatching { bankingApp.bankingAppDir }.getOrNull()
+        val discovered = if (repo != null && repo.isDirectory) {
+            (repo.listFiles { f -> f.isDirectory && f.name != "generated" } ?: emptyArray())
+                .filter { java.io.File(it, "build.gradle.kts").isFile ||
+                          java.io.File(it, "build.gradle").isFile }
+                .map { it.name }
+                .toSet()
+        } else emptySet()
+        return (fromBugs + discovered).sorted()
     }
 
     @GetMapping("/admin/appmap-traces")
