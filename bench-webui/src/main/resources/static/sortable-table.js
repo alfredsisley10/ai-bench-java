@@ -41,6 +41,109 @@
     const counterSel = table.dataset.countTarget;
     const counter = counterSel ? document.querySelector(counterSel) : null;
 
+    // Per-filter state: either { kind: 'text' } (use input.value) or
+    // { kind: 'multi', selected: Set<string> } populated by the
+    // checklist popup we install below for low-cardinality columns.
+    // Index lines up with `filters`.
+    const MULTI_SELECT_THRESHOLD = 8;
+    const filterStates = Array.from(filters).map(() => ({ kind: 'text' }));
+
+    // For each filter column, count distinct cell values. If <= the
+    // threshold, swap the text input out for a checklist-popup button
+    // -- much faster to filter "Status = PASSED OR FAILED" than typing
+    // a regex into a text box. High-cardinality columns keep the
+    // existing substring filter.
+    function buildMultiSelect(input, idx) {
+      const colIdx = parseInt(input.getAttribute('data-filter-col'), 10);
+      const distinct = new Set();
+      for (const row of rows) {
+        const cells = row.querySelectorAll('td');
+        const txt = (cells[colIdx]?.textContent || '').trim();
+        if (txt) distinct.add(txt);
+      }
+      // Skip if cardinality is too high (free-text column) or trivial
+      // (single value -- nothing to filter on).
+      if (distinct.size > MULTI_SELECT_THRESHOLD || distinct.size <= 1) return;
+      const values = Array.from(distinct).sort();
+      // Build the popup container: a button that, when clicked, shows
+      // a small panel of checkboxes anchored below it. Click-outside
+      // closes. Style is intentionally low-key to fit the existing
+      // filter-row visual density.
+      const wrap = document.createElement('span');
+      wrap.style.cssText = 'position:relative; display:inline-block; width:100%';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.style.cssText = 'width:100%; padding:1px 4px; font-size:0.85em; ' +
+        'text-align:left; background:#fff; border:1px solid #d1d5db; ' +
+        'border-radius:3px; cursor:pointer; box-sizing:border-box';
+      btn.textContent = 'all (' + values.length + ')';
+      const panel = document.createElement('div');
+      panel.style.cssText = 'display:none; position:absolute; top:100%; left:0; ' +
+        'z-index:50; background:#fff; border:1px solid #d1d5db; border-radius:3px; ' +
+        'box-shadow:0 2px 6px rgba(0,0,0,0.1); padding:4px 8px; min-width:8em; ' +
+        'max-height:18em; overflow:auto; font-size:0.85em';
+      const selected = new Set();
+      function refreshLabel() {
+        btn.textContent = selected.size === 0
+          ? 'all (' + values.length + ')'
+          : selected.size + ' selected';
+      }
+      const ctrlRow = document.createElement('div');
+      ctrlRow.style.cssText = 'border-bottom:1px solid #e5e7eb; margin-bottom:4px; ' +
+        'padding-bottom:4px; display:flex; gap:0.4em';
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.style.cssText = 'font-size:0.8em; padding:0 4px';
+      allBtn.textContent = 'all';
+      const noneBtn = document.createElement('button');
+      noneBtn.type = 'button';
+      noneBtn.style.cssText = 'font-size:0.8em; padding:0 4px';
+      noneBtn.textContent = 'none';
+      ctrlRow.appendChild(allBtn);
+      ctrlRow.appendChild(noneBtn);
+      panel.appendChild(ctrlRow);
+      const cbBoxes = [];
+      for (const v of values) {
+        const lab = document.createElement('label');
+        lab.style.cssText = 'display:block; cursor:pointer; padding:1px 0';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = v;
+        cb.style.cssText = 'margin-right:4px';
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(v); else selected.delete(v);
+          refreshLabel();
+          applyFilters();
+        });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(v));
+        panel.appendChild(lab);
+        cbBoxes.push(cb);
+      }
+      allBtn.addEventListener('click', () => {
+        cbBoxes.forEach(cb => { cb.checked = true; selected.add(cb.value); });
+        refreshLabel(); applyFilters();
+      });
+      noneBtn.addEventListener('click', () => {
+        cbBoxes.forEach(cb => { cb.checked = false; });
+        selected.clear(); refreshLabel(); applyFilters();
+      });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+      });
+      document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) panel.style.display = 'none';
+      });
+      wrap.appendChild(btn);
+      wrap.appendChild(panel);
+      // Replace the input in-place; preserve data-filter-col on wrap so
+      // applyFilters can still resolve the column index.
+      wrap.setAttribute('data-filter-col', colIdx);
+      input.replaceWith(wrap);
+      filterStates[idx] = { kind: 'multi', selected, colIdx };
+    }
+    Array.from(filters).forEach(buildMultiSelect);
+
     function sortValue(row, header) {
       const key = header.dataset.sortKey;
       const raw = row.dataset[key] || '';
@@ -58,23 +161,34 @@
     }
 
     function applyFilters() {
-      const terms = Array.from(filters).map(i =>
-        i.value.trim().toLowerCase());
+      // Snapshot per-filter values: text inputs read live from the
+      // input.value; multi-select states are already in filterStates.
+      const snapshots = Array.from(filters).map((el, i) => {
+        const st = filterStates[i];
+        if (st.kind === 'multi') {
+          // Multi-select: 'el' has been replaced; column index is
+          // captured in filterStates[i].colIdx.
+          return { kind: 'multi', sel: st.selected, colIdx: st.colIdx };
+        }
+        return {
+          kind: 'text',
+          term: el.value.trim().toLowerCase(),
+          colIdx: parseInt(el.getAttribute('data-filter-col'), 10)
+        };
+      });
       let visible = 0;
       for (const row of rows) {
         const cells = row.querySelectorAll('td');
         let match = true;
-        for (let i = 0; i < terms.length; i++) {
-          if (!terms[i]) continue;
-          // data-filter-col is the AUTHORITATIVE cell index. Filters
-          // skip the checkbox column 0, so filters[0] has
-          // data-filter-col="1". Reading cells[i] (filter array index)
-          // checks the wrong cell — every filter shifts left by one
-          // and only "works" by coincidence when adjacent columns
-          // share text. data-filter-col makes it exact.
-          const colIdx = parseInt(filters[i].getAttribute('data-filter-col'), 10);
-          const txt = (cells[colIdx]?.textContent || '').toLowerCase();
-          if (!txt.includes(terms[i])) { match = false; break; }
+        for (const s of snapshots) {
+          const txt = (cells[s.colIdx]?.textContent || '').trim();
+          if (s.kind === 'multi') {
+            if (s.sel.size === 0) continue;  // no selection = no filter
+            if (!s.sel.has(txt)) { match = false; break; }
+          } else {
+            if (!s.term) continue;
+            if (!txt.toLowerCase().includes(s.term)) { match = false; break; }
+          }
         }
         row.classList.toggle('filtered-out', !match);
         if (match) visible++;
@@ -143,22 +257,30 @@
     // wrap the existing per-column logic instead of duplicating it.
     const baseApplyFilters = applyFilters;
     applyFilters = function () {
-      const terms = Array.from(filters).map(i => i.value.trim().toLowerCase());
+      const snapshots = Array.from(filters).map((el, i) => {
+        const st = filterStates[i];
+        if (st.kind === 'multi') {
+          return { kind: 'multi', sel: st.selected, colIdx: st.colIdx };
+        }
+        return {
+          kind: 'text',
+          term: el.value.trim().toLowerCase(),
+          colIdx: parseInt(el.getAttribute('data-filter-col'), 10)
+        };
+      });
       let visible = 0;
       for (const row of rows) {
         const cells = row.querySelectorAll('td');
         let match = true;
-        for (let i = 0; i < terms.length; i++) {
-          if (!terms[i]) continue;
-          // data-filter-col is the AUTHORITATIVE cell index. Filters
-          // skip the checkbox column 0, so filters[0] has
-          // data-filter-col="1". Reading cells[i] (filter array index)
-          // checks the wrong cell — every filter shifts left by one
-          // and only "works" by coincidence when adjacent columns
-          // share text. data-filter-col makes it exact.
-          const colIdx = parseInt(filters[i].getAttribute('data-filter-col'), 10);
-          const txt = (cells[colIdx]?.textContent || '').toLowerCase();
-          if (!txt.includes(terms[i])) { match = false; break; }
+        for (const s of snapshots) {
+          const txt = (cells[s.colIdx]?.textContent || '').trim();
+          if (s.kind === 'multi') {
+            if (s.sel.size === 0) continue;
+            if (!s.sel.has(txt)) { match = false; break; }
+          } else {
+            if (!s.term) continue;
+            if (!txt.toLowerCase().includes(s.term)) { match = false; break; }
+          }
         }
         if (match && searchTerm) {
           const allText = row.textContent.toLowerCase();
