@@ -312,8 +312,19 @@ class NavieCacheManager(
                 log.info("appmap-search[{}] {}", bug.id, msg)
             }
             val ms = System.currentTimeMillis() - started
-            val topFiles = fileScores.values.sortedByDescending { it.totalScore }
-                .take(10).map { it.location }
+            // Rank main-source files ahead of test-source files. Test
+            // files often score higher on keyword overlap (the test
+            // describes the bug behaviorally) but the LLM solving the
+            // bug needs the actual implementation in its prompt --
+            // showing the test first risks the model patching the
+            // test rather than the source. Within each tier, sort by
+            // aggregate AppMap-search score.
+            fun isMain(loc: String) = loc.contains("/src/main/")
+            val ranked = fileScores.values.sortedWith(
+                compareByDescending<FileScore> { isMain(it.location) }
+                    .thenByDescending { it.totalScore }
+            )
+            val topFiles = ranked.take(10).map { it.location }
             val topTraces = traceScores.entries.sortedByDescending { it.value }
                 .take(10).map {
                     it.key.absolutePath.removePrefix(repo.absolutePath).trimStart('/')
