@@ -25,6 +25,14 @@
       /* Long content (model ids, badge clouds) wraps inside its cell rather
          than forcing the table wider than its container. */
       #runsTable td, #leaderboardTable td { word-break: break-word; }
+      /* Per-row content stays on one line by default in the runs table.
+         The leaderboard already pins nowrap on most cells; the runs
+         table never asked for it, which was letting "RUNNING" wrap
+         the trailing G when the inline cancel button shared the cell.
+         Cells that *should* wrap (long model ids, badge clouds) are
+         still wrappable via word-break above; this just stops the
+         single-token wrap. */
+      #runsTable tbody td { white-space: nowrap; }
       /* Filter inputs fill their column so each box sits flush under its
          header label, regardless of how wide the data cells are. */
       #runsTable .filter-row th,
