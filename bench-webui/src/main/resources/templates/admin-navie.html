@@ -40,7 +40,8 @@
             <th>Bug</th>
             <th>Title</th>
             <th>Status</th>
-            <th>Files</th>
+            <th title="Java source files Navie identified during its agentic search loop">Files</th>
+            <th title="AppMap trace files Navie referenced (.appmap.json) — runtime side of its retrieval">Traces</th>
             <th>Last cached</th>
             <th>Navie duration</th>
             <th>Action</th>
@@ -62,6 +63,7 @@
                 </div>
             </td>
             <td th:text="${r.fileCount != null ? r.fileCount : '—'}"></td>
+            <td th:text="${r.traceCount != null ? r.traceCount : '—'}"></td>
             <td style="font-size:0.85em" th:text="${r.cachedAt != null ? r.cachedAt : '—'}"></td>
             <td style="font-size:0.85em"
                 th:text="${r.durationMs != null ? r.durationMs / 1000 + 's' : '—'}"></td>

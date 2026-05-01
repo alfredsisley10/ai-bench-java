@@ -39,6 +39,9 @@ class AdminNavieController(
         val cachedAt: String?,
         val durationMs: Long?,
         val fileCount: Int?,
+        /** Trace-file count Navie referenced during its agentic loop --
+         *  parsed out of the cached trajectory by NavieCacheManager. */
+        val traceCount: Int?,
         val activePhase: String?,
         val activeError: String?
     )
@@ -55,6 +58,7 @@ class AdminNavieController(
                 cachedAt = cached?.generatedAt,
                 durationMs = cached?.durationMs,
                 fileCount = cached?.filesIdentified?.size,
+                traceCount = cached?.tracesIdentified?.size,
                 activePhase = active?.takeIf { it.endedAt == null }?.phase,
                 activeError = active?.error
             )

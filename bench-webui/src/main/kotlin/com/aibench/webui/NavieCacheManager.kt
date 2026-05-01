@@ -54,6 +54,12 @@ class NavieCacheManager(
          *  JSONL since Navie doesn't expose a structured "selected
          *  files" output. */
         val filesIdentified: List<String>,
+        /** Repo-relative .appmap.json trace paths Navie referenced
+         *  during the same loop -- the runtime side of its retrieval
+         *  (call graphs / SQL / HTTP captures from the AppMap index).
+         *  Lets the operator audit "Navie said it looked at these N
+         *  traces" separately from the source-file picks above. */
+        val tracesIdentified: List<String> = emptyList(),
         /** Final markdown answer Navie wrote — useful as additional
          *  prompt context for the solver. */
         val answer: String,
@@ -186,6 +192,7 @@ class NavieCacheManager(
                 }
                 job.phase = "parsing"
                 val files = parseFilesFromTrajectory(trajFile)
+                val traces = parseTracesFromTrajectory(trajFile)
                 val answer = if (answerFile.isFile) answerFile.readText() else ""
                 val eventCount = if (trajFile.isFile) trajFile.useLines { it.count() } else 0
                 val result = NavieResult(
@@ -195,6 +202,7 @@ class NavieCacheManager(
                     cliVersion = readCliVersion(cli),
                     model = navieEnv()["APPMAP_NAVIE_MODEL"],
                     filesIdentified = files,
+                    tracesIdentified = traces,
                     answer = answer,
                     trajectoryEventCount = eventCount,
                     durationMs = ms
@@ -270,6 +278,40 @@ class NavieCacheManager(
         trajFile.useLines { lines ->
             for (ln in lines) {
                 for (m in pathRegex.findAll(ln)) seen.add(m.value)
+            }
+        }
+        return seen.toList()
+    }
+
+    /** Parse `.appmap.json` references out of the trajectory. Navie's
+     *  agentic loop uses appmap CLI's vector index to pick relevant
+     *  traces; the trajectory records each load as either an absolute
+     *  path or a repo-relative path. We return the relative form
+     *  ("<module>/tmp/appmap/junit/<sanitized-name>.appmap.json") so
+     *  it lines up with what AppMapTraceManager.realTraceCoverage
+     *  enumerates -- gives the operator a clean cross-reference between
+     *  "Navie said it looked at these traces" and "these traces actually
+     *  exist on disk". */
+    private fun parseTracesFromTrajectory(trajFile: File): List<String> {
+        if (!trajFile.isFile) return emptyList()
+        val absRegex = Regex(
+            """/[A-Za-z0-9_/.-]+/tmp/appmap/[a-z]+/[A-Za-z0-9_.-]+\.appmap\.json"""
+        )
+        val relRegex = Regex(
+            """([a-z][a-z0-9-]+/)+tmp/appmap/[a-z]+/[A-Za-z0-9_.-]+\.appmap\.json"""
+        )
+        val repoPrefix = runCatching { bankingApp.bankingAppDir.absolutePath }.getOrNull()
+        val seen = sortedSetOf<String>()
+        trajFile.useLines { lines ->
+            for (ln in lines) {
+                for (m in absRegex.findAll(ln)) {
+                    val abs = m.value
+                    val rel = if (repoPrefix != null && abs.startsWith(repoPrefix))
+                        abs.removePrefix(repoPrefix).trimStart('/')
+                    else abs
+                    seen.add(rel)
+                }
+                for (m in relRegex.findAll(ln)) seen.add(m.value)
             }
         }
         return seen.toList()
