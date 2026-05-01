@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { UsageTracker } from './usage';
+import * as pricingMod from './pricing';
 import { openStatsPanel, pushUpdate, RuntimeState, WebviewHooks } from './webview';
 import {
     startOpenAiServer, stopOpenAiServer, isOpenAiServerRunning,
@@ -416,6 +417,9 @@ async function startOpenAiFromConfig(): Promise<void> {
         logStage,
         log,
         newReqId,
+        // Pricing endpoint persists POSTed overrides via globalState;
+        // pass the live extension context so they survive reload.
+        context: extensionContext ?? null,
     });
     notifyStateChanged();
 }
@@ -488,6 +492,10 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(output);
     log('activate: extension starting');
     tracker = new UsageTracker(context);
+    // Restore any operator-pushed pricing override (from bench-webui's
+    // /admin/pricing editor) so cost estimates stay consistent across
+    // VSCode reloads.
+    pricingMod.initPricing(context);
     watchForExtensionUpdates(context);
 
     // Hooks pumped into the WebView so its Start/Stop buttons drive

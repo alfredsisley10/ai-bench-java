@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import { UsageTracker } from './usage';
+import * as pricingMod from './pricing';
 
 let server: http.Server | undefined;
 
@@ -93,6 +94,10 @@ interface ServerArgs {
     log: (msg: string) => void;
     /** Mint a per-request id for correlating log lines. */
     newReqId: () => string;
+    /** Extension context for persisting POSTed pricing overrides to
+     *  globalState. Optional so tests can pass null and exercise the
+     *  endpoints without a live VSCode environment. */
+    context: vscode.ExtensionContext | null;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -102,6 +107,14 @@ function readBody(req: http.IncomingMessage): Promise<string> {
         req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
         req.on('error', reject);
     });
+}
+
+/** Read + parse a JSON body, returning null on missing/invalid JSON
+ *  rather than throwing -- callers want to send a 400, not a 500. */
+async function readJson(req: http.IncomingMessage): Promise<any | null> {
+    const txt = await readBody(req);
+    if (!txt.trim()) return null;
+    try { return JSON.parse(txt); } catch { return null; }
 }
 
 function send(res: http.ServerResponse, status: number, body: object): void {
@@ -177,6 +190,34 @@ export async function startOpenAiServer(args: ServerArgs): Promise<void> {
             // Used by the webview's "View full prompt" button AND by
             // the bench-webui / claude-code agents that want to verify
             // exactly what reached Copilot — without parsing webview HTML.
+            // Pricing table — read by bench-webui to understand what
+            // each Copilot model costs (per 1K tokens), and writable
+            // so the operator can push overrides from a webui editor
+            // without having to repackage + reinstall the VSIX every
+            // time pricing shifts. Schema mirrors src/pricing.ts:
+            // ModelPriceWire {pattern, flags, promptPer1k,
+            // completionPer1k, label}. POST replaces the whole table;
+            // DELETE reverts to the baked-in defaults.
+            if (url.pathname === '/v1/pricing' || url.pathname === '/pricing') {
+                if (req.method === 'GET') {
+                    return send(res, 200, pricingMod.getPricingSnapshot());
+                }
+                if (req.method === 'POST' || req.method === 'PUT') {
+                    const body = await readJson(req);
+                    if (!body || !Array.isArray(body.entries)) {
+                        return send(res, 400, { error: { message: 'expected {entries: ModelPriceWire[]}', type: 'bad_request' }});
+                    }
+                    const snap = pricingMod.setPricing(
+                        args.context, body.entries, body.lastUpdatedIso);
+                    return send(res, 200, snap);
+                }
+                if (req.method === 'DELETE') {
+                    pricingMod.clearPricingOverride(args.context);
+                    return send(res, 200, pricingMod.getPricingSnapshot());
+                }
+                return send(res, 405, { error: { message: 'use GET / POST / DELETE', type: 'method_not_allowed' }});
+            }
+
             // Token-budget snapshot for the current calendar month. The
             // benchmark controller polls this before launching a batch
             // so it can refuse / warn when the projected token spend

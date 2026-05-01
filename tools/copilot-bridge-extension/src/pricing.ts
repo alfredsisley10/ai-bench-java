@@ -11,6 +11,8 @@
 //
 // Last cross-referenced: 2026-04-28
 
+import * as vscode from 'vscode';
+
 export interface ModelPrice {
     pattern: RegExp;
     promptPer1k: number;
@@ -18,7 +20,19 @@ export interface ModelPrice {
     label: string;
 }
 
-const TABLE: ModelPrice[] = [
+/** Wire-format entry for the /v1/pricing endpoint. RegExp doesn't
+ *  JSON-serialize, so we transport pattern + flags as strings. */
+export interface ModelPriceWire {
+    pattern: string;
+    flags: string;
+    promptPer1k: number;
+    completionPer1k: number;
+    label: string;
+}
+
+const STATE_KEY = 'aiBenchCopilotBridge.pricingOverride.v1';
+
+const DEFAULT_TABLE: ModelPrice[] = [
     // OpenAI — newer-first so e.g. gpt-4.1 doesn't get caught by ^gpt-4
     { pattern: /^gpt-5(\.|$)/i, promptPer1k: 0.005, completionPer1k: 0.015, label: 'GPT-5' },
     { pattern: /^gpt-4\.1/i, promptPer1k: 0.002, completionPer1k: 0.008, label: 'GPT-4.1' },
@@ -63,6 +77,29 @@ const TABLE: ModelPrice[] = [
     { pattern: /^auto$/i, promptPer1k: 0.0025, completionPer1k: 0.010, label: 'Copilot Auto' },
 ];
 
+/**
+ * Active table — defaults to DEFAULT_TABLE, can be replaced at runtime
+ * via setPricing() (sourced from bench-webui's editable pricing store).
+ * Persisted to globalState so a manual override survives extension
+ * reload. Reset to defaults via clearPricingOverride().
+ */
+let TABLE: ModelPrice[] = DEFAULT_TABLE.slice();
+let lastUpdatedIso: string = '2026-04-28T00:00:00.000Z';
+let isOverride: boolean = false;
+
+/** Initialize from VSCode globalState. Called once from extension.ts
+ *  activate(), before any pricing lookups happen. Safe to call with
+ *  null context (used by tests) — that just keeps the defaults. */
+export function initPricing(context: vscode.ExtensionContext | null): void {
+    if (context == null) return;
+    const persisted = context.globalState.get<{ entries: ModelPriceWire[]; lastUpdatedIso: string }>(STATE_KEY);
+    if (persisted && Array.isArray(persisted.entries)) {
+        TABLE = persisted.entries.map(wireToRuntime);
+        lastUpdatedIso = persisted.lastUpdatedIso || new Date().toISOString();
+        isOverride = true;
+    }
+}
+
 /** Best-effort price lookup by model id / family. Returns null when the
  *  model is unknown to the catalog (caller should display "—" for cost). */
 export function priceFor(modelId: string): ModelPrice | null {
@@ -70,6 +107,69 @@ export function priceFor(modelId: string): ModelPrice | null {
         if (e.pattern.test(modelId)) return e;
     }
     return null;
+}
+
+/** Wire-shape snapshot of the active table for /v1/pricing GET. */
+export function getPricingSnapshot(): {
+    entries: ModelPriceWire[];
+    lastUpdatedIso: string;
+    isOverride: boolean;
+    defaultEntryCount: number;
+} {
+    return {
+        entries: TABLE.map(runtimeToWire),
+        lastUpdatedIso,
+        isOverride,
+        defaultEntryCount: DEFAULT_TABLE.length,
+    };
+}
+
+/** Replace the active table with operator-supplied entries (typically
+ *  pushed from bench-webui's pricing editor). Persists to globalState
+ *  so the override survives reload. Returns the new snapshot. */
+export function setPricing(
+    context: vscode.ExtensionContext | null,
+    entries: ModelPriceWire[],
+    sourceLastUpdatedIso?: string
+): ReturnType<typeof getPricingSnapshot> {
+    TABLE = entries.map(wireToRuntime);
+    lastUpdatedIso = sourceLastUpdatedIso || new Date().toISOString();
+    isOverride = true;
+    if (context != null) {
+        context.globalState.update(STATE_KEY, {
+            entries: TABLE.map(runtimeToWire),
+            lastUpdatedIso,
+        });
+    }
+    return getPricingSnapshot();
+}
+
+/** Drop the operator override and revert to the baked-in defaults.
+ *  Useful when an experimental pricing push needs to be rolled back. */
+export function clearPricingOverride(context: vscode.ExtensionContext | null): void {
+    TABLE = DEFAULT_TABLE.slice();
+    lastUpdatedIso = '2026-04-28T00:00:00.000Z';
+    isOverride = false;
+    if (context != null) context.globalState.update(STATE_KEY, undefined);
+}
+
+function runtimeToWire(p: ModelPrice): ModelPriceWire {
+    return {
+        pattern: p.pattern.source,
+        flags: p.pattern.flags,
+        promptPer1k: p.promptPer1k,
+        completionPer1k: p.completionPer1k,
+        label: p.label,
+    };
+}
+
+function wireToRuntime(w: ModelPriceWire): ModelPrice {
+    return {
+        pattern: new RegExp(w.pattern, w.flags || ''),
+        promptPer1k: Number(w.promptPer1k),
+        completionPer1k: Number(w.completionPer1k),
+        label: String(w.label),
+    };
 }
 
 /** Coarse char→token approximation: ~4 chars per token across English
