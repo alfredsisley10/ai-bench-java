@@ -88,7 +88,9 @@
             <thead>
                 <tr class="sort-row">
                     <th data-sort-key="model">Model <span class="sort-indicator"></span></th>
-                    <th data-sort-key="provider">Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="provider">LLM Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="ctx">Context Provider <span class="sort-indicator"></span></th>
+                    <th data-sort-key="appmap">AppMap <span class="sort-indicator"></span></th>
                     <th data-sort-key="passrate" data-sort-numeric="true" class="num">Pass <span class="sort-indicator"></span></th>
                     <th data-sort-key="solved" data-sort-numeric="true" class="num">Solved <span class="sort-indicator"></span></th>
                     <th data-sort-key="fastest" data-sort-numeric="true" class="num">Best time <span class="sort-indicator"></span></th>
@@ -100,21 +102,25 @@
                 </tr>
                 <tr class="filter-row">
                     <th><input type="text" data-filter-col="0" placeholder="filter model"></th>
-                    <th><input type="text" data-filter-col="1" placeholder="filter provider"></th>
-                    <th><input type="text" data-filter-col="2" placeholder="≥, ≤, ="></th>
-                    <th><input type="text" data-filter-col="3" placeholder="≥, ≤, ="></th>
-                    <th><input type="text" data-filter-col="4" placeholder="filter time"></th>
-                    <th><input type="text" data-filter-col="5" placeholder="filter cost"></th>
-                    <th><input type="text" data-filter-col="6" placeholder="filter avg"></th>
-                    <th><input type="text" data-filter-col="7" placeholder="filter avg"></th>
-                    <th><input type="text" data-filter-col="8" placeholder="EASY,MEDIUM…"></th>
-                    <th><input type="text" data-filter-col="9" placeholder="TIMING,LOGIC…"></th>
+                    <th><input type="text" data-filter-col="1" placeholder="filter LLM provider"></th>
+                    <th><input type="text" data-filter-col="2" placeholder="filter ctx"></th>
+                    <th><input type="text" data-filter-col="3" placeholder="filter mode"></th>
+                    <th><input type="text" data-filter-col="4" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="6" placeholder="filter time"></th>
+                    <th><input type="text" data-filter-col="7" placeholder="filter cost"></th>
+                    <th><input type="text" data-filter-col="8" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="9" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="10" placeholder="EASY,MEDIUM…"></th>
+                    <th><input type="text" data-filter-col="11" placeholder="TIMING,LOGIC…"></th>
                 </tr>
             </thead>
             <tbody>
             <tr th:each="lb, iter : ${leaderboard}"
                 th:attr="data-model=${lb.modelId},
                          data-provider=${lb.provider},
+                         data-ctx=${lb.contextProvider},
+                         data-appmap=${lb.appmapMode},
                          data-passrate=${lb.passRate},
                          data-solved=${lb.passedRuns},
                          data-fastest=${lb.fastest != null ? lb.fastest.durationMs : 999999999},
@@ -129,6 +135,10 @@
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
                 </td>
                 <td th:text="${lb.provider}"></td>
+                <td th:text="${lb.contextProvider}"></td>
+                <td th:title="${lb.appmapMode}"
+                    th:text="${lb.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
+                              (lb.appmapMode == 'ON_ALL' ? 'ALL' : lb.appmapMode)}"></td>
                 <td class="num" style="white-space:nowrap"
                     th:text="${#numbers.formatPercent(lb.passRate, 1, 0)} + ' (' +
                              ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
@@ -334,8 +344,9 @@
                         <th data-sort-key="started" data-sort-numeric="true" title="Started">Started <span class="sort-indicator"></span></th>
                         <th data-sort-key="id" title="Run ID">Run ID <span class="sort-indicator"></span></th>
                         <th data-sort-key="issue" title="Bug / Ticket">Bug <span class="sort-indicator"></span></th>
-                        <th data-sort-key="provider" title="Solver / provider">Solver <span class="sort-indicator"></span></th>
+                        <th data-sort-key="provider" title="LLM provider (copilot / corp-openai / …)">LLM Provider <span class="sort-indicator"></span></th>
                         <th data-sort-key="model" title="Model id">Model <span class="sort-indicator"></span></th>
+                        <th data-sort-key="ctx" title="Context provider (none / oracle / bm25 / appmap-navie)">Context Provider <span class="sort-indicator"></span></th>
                         <th data-sort-key="appmap" title="AppMap mode (OFF / ON_RECOMMENDED / ON_ALL)">AM <span class="sort-indicator"></span></th>
                         <th data-sort-key="status" title="Run status">Status <span class="sort-indicator"></span></th>
                         <th data-sort-key="pass" data-sort-numeric="true" title="Passed seeds / total seeds">P/T <span class="sort-indicator"></span></th>
@@ -349,15 +360,16 @@
                         <th><input type="text" data-filter-col="1" placeholder="filter date"></th>
                         <th><input type="text" data-filter-col="2" placeholder="filter id"></th>
                         <th><input type="text" data-filter-col="3" placeholder="filter bug"></th>
-                        <th><input type="text" data-filter-col="4" placeholder="filter solver"></th>
+                        <th><input type="text" data-filter-col="4" placeholder="filter LLM provider"></th>
                         <th><input type="text" data-filter-col="5" placeholder="filter model"></th>
-                        <th><input type="text" data-filter-col="6" placeholder="filter mode"></th>
-                        <th><input type="text" data-filter-col="7" placeholder="filter status"></th>
-                        <th><input type="text" data-filter-col="8" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="6" placeholder="filter ctx provider"></th>
+                        <th><input type="text" data-filter-col="7" placeholder="filter mode"></th>
+                        <th><input type="text" data-filter-col="8" placeholder="filter status"></th>
                         <th><input type="text" data-filter-col="9" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="10" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="11" placeholder="≥, ≤, ="></th>
                         <th><input type="text" data-filter-col="12" placeholder="≥, ≤, ="></th>
+                        <th><input type="text" data-filter-col="13" placeholder="≥, ≤, ="></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -367,6 +379,7 @@
                              data-issue=${r.issueId},
                              data-provider=${r.provider},
                              data-model=${r.modelId},
+                             data-ctx=${r.contextProvider},
                              data-appmap=${r.appmapMode},
                              data-status=${r.status.name()},
                              data-pass=${r.seedResults.?[passed].size()},
@@ -398,6 +411,7 @@
                     </td>
                     <td th:text="${r.provider}"></td>
                     <td th:text="${r.modelId}"></td>
+                    <td th:text="${r.contextProvider}"></td>
                     <td th:title="${r.appmapMode}"
                         th:text="${r.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
                                   (r.appmapMode == 'ON_ALL' ? 'ALL' : r.appmapMode)}"></td>
@@ -724,10 +738,12 @@
                         });
                         var oldCells = oldRow.querySelectorAll('td');
                         var newCells = newRow.querySelectorAll('td');
-                        // Cells with live content: status (col 7), pass/total (8),
-                        // prompt tokens (9), completion tokens (10), run time (11),
-                        // LLM time (12). Cols 0-6 are static run metadata.
-                        [7, 8, 9, 10, 11, 12].forEach(function (i) {
+                        // Cells with live content: status (col 8), pass/total (9),
+                        // prompt tokens (10), completion tokens (11), run time (12),
+                        // LLM time (13). Cols 0-7 are static run metadata
+                        // (checkbox, started, runId, bug, LLM provider, model,
+                        // ctx provider, AM mode).
+                        [8, 9, 10, 11, 12, 13].forEach(function (i) {
                             if (oldCells[i] && newCells[i] &&
                                 oldCells[i].innerHTML !== newCells[i].innerHTML) {
                                 oldCells[i].innerHTML = newCells[i].innerHTML;

@@ -41,6 +41,10 @@ class DashboardController(
     data class LeaderboardEntry(
         val modelId: String,
         val provider: String,
+        /** Context provider used (none / oracle / bm25 / appmap-navie). */
+        val contextProvider: String,
+        /** AppMap recording mode (OFF / ON_RECOMMENDED / ON_ALL). */
+        val appmapMode: String,
         val totalRuns: Int,
         val passedRuns: Int,
         val passRate: Double,
@@ -76,39 +80,45 @@ class DashboardController(
         // -- a 12/12 catalog with no runs should read 0 here.
         model.addAttribute("availableBugs", runs.map { it.issueId }.distinct().size)
 
-        // Leaderboard — group PASSED runs by model, aggregate fastest /
-        // cheapest / problem-type breakdown. Bug difficulty + category
-        // come from the YAML catalog (BugCatalog.getBug); when the bug
-        // is enterprise (issueId like "repo:ticket") or the catalog
-        // can't resolve it, the run still counts but lands in the
-        // "(unknown)" bucket so the operator at least sees the totals.
-        val totalsByModel = runs.groupingBy { it.modelId }.eachCount()
+        // Leaderboard — group PASSED runs by the FULL execution context
+        // (LLM provider, model id, context provider, AppMap mode), so
+        // each row is one specific configuration the operator launched.
+        // Earlier the leaderboard collapsed all runs of a model into a
+        // single row regardless of context/mode; that hid the very
+        // signal the matrix is supposed to surface ("does adding traces
+        // help?"). Difficulty + category come from the YAML catalog
+        // (BugCatalog.getBug); enterprise issueIds (repo:ticket form) or
+        // catalog-misses land in "(unknown)" so the totals still tally.
+        data class CtxKey(val provider: String, val modelId: String,
+                          val contextProvider: String, val appmapMode: String)
+        fun keyOf(r: BenchmarkRunService.BenchmarkRun) =
+            CtxKey(r.provider, r.modelId, r.contextProvider, r.appmapMode)
+        val totalsByCtx = runs.groupingBy(::keyOf).eachCount()
         val passedRuns = runs.filter { it.status.name == "PASSED" }
-        val passRecordsByModel: Map<String, List<Triple<String, PassRecord, String>>> = passedRuns
-            .groupBy { it.modelId }
-            .mapValues { (_, modelRuns) ->
-                modelRuns.map { run ->
+        val passRecordsByCtx: Map<CtxKey, List<PassRecord>> = passedRuns
+            .groupBy(::keyOf)
+            .mapValues { (_, ctxRuns) ->
+                ctxRuns.map { run ->
                     val bug = bugCatalog.getBug(run.issueId)
-                    val record = PassRecord(
+                    PassRecord(
                         bugId = run.issueId,
                         durationMs = run.durationMs,
                         costUsd = run.stats.estimatedCostUsd,
                         difficulty = bug?.difficulty?.takeIf { it.isNotBlank() } ?: "(unknown)",
                         category = bug?.category?.takeIf { it.isNotBlank() } ?: "(unknown)"
                     )
-                    Triple(run.provider, record, run.modelId)
                 }
             }
-        val leaderboard = passRecordsByModel.map { (modelId, triples) ->
-            val records = triples.map { it.second }
-            val provider = triples.first().first
-            val totalForModel = totalsByModel[modelId] ?: records.size
+        val leaderboard = passRecordsByCtx.map { (ctx, records) ->
+            val totalForCtx = totalsByCtx[ctx] ?: records.size
             LeaderboardEntry(
-                modelId = modelId,
-                provider = provider,
-                totalRuns = totalForModel,
+                modelId = ctx.modelId,
+                provider = ctx.provider,
+                contextProvider = ctx.contextProvider,
+                appmapMode = ctx.appmapMode,
+                totalRuns = totalForCtx,
                 passedRuns = records.size,
-                passRate = records.size.toDouble() / totalForModel,
+                passRate = records.size.toDouble() / totalForCtx,
                 fastest = records.minByOrNull { it.durationMs },
                 cheapest = records.minByOrNull { it.costUsd },
                 avgPassMs = records.map { it.durationMs }.average().toLong(),
