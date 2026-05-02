@@ -69,6 +69,14 @@
             <div class="card"><span class="label">Runs</span><span class="value" th:text="${totalRuns}">0</span></div>
             <div class="card"><span class="label">Pass rate</span><span class="value" th:text="${#numbers.formatPercent(passRate, 1, 1)}">0%</span></div>
             <div class="card"><span class="label">Bugs</span><span class="value" th:text="${availableBugs}">0</span></div>
+            <div class="card" th:if="${bugLintHighCount > 0}"
+                 style="background:#fef3c7; border:1px solid #f59e0b">
+                <span class="label">Bug lint</span>
+                <span class="value">
+                    <a th:href="@{/admin/bug-lint}" style="color:#92400e"
+                       th:text="|${bugLintHighCount} HIGH|">…</a>
+                </span>
+            </div>
         </div>
     </section>
 
@@ -164,6 +172,188 @@
          and one-line tag clouds for difficulty + category. Sort/filter/
          paginate via the shared sortable-table helper.  Hidden when no
          model has solved anything yet. -->
+    <!-- Pre-training contamination warning: when a model PASSES with
+         contextProvider="none" the model produced the fix from memory.
+         Either it saw the bug during pre-training (model contamination)
+         or the problem statement / hints are leaky enough that any model
+         could solve it without code (bug-definition contamination). The
+         section shows the prompt material inline so the operator can
+         judge which one it is and decide whether to disqualify the
+         model, rewrite the bug definition, or both. -->
+    <section th:unless="${#lists.isEmpty(contamination)}"
+             style="margin: 1em 0; padding: 0.8em 1em; border:1px solid #f59e0b;
+                    background:#fef3c7; border-radius:4px">
+        <h2 style="margin:0 0 0.3em; color:#92400e">⚠ Pre-training contamination warning
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — <span th:text="${#lists.size(contamination)}">0</span>
+                (model, bug) pair(s) passed with no context
+            </span>
+        </h2>
+        <p style="margin:0.3em 0 0.6em; font-size:0.92em">
+            These runs passed with <strong>contextProvider = none</strong> — no
+            source code, no traces, no oracle file list was supplied to the model.
+            A passing patch in this configuration means one of two things:
+        </p>
+        <ol style="margin:0.3em 0 0.8em 1.2em; font-size:0.92em">
+            <li><strong>Model contamination</strong> — the bug (or its real fix
+                commit) was in the model's pre-training data. The model is
+                effectively cheating from memory; benchmark scores against this
+                model on this bug are not meaningful.</li>
+            <li><strong>Bug-definition contamination</strong> — the
+                <em>problem statement</em> or <em>hints</em> below give the fix
+                away. Any reasonably-capable model would pass without code.
+                Re-write the bug definition before continuing to score.</li>
+        </ol>
+        <p style="margin:0 0 0.6em; font-size:0.92em">
+            Click <em>Show prompt material</em> on each row and read the
+            problem statement out loud. If you can describe the fix from
+            it alone, the bug definition is leaky. If not, suspect the
+            model.
+        </p>
+        <p th:if="${param.probed != null}"
+           style="padding:0.4em 0.8em; background:#dcfce7; border:1px solid #86efac;
+                  border-radius:4px; color:#065f46; margin:0.4em 0">
+            Launched <strong th:text="${param.probed[0]}">…</strong> negative-control probe(s).
+            Probes appear in the runs table below; this section will refresh
+            once they complete.
+        </p>
+        <p th:if="${param.probeErr != null}"
+           style="padding:0.4em 0.8em; background:#fee2e2; border:1px solid #fca5a5;
+                  border-radius:4px; color:#991b1b; margin:0.4em 0">
+            Probe error: <code th:text="${param.probeErr[0]}">…</code>
+        </p>
+
+        <form method="post" action="/admin/contamination/probe" id="probeForm"
+              style="margin:0.6em 0">
+            <div style="display:flex; gap:0.6em; align-items:center; flex-wrap:wrap;
+                        margin-bottom:0.5em; padding:0.4em 0.6em; background:#fff;
+                        border:1px solid #fde68a; border-radius:4px">
+                <strong>Negative-control probe:</strong>
+                <label>Probe with
+                    <select name="probeModelId" required>
+                        <option value="" disabled selected>Pick a model…</option>
+                        <option th:each="m : ${availableProbeModels}"
+                                th:value="${m.id}"
+                                th:text="${m.displayName + ' — ' + m.provider}">…</option>
+                    </select>
+                </label>
+                <button type="submit" class="btn-sm"
+                        onclick="return confirm('Launch probes for the selected pairs? This spends real LLM tokens.')">
+                    Run probe (selected)
+                </button>
+                <button type="button" class="btn-sm"
+                        onclick="(function(){document.querySelectorAll('#probeForm input[name=pairs]').forEach(function(i){i.checked=true});if(confirm('Launch probes for ALL '+document.querySelectorAll('#probeForm input[name=pairs]').length+' contamination rows? This spends real LLM tokens.')){document.getElementById('probeForm').submit();}})()">
+                    Run probe for all
+                </button>
+                <span style="margin-left:auto; color:#555; font-size:0.85em">
+                    Probe = same bug, no context, different model. PASS → bug definition is leaky;
+                    FAIL → original model memorized the fix.
+                </span>
+            </div>
+
+        <table style="width:100%; font-size:0.9em; background:#fff;
+                      border-collapse:collapse">
+            <thead>
+                <tr>
+                    <th style="padding:4px 8px; border-bottom:1px solid #ddd"></th>
+                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Model</th>
+                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Bug</th>
+                    <th style="text-align:right; padding:4px 8px; border-bottom:1px solid #ddd">Passes / Total</th>
+                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Probe</th>
+                    <th style="padding:4px 8px; border-bottom:1px solid #ddd"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <th:block th:each="c : ${contamination}">
+                <tr>
+                    <td style="padding:4px 8px; border-bottom:1px solid #eee; text-align:center">
+                        <input type="checkbox" name="pairs"
+                               th:value="${c.provider + '|' + c.modelId + '|' + c.issueId}"
+                               title="Include this row in 'Run probe (selected)'">
+                    </td>
+                    <td style="padding:4px 8px; border-bottom:1px solid #eee">
+                        <code th:text="${c.provider + '/' + c.modelId}">…</code>
+                    </td>
+                    <td style="padding:4px 8px; border-bottom:1px solid #eee">
+                        <code th:text="${c.issueId}">BUG-…</code>
+                        — <span th:text="${c.issueTitle}">…</span>
+                    </td>
+                    <td style="text-align:right; padding:4px 8px; border-bottom:1px solid #eee">
+                        <strong th:text="${c.passes}">0</strong>
+                        / <span th:text="${c.total}">0</span>
+                    </td>
+                    <td style="padding:4px 8px; border-bottom:1px solid #eee; font-size:0.85em">
+                        <span th:if="${c.probeStatus == 'not-run'}" style="color:#888">— no probe yet —</span>
+                        <span th:if="${c.probeStatus == 'running'}"
+                              style="background:#e5e7eb; color:#374151; padding:1px 6px;
+                                     border-radius:3px">
+                            Probe running
+                            <a th:href="@{'/results/' + ${c.probeRunId}}"
+                               th:if="${c.probeRunId}">→</a>
+                        </span>
+                        <span th:if="${c.probeStatus == 'passed'}"
+                              style="background:#fef3c7; color:#92400e; padding:1px 6px;
+                                     border-radius:3px; font-weight:bold"
+                              th:title="'Probe model ' + ${c.probeModelLabel} + ' also passed -- the bug definition is leaky.'">
+                            BUG DEFINITION LEAK
+                            <a th:href="@{'/results/' + ${c.probeRunId}}"
+                               th:if="${c.probeRunId}" style="color:#92400e">→</a>
+                        </span>
+                        <span th:if="${c.probeStatus == 'failed'}"
+                              style="background:#fee2e2; color:#991b1b; padding:1px 6px;
+                                     border-radius:3px; font-weight:bold"
+                              th:title="'Probe model ' + ${c.probeModelLabel} + ' failed without context -- the original model memorized the fix.'">
+                            MODEL CONTAMINATION
+                            <a th:href="@{'/results/' + ${c.probeRunId}}"
+                               th:if="${c.probeRunId}" style="color:#991b1b">→</a>
+                        </span>
+                    </td>
+                    <td style="padding:4px 8px; border-bottom:1px solid #eee">
+                        <a th:href="@{'/results/' + ${c.latestRunId}}">latest run</a>
+                        ·
+                        <a th:href="@{'/results/' + ${c.latestRunId} + '/seed/1/audit'}">prompt</a>
+                        ·
+                        <button type="button" class="btn-sm"
+                                th:attr="data-target=${'contam-' + c.provider + '-' + c.modelId + '-' + c.issueId}"
+                                onclick="(function(b){var t=document.getElementById(b.getAttribute('data-target'));if(t){t.style.display=t.style.display==='none'?'':'none';}})(this)">
+                            Show prompt material
+                        </button>
+                    </td>
+                </tr>
+                <tr th:id="${'contam-' + c.provider + '-' + c.modelId + '-' + c.issueId}"
+                    style="display:none">
+                    <td colspan="6" style="padding:8px 12px; background:#fafaf5;
+                                            border-bottom:1px solid #eee">
+                        <div style="margin-bottom:0.6em">
+                            <strong>Problem statement</strong>
+                            <em style="color:#666; font-size:0.9em">— shipped to the model verbatim</em>
+                            <pre style="white-space:pre-wrap; background:#fff;
+                                        padding:0.5em 0.7em; border:1px solid #ddd;
+                                        border-radius:3px; margin:0.3em 0; font-size:0.88em"
+                                 th:text="${c.problemStatement}">…</pre>
+                        </div>
+                        <div th:unless="${#lists.isEmpty(c.hints)}" style="margin-bottom:0.6em">
+                            <strong>Hints</strong>
+                            <em style="color:#666; font-size:0.9em">— also shipped to the model</em>
+                            <ul style="margin:0.3em 0 0 1.2em">
+                                <li th:each="h : ${c.hints}" th:text="${h}">…</li>
+                            </ul>
+                        </div>
+                        <div th:unless="${#lists.isEmpty(c.filesTouched)}">
+                            <strong>Files the human fix touched</strong>
+                            <em style="color:#666; font-size:0.9em">— NOT shipped (oracle-only); shown here so you can judge whether the problem statement names them by accident</em>
+                            <ul style="margin:0.3em 0 0 1.2em; font-size:0.88em">
+                                <li th:each="f : ${c.filesTouched}"><code th:text="${f}">…</code></li>
+                            </ul>
+                        </div>
+                    </td>
+                </tr>
+                </th:block>
+            </tbody>
+        </table>
+        </form>
+    </section>
+
     <!-- Empty-leaderboard hint: shown when there ARE passing runs but
          all of them used the Oracle context provider (which is excluded
          from leaderboard ranking since it requires the curated
@@ -210,12 +400,19 @@
                 <option value="100">100</option>
             </select>
             <span class="help-text">rows per page</span>
+            <span style="flex:1"></span>
+            <button type="button" id="leaderboard-csv-btn" class="btn-sm">Export CSV</button>
+            <a id="leaderboard-xlsx-btn" class="btn-sm" href="/export/leaderboard.xlsx">Export XLSX</a>
+            <a id="exec-report-btn" class="btn-sm" href="/admin/report" target="_blank"
+               title="Print-ready executive summary covering methodology, headline results, and per-bug coverage. Use Cmd+P / Ctrl+P → Save as PDF in the new tab.">PDF report</a>
         </div>
 
         <div class="table-scroll">
         <table id="leaderboardTable" class="sortable-table"
                data-count-target="#leaderboard-count"
-               data-search-target="#leaderboard-search">
+               data-search-target="#leaderboard-search"
+               data-csv-target="#leaderboard-csv-btn"
+               data-csv-filename="leaderboard.csv">
             <thead>
                 <tr class="sort-row">
                     <th data-sort-key="model" title="Model id (the bridge resolves this to a Copilot or upstream provider)">Model <span class="sort-indicator"></span></th>
@@ -247,7 +444,8 @@
                 </tr>
             </thead>
             <tbody>
-            <th:block th:each="lb, iter : ${leaderboard}">
+            <th:block th:each="lb, iter : ${leaderboard}"
+                      th:with="delta=${leaderboardDeltas[iter.index]}">
             <tr th:attr="data-model=${lb.modelId},
                          data-provider=${lb.provider},
                          data-ctx=${lb.contextProvider},
@@ -289,8 +487,15 @@
                              ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
                              ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
                 <td class="num"
-                    th:title="${lb.passedRuns} + ' passing run(s) for this configuration'"
-                    th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></td>
+                    th:title="${lb.passedRuns} + ' passing run(s) for this configuration'">
+                    <span th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></span>
+                    <small th:if="${delta != null and not iter.first and delta.solvedDelta != 0}"
+                           th:style="${delta != null and delta.solvedDelta > 0 ? 'color:#16a34a' : 'color:#b91c1c'}"
+                           th:text="${delta != null ? ((delta.solvedDelta > 0 ? '+' : '') + delta.solvedDelta) : ''}"
+                           style="display:block; font-size:0.85em"></small>
+                    <small th:if="${iter.first}"
+                           style="display:block; color:#16a34a; font-size:0.85em">leader</small>
+                </td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
                     th:title="'Fastest pass on ' + ${lb.fastest.bugId} + ' (' + ${lb.fastest.difficulty} + ' / ' + ${lb.fastest.category} + ') · ' + ${lb.fastest.durationMs} + ' ms wall clock'"
                     th:with="d=${lb.fastest.durationMs},
@@ -314,15 +519,25 @@
                              ms=${d % 1000},
                              sTotal=${d / 1000},
                              s=${sTotal % 60},
-                             m=${sTotal / 60}"
-                    th:text="${m > 0
+                             m=${sTotal / 60}">
+                    <span th:text="${m > 0
                                ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's'
                                : (sTotal > 0
                                   ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
-                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
+                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></span>
+                    <small th:if="${delta != null and not iter.first and delta.avgMsPctVsLeader != 0}"
+                           th:style="${delta != null and delta.avgMsPctVsLeader > 0 ? 'color:#b91c1c' : 'color:#16a34a'}"
+                           th:text="${delta != null ? ((delta.avgMsPctVsLeader > 0 ? '+' : '') + delta.avgMsPctVsLeader + '% vs leader') : ''}"
+                           style="display:block; font-size:0.8em"></small>
+                </td>
                 <td class="num" style="white-space:nowrap"
-                    th:title="'Avg $' + ${lb.avgPassCostUsd} + ' across ' + ${lb.passedRuns} + ' passing run(s) — uses /admin/pricing per-1K rates'"
-                    th:text="'$' + ${#numbers.formatDecimal(lb.avgPassCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
+                    th:title="'Avg $' + ${lb.avgPassCostUsd} + ' across ' + ${lb.passedRuns} + ' passing run(s) — uses /admin/pricing per-1K rates'">
+                    <span th:text="'$' + ${#numbers.formatDecimal(lb.avgPassCostUsd, 1, 'COMMA', 6, 'POINT')}"></span>
+                    <small th:if="${delta != null and not iter.first and delta.avgCostPctVsLeader != 0}"
+                           th:style="${delta != null and delta.avgCostPctVsLeader > 0 ? 'color:#b91c1c' : 'color:#16a34a'}"
+                           th:text="${delta != null ? ((delta.avgCostPctVsLeader > 0 ? '+' : '') + delta.avgCostPctVsLeader + '% vs leader') : ''}"
+                           style="display:block; font-size:0.8em"></small>
+                </td>
                 <td th:title="'Per-difficulty breakdown of bugs solved by this configuration (counts after × sign)'">
                     <span th:each="entry : ${lb.solvedByDifficulty}"
                           th:title="${entry.key} + ' difficulty bugs solved: ' + ${entry.value}"
@@ -525,6 +740,8 @@
                 </select>
                 <span class="help-text">rows per page</span>
                 <span style="flex:1"></span>
+                <button type="button" id="runs-csv-btn" class="btn-sm">Export CSV</button>
+                <a id="runs-xlsx-btn" class="btn-sm" href="/export/runs.xlsx">Export XLSX</a>
                 <button type="submit" class="btn-danger btn-sm" id="runs-delete-btn" disabled>
                     Delete selected (<span id="runs-selected-count">0</span>)
                 </button>
@@ -534,7 +751,9 @@
             <table class="sortable-table"
                    id="runsTable"
                    data-count-target="#runs-count"
-                   data-search-target="#runs-search">
+                   data-search-target="#runs-search"
+                   data-csv-target="#runs-csv-btn"
+                   data-csv-filename="benchmark-runs.csv">
                 <thead>
                     <tr class="sort-row">
                         <th style="width:1.4em">
