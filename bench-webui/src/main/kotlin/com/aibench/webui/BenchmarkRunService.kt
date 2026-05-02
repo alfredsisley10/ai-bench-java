@@ -1,7 +1,11 @@
 package com.aibench.webui
 
+import com.aibench.webui.persistence.BenchmarkRunEntity
+import com.aibench.webui.persistence.BenchmarkRunRepository
 import com.fasterxml.jackson.databind.ObjectMapper
+import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
+import org.springframework.data.domain.PageRequest
 import org.springframework.stereotype.Component
 import java.time.Duration
 import java.time.Instant
@@ -29,7 +33,8 @@ class BenchmarkRunService(
     private val bugCatalog: BugCatalog,
     private val contextProvider: ContextProvider,
     private val traceManager: AppMapTraceManager,
-    private val throttler: AdaptiveThrottler
+    private val throttler: AdaptiveThrottler,
+    private val runRepo: BenchmarkRunRepository
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -243,6 +248,67 @@ class BenchmarkRunService(
     }
 
     private val runs = ConcurrentHashMap<String, BenchmarkRun>()
+
+    /**
+     * Snapshot the live in-memory run into the H2 database. Called at
+     * (a) start, so a JVM crash mid-run still leaves an audit row;
+     * (b) every terminal status transition (PASSED/FAILED/ERRORED/
+     * CANCELED), so the dashboard's historical view survives restarts.
+     *
+     * Persistence failures are logged and swallowed -- the in-memory
+     * run remains the canonical truth for the live dashboard. We
+     * never want a transient DB hiccup to crash the worker thread.
+     *
+     * SECURITY: BenchmarkRunEntity.from() copies only fields that
+     * exist on BenchmarkRun. Credentials / API keys are not on
+     * BenchmarkRun and so cannot leak into the DB by accident.
+     */
+    private fun persist(run: BenchmarkRun) {
+        try {
+            runRepo.save(BenchmarkRunEntity.from(run))
+        } catch (t: Throwable) {
+            log.warn("Failed to persist run {}: {}", run.id, t.message)
+        }
+    }
+
+    /**
+     * On startup: rehydrate the in-memory map from the DB so the
+     * dashboard sees prior runs immediately, and reconcile any rows
+     * whose status was RUNNING/QUEUED at the previous JVM exit
+     * (their worker thread is gone -- mark them ERRORED both in
+     * memory and on disk so the operator gets accurate state).
+     */
+    @PostConstruct
+    fun hydrateFromDb() {
+        try {
+            val rows = runRepo.findAll()
+            var revived = 0
+            var stranded = 0
+            for (e in rows) {
+                val r = e.toDomain()
+                if (r.status == Status.RUNNING || r.status == Status.QUEUED) {
+                    r.status = Status.ERRORED
+                    r.endedAt = r.endedAt ?: Instant.now()
+                    r.phase = "complete"
+                    entry(r, Category.ERROR,
+                        "Run was active when bench-webui restarted -- worker thread gone, " +
+                        "marking ERRORED so the dashboard reflects the actual state.")
+                    runs[r.id] = r
+                    persist(r)
+                    stranded++
+                } else {
+                    runs[r.id] = r
+                    revived++
+                }
+            }
+            if (rows.isNotEmpty()) {
+                log.info("Rehydrated {} run(s) from DB ({} reconciled from stranded RUNNING/QUEUED)",
+                    revived + stranded, stranded)
+            }
+        } catch (t: Throwable) {
+            log.warn("Failed to rehydrate runs from DB: {}", t.message)
+        }
+    }
     /**
      * Multi-threaded executor — multiple benchmark runs proceed in
      * parallel for everything EXCEPT the LLM call itself. The bridge
@@ -306,6 +372,9 @@ class BenchmarkRunService(
         // until simulate's first line ran -- and if the executor was
         // somehow late picking the task up, the page looked broken.
         entry(run, Category.INFO, "Run queued — waiting for worker thread to pick it up.")
+        // Persist the QUEUED row immediately so a JVM crash before the
+        // worker picks it up still leaves an audit trail.
+        persist(run)
         executor.submit { runCatching { simulate(run) }.onFailure { logRunError(run, it) } }
 
         // Watchdog: if simulate hasn't transitioned the run out of
@@ -328,6 +397,7 @@ class BenchmarkRunService(
                     "limit, or an exception before the first status update). Try again or " +
                     "check bench-webui logs for stack traces from BenchmarkRunService.")
                 log.warn("Benchmark run {} stuck in QUEUED >15s with no active worker -- marked ERRORED", id)
+                persist(current)
             }
         }, 15, java.util.concurrent.TimeUnit.SECONDS)
 
@@ -352,6 +422,7 @@ class BenchmarkRunService(
             run.endedAt = Instant.now()
             run.phase = "complete"
             entry(run, Category.INFO, "Run canceled by operator")
+            persist(run)
             return true
         }
         return false
@@ -373,7 +444,13 @@ class BenchmarkRunService(
             when {
                 r == null -> missing++
                 r.status == Status.RUNNING || r.status == Status.QUEUED -> skipped++
-                else -> { runs.remove(id); deleted++ }
+                else -> {
+                    runs.remove(id)
+                    try { runRepo.deleteById(id) } catch (t: Throwable) {
+                        log.warn("Failed to delete run {} from DB: {}", id, t.message)
+                    }
+                    deleted++
+                }
             }
         }
         return DeleteSummary(deleted, skipped, missing)
@@ -716,6 +793,7 @@ class BenchmarkRunService(
             "Final: $passCount/${run.seeds} seeds passed → " +
             "pass@${run.seeds}=${if (passCount == run.seeds) "PASS" else "FAIL"}, " +
             "estimated cost \$${"%.6f".format(cost)}")
+        persist(run)
     }
 
     private fun sampleFailingTests(issueId: String): List<String> {
@@ -752,6 +830,7 @@ class BenchmarkRunService(
         run.endedAt = Instant.now()
         entry(run, Category.ERROR, "Run failed: ${t.javaClass.simpleName}: ${t.message}")
         log.error("Benchmark run {} threw", run.id, t)
+        persist(run)
     }
 
     private fun sleep(ms: Long) {

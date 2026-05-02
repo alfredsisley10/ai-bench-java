@@ -46,6 +46,19 @@ dependencies {
     // are viewable in the WebUI without hand-crafting an HTML twin.
     implementation("org.commonmark:commonmark:0.22.0")
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.22.0")
+    // Local persistence for benchmark runs. H2 file mode -- single-file
+    // DB at ${WEBUI_DATA_DIR:~/.ai-bench}/bench-webui.mv.db, no separate
+    // server process. JPA + Jackson handle the (de)serialization of
+    // nested data classes (SeedResult, SeedAudit, RunStats) into JSON
+    // text columns so the schema stays one-table.
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    runtimeOnly("com.h2database:h2:2.3.232")
+    // Jackson Kotlin module: enables data-class default parameter
+    // values and nullable handling when reading JSON column blobs back
+    // into BenchmarkRunService.{RunStats, SeedResult, SeedAudit,
+    // LogEntry}. Without it, Hibernate fails on the first historical
+    // row that lacks a field added in a later schema version.
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     // Gradle 9 enforces an explicit JUnit Platform launcher on the test
@@ -60,6 +73,21 @@ appmap {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// Heap for `gradle bootRun`. Default JVM heap is ~256MB which OOMs
+// once a few hundred BenchmarkRun objects (each holding seedAudits +
+// log entries + prompt strings) accumulate in memory. 4 GB gives
+// comfortable headroom for a full matrix run; HeapDumpOnOutOfMemoryError
+// drops a hprof in $WEBUI_DATA_DIR if we ever blow it again so the
+// next OOM is debuggable instead of mysterious.
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    jvmArgs = listOf(
+        "-Xmx4g",
+        "-XX:+HeapDumpOnOutOfMemoryError",
+        "-XX:HeapDumpPath=" + (System.getenv("WEBUI_DATA_DIR")
+            ?: "${System.getProperty("user.home")}/.ai-bench")
+    )
 }
 
 // Bundle the corp init-script template into the fat jar so
