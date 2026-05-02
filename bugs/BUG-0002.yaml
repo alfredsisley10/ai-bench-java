@@ -17,11 +17,12 @@ hiddenTest:
   file: shared-domain/src/test/java/com/omnibank/shared/domain/MoneyTest.java
 
 problemStatement: |
-  Money.dividedBy currently throws ArithmeticException when the result cannot
-  be represented exactly (e.g. 100 / 3). Banker's rounding should be used at
-  a scale of currency.minorUnits + 4 to avoid truncation and still survive
-  non-terminating quotients. Fix Money.dividedBy to specify the scale and
-  rounding mode explicitly.
+  Dividing a monetary amount by a number that produces a non-terminating decimal
+  (e.g. 100 ÷ 3) throws ArithmeticException instead of returning a rounded
+  result. Banker's rounding should be applied at a scale of
+  currency.minorUnits + 4 so that non-terminating quotients are handled without
+  error. The division operation must specify both the scale and rounding mode
+  explicitly.
 
 appmap:
   recommendedTests:

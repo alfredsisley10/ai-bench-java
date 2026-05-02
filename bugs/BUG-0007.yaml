@@ -17,12 +17,12 @@ hiddenTest:
   file: lending-corporate/src/test/java/com/omnibank/lending/corporate/api/AmortizationCalculatorTest.java
 
 problemStatement: |
-  AmortizationCalculator.standardAmortizing is supposed to absorb rounding
-  drift on the final installment so closing balance is zero. A regression
-  dropped the `if (i == periods)` special case; the final installment is now
-  computed like any other, leaving a residual of a few cents. Restore the
-  final-installment branch that sets principalPortion = balance and closing =
-  zero.
+  The final installment of a standard amortization schedule fails to close the
+  loan at exactly zero. A regression removed the special case that absorbs
+  rounding drift on the last period; the installment is now computed using the
+  normal formula, leaving a residual of a few cents. The final installment must
+  set its principal portion to the remaining balance so that the closing balance
+  is forced to zero.
 
 appmap:
   recommendedTests:

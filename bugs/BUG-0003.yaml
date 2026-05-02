@@ -17,12 +17,11 @@ hiddenTest:
   file: ledger-core/src/test/java/com/omnibank/ledger/internal/PostingServiceImplCurrencyCheckTest.java
 
 problemStatement: |
-  An edge case in the validate() routine in PostingServiceImpl allows a
-  mixed-currency journal entry to pass the single-currency check if the entry
-  has exactly two lines and one of them references a GL account in a different
-  currency than the line amount. Trial balance invariant is then broken for
-  the rest of the day. Tighten validation so cross-currency journals are
-  rejected BEFORE any DB write.
+  A mixed-currency journal entry with exactly two posting lines can pass the
+  single-currency validation check when one line's GL account currency differs
+  from that line's amount currency. The trial balance invariant is then broken
+  for the rest of the day. Cross-currency journals must be rejected before any
+  database write.
 
 appmap:
   recommendedTests:

@@ -17,10 +17,11 @@ hiddenTest:
   file: payments-hub/src/test/java/com/omnibank/payments/wire/WireCutoffPolicyTest.java
 
 problemStatement: |
-  WireCutoffPolicy.isFedwireOpen checks weekday but not holiday status. On
-  a Fed-observed holiday (e.g. Juneteenth) the current implementation would
-  accept a wire for same-day settlement even though Fedwire is closed. Use
-  BusinessCalendar.isBusinessDay to guard the check.
+  The Fedwire open/closed check verifies only that the day is a weekday and
+  does not consult the Federal Reserve holiday calendar. On a Fed-observed
+  holiday (e.g. Juneteenth) same-day wire submissions are incorrectly accepted
+  even though Fedwire is closed. The check must also verify that the day is a
+  recognised business day before treating the settlement window as open.
 
 appmap:
   recommendedTests:

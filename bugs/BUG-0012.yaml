@@ -17,6 +17,9 @@ hiddenTest:
   file: accounts-consumer/src/test/java/com/omnibank/accounts/consumer/internal/HoldEntityTest.java
 
 problemStatement: |
-  HoldEntity.isActive treats a hold as active when now.isBefore(expiresAt).
-  Intended behavior is that the hold is active up to and including its expiry
-  instant (inclusive on expiresAt). Use !now.isAfter(expiresAt) instead.
+  A hold that expires at exactly the current instant is incorrectly treated as
+  expired rather than active. The active-status check uses a strictly-less-than
+  comparison (now is before expiresAt), but the intended behaviour is that a
+  hold remains active up to and including its expiry instant. The comparison
+  must be changed so that the boundary instant is treated as still-active
+  (i.e., now ≤ expiresAt).
