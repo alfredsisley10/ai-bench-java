@@ -1,5 +1,5 @@
 id: BUG-0011
-title: "Percent.of rounds Money to 10 decimals instead of currency scale"
+title: "Percentage-of-amount rounds to 10 decimals instead of the target currency's scale"
 module: shared-domain
 difficulty: TRIVIAL
 category: NUMERIC

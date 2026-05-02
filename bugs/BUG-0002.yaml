@@ -1,5 +1,5 @@
 id: BUG-0002
-title: "Money division silently truncates on non-terminating quotient"
+title: "Currency division on non-terminating quotients silently loses precision"
 module: shared-domain
 difficulty: EASY
 category: NUMERIC
