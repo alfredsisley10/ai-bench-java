@@ -34,7 +34,8 @@ import java.util.concurrent.TimeUnit
 class RealBenchmarkExecutor(
     private val bankingApp: BankingAppManager,
     private val connectionSettings: ConnectionSettings,
-    private val bugCatalog: BugCatalog
+    private val bugCatalog: BugCatalog,
+    private val worktreePool: WorktreePool
 ) {
 
     private val log = LoggerFactory.getLogger(RealBenchmarkExecutor::class.java)
@@ -142,49 +143,30 @@ class RealBenchmarkExecutor(
                     "then commit a real broken state to $branch before re-running.",
                 extractedPatch = patch)
         }
-        logFn("Seed $seedNumber: bug branch '$branch' exists -- creating per-seed worktree")
-
-        // Resolve which file paths the bug touches. We overlay them
-        // from the break branch onto a copy of the live working tree.
-        val touched = bugCatalog.getBug(issueId)?.filesTouched ?: emptyList()
-        val seedRoot = Files.createTempDirectory("ai-bench-${runId}-seed-${seedNumber}-").toFile()
+        // Acquire a worktree from the shared pool. The pool blocks if
+        // every worktree is busy (acts as the local-execution throttle,
+        // mirroring AdaptiveThrottler's role for LLM calls). Pool
+        // acquire also re-overlays filesTouched from the live tree to
+        // undo any prior run's mutations -- so we start clean, then
+        // overlay the break-branch versions below.
+        val bug = bugCatalog.getBug(issueId)
+        val touched = bug?.filesTouched ?: emptyList()
+        if (bug == null) {
+            return ScoreResult(Outcome.FAILED_NO_BRANCH, 0, 0,
+                System.currentTimeMillis() - started,
+                "Bug $issueId not in catalog; can't acquire worktree.",
+                extractedPatch = patch)
+        }
+        logFn("Seed $seedNumber: acquiring worktree from pool (cap=${worktreePool.status().cap})")
+        val lease = worktreePool.acquire(bug)
+        val seedRoot = lease.dir
         return try {
-            // Copy the live banking-app working tree (the on-disk
-            // shape, with the gradle 9.4.1 / JDK 25 upgrade applied)
-            // rather than worktree-ing off git's `main` branch, which
-            // is stuck at the initial JDK 17 / gradle 8.14.4 commit
-            // and doesn't compile any of the switch-pattern code in
-            // shared-domain. The live working tree is the canonical
-            // "this builds today" snapshot.
-            //
-            // Skip .gradle, build, tmp -- per-subproject build outputs
-            // are large (~hundreds of MB) and gradle re-builds them
-            // anyway. Skip .git so the seed dir doesn't shadow any
-            // git operations on the parent.
-            val skipDirs = setOf(".git", ".gradle", "build", "tmp", "out", "node_modules")
-            bankingDir.walkTopDown()
-                .onEnter { it == bankingDir || (it.name !in skipDirs) }
-                .forEach { src ->
-                    val rel = src.absolutePath.removePrefix(bankingDir.absolutePath)
-                        .trimStart('/')
-                    if (rel.isEmpty()) return@forEach
-                    val dst = File(seedRoot, rel)
-                    if (src.isDirectory) {
-                        dst.mkdirs()
-                    } else if (src.isFile) {
-                        dst.parentFile?.mkdirs()
-                        src.copyTo(dst, overwrite = true)
-                        if (src.canExecute()) dst.setExecutable(true)
-                    }
-                }
-            logFn("Seed $seedNumber: seed dir at ${seedRoot.absolutePath} (copy of live banking-app)")
+            logFn("Seed $seedNumber: worktree at ${seedRoot.absolutePath} (pooled)")
 
-            // Overlay the bug's filesTouched from the break branch.
-            // `git show <ref>:<path>` reads the file content at that
-            // ref from banking-app's git history and writes it to the
-            // seed file path. We don't need a .git in the seed dir
-            // for this -- git show queries the parent banking-app
-            // repo's git dir.
+            // Overlay the bug's filesTouched from the break branch on
+            // top of the live state the pool just reset us to. Same
+            // git-show pattern as before; the pool is just the dir,
+            // the git store is still the parent banking-app repo.
             if (touched.isEmpty()) {
                 logFn("Seed $seedNumber: WARNING -- no filesTouched; patch will apply against working tree, not break.")
             } else {
@@ -332,15 +314,11 @@ class RealBenchmarkExecutor(
                 "Real scoring threw ${e.javaClass.simpleName}: ${e.message ?: ""}",
                 extractedPatch = patch)
         } finally {
-            // Seed dir is a plain copy now (no git worktree), so just
-            // recursive-delete. We do still attempt `git worktree
-            // remove` defensively in case an older code path left a
-            // stale worktree entry behind.
-            runCatching {
-                runProcess(listOf("git", "worktree", "remove", "--force", seedRoot.absolutePath),
-                    bankingDir, 30)
-            }
-            runCatching { seedRoot.deleteRecursively() }
+            // Return the worktree to the pool. The pool's next acquire
+            // will re-overlay filesTouched from the live tree to wipe
+            // this run's mutations -- much cheaper than the previous
+            // pattern's full deleteRecursively + recreate.
+            lease.release()
         }
     }
 
