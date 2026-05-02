@@ -5,6 +5,23 @@ spring:
     cache: false
   mvc:
     static-path-pattern: /static/**
+  # Local persistence for completed benchmark runs. H2 file mode at
+  # ${WEBUI_DATA_DIR}/bench-webui.mv.db (defaults to ~/.ai-bench).
+  # MODE=PostgreSQL keeps SQL portable if we ever swap engines; AUTO_SERVER
+  # lets a second process (e.g. a CLI inspector) attach without taking the
+  # DB down. NOTHING from SecretStore or ConnectionSettings is persisted
+  # here -- credentials live in the OS keychain, not in this DB.
+  datasource:
+    url: jdbc:h2:file:${WEBUI_DATA_DIR:${user.home}/.ai-bench}/bench-webui;MODE=PostgreSQL;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate.dialect: org.hibernate.dialect.H2Dialect
 
 server:
   port: ${WEBUI_PORT:7777}

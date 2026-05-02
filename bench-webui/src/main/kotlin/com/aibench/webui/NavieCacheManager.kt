@@ -31,12 +31,14 @@ class NavieCacheManager(
     private val bankingApp: BankingAppManager
 ) {
     private val log = LoggerFactory.getLogger(NavieCacheManager::class.java)
-    // Plain Jackson — no jackson-module-kotlin on the classpath. Reading
-    // back into a Kotlin data class works because Jackson can construct
-    // Kotlin `data class` POJOs through their Java-style ctor when
-    // there's a single matching ctor and no defaulted params, which is
-    // the case for [NavieResult].
+    // jackson-module-kotlin is now on the classpath (added for the H2
+    // JPA layer); register it so NavieResult's defaulted params
+    // (tracesIdentified, roundTrips) deserialize cleanly. Without it,
+    // every cached entry fails to parse and falls through to the slow
+    // appmap-search path -- which during a 432-run matrix multiplied
+    // bridge load by ~6x and contributed to the OOM.
     private val mapper: ObjectMapper = ObjectMapper()
+        .registerModule(com.fasterxml.jackson.module.kotlin.KotlinModule.Builder().build())
 
     /** Stdout/stderr tail cap (chars) per active job. ~16K is enough
      *  to span Navie's "configuration loaded -> classifying -> searching
