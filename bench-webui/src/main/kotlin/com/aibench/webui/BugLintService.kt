@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component
 class BugLintService {
 
     enum class Severity { HIGH, MEDIUM, INFO }
-    enum class Source { PROBLEM_STATEMENT, HINT }
+    enum class Source { PROBLEM_STATEMENT, HINT, TITLE }
 
     data class LintFinding(
         val severity: Severity,
@@ -43,6 +43,10 @@ class BugLintService {
         val needles = collectNeedles(bug)
         val texts = buildList {
             add(Triple(bug.problemStatement, Source.PROBLEM_STATEMENT, 0))
+            // Title is shipped to the LLM verbatim (BenchmarkRunService
+            // line 876 ships "Issue: ${run.issueId} -- ${run.issueTitle}.")
+            // so it's just as leak-prone as the problem statement.
+            add(Triple(bug.title, Source.TITLE, 0))
             bug.hints.forEachIndexed { i, h -> add(Triple(h, Source.HINT, i)) }
         }
         for ((text, source, idx) in texts) {
