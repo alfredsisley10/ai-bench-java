@@ -17,12 +17,12 @@ hiddenTest:
   file: payments-hub/src/test/java/com/omnibank/payments/internal/PaymentIdempotencyTest.java
 
 problemStatement: |
-  Two concurrent submit() calls with the same idempotency key race past the
-  initial findByIdempotencyKey check and both create Payment entities,
-  violating the unique index on the second insert. The second caller should
-  simply return the payment id created by the first. Add a narrow catch for
-  DataIntegrityViolationException that re-reads the payment and returns its
-  id.
+  Two simultaneous requests carrying the same idempotency key race past the
+  initial findByIdempotencyKey check and both succeed in inserting new
+  records, violating the unique index on the duplicate row. The second
+  caller should respond with the identifier produced by the first. Add a
+  narrow catch for DataIntegrityViolationException that re-reads the
+  existing record and surfaces its identifier.
 
 appmap:
   recommendedTests:

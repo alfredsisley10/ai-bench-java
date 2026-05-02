@@ -123,12 +123,17 @@ class BugLintService {
                 }
             }
             // INFO: shared wording between problem statement and the test method name.
+            // Threshold of 5 echoes: a well-named test SHOULD share vocabulary
+            // with its description, so 1-4 word overlap is normal domain
+            // vocabulary, not a leak. 5+ shared words means the description
+            // is paraphrasing the test method name -- worth surfacing.
             if (source == Source.PROBLEM_STATEMENT && needles.testMethod != null) {
                 val methodWords = needles.testMethod.split('_')
                     .filter { it.length > 4 && it.lowercase() !in stopwords }
                     .map { it.lowercase() }.toSet()
                 val tokenSet = tokensLc.toSet()
                 val shared = methodWords.intersect(tokenSet)
+                if (shared.size < 5) continue   // below threshold; treat as normal vocabulary overlap
                 for (w in shared) {
                     findings += LintFinding(
                         severity = Severity.INFO,
