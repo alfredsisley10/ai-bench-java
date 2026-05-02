@@ -28,7 +28,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * Thread-safe; single Spring bean shared by every caller.
  */
 @Component
-class AdaptiveThrottler {
+class AdaptiveThrottler(
+    private val pauseGate: PauseGate
+) {
     private val log = LoggerFactory.getLogger(AdaptiveThrottler::class.java)
 
     private val MIN_PERMITS = 1
@@ -56,8 +58,12 @@ class AdaptiveThrottler {
     }
 
     /** Block until a permit is free. Honors the post-rate-limit
-     *  cooldown by sleeping until cooldownUntil before taking. */
+     *  cooldown by sleeping until cooldownUntil before taking,
+     *  and honors the system-wide PauseGate -- if paused, blocks
+     *  here until resumed (in-flight calls finish; new dispatches
+     *  wait). */
     fun acquire() {
+        pauseGate.awaitNotPaused()
         val until = cooldownUntil
         if (until != null) {
             val remain = Duration.between(Instant.now(), until)

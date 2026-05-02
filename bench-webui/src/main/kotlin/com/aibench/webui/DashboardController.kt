@@ -24,8 +24,28 @@ class DashboardController(
     private val navieCache: NavieCacheManager,
     private val tracesAdmin: AdminTracesController,
     private val throttler: AdaptiveThrottler,
-    private val bugLint: BugLintService
+    private val bugLint: BugLintService,
+    private val pauseGate: PauseGate,
+    private val worktreePool: WorktreePool
 ) {
+
+    /** Live in-progress snapshot. Same shape as
+     *  [RunControlController.progress] returns over JSON; this
+     *  one is used to render the initial dashboard payload before
+     *  the JS poll kicks in. */
+    data class LiveProgress(
+        val isPaused: Boolean,
+        val active: Int,
+        val running: Int,
+        val queued: Int,
+        val poolCap: Int,
+        val poolAvailable: Int,
+        val recentCompleted: Int,
+        val recentPassRate: Double,
+        val avgRunMs: Long,
+        val etrSec: Long?,
+        val sessionCostUsd: Double
+    )
 
     /** Compact row for the dashboard's "Background tasks" tile. Mirrors
      *  the per-task subset the operator needs to know about without
@@ -180,6 +200,7 @@ class DashboardController(
         // to know "how many distinct bugs have I actually benchmarked"
         // -- a 12/12 catalog with no runs should read 0 here.
         model.addAttribute("availableBugs", runs.map { it.issueId }.distinct().size)
+        model.addAttribute("liveProgress", computeLiveProgress(runs))
         // Static bug-definition leakiness check. Counts every HIGH
         // severity finding across every bug yaml; the dashboard tile
         // appears only when this is non-zero so a clean catalog stays
@@ -564,6 +585,52 @@ class DashboardController(
         model.addAttribute("runsDeleteResult", session.getAttribute("runsDeleteResult"))
         session.removeAttribute("runsDeleteResult")
         return "dashboard"
+    }
+
+    /**
+     * Compute live progress over the most recent 2000 runs. Shared
+     * with [RunControlController.progress] (which serves the same
+     * shape over JSON for poll-based updates).
+     */
+    fun computeLiveProgress(runs: List<BenchmarkRunService.BenchmarkRun>): LiveProgress {
+        val active = runs.filter {
+            it.status == BenchmarkRunService.Status.RUNNING ||
+            it.status == BenchmarkRunService.Status.QUEUED
+        }
+        val running = active.count { it.status == BenchmarkRunService.Status.RUNNING }
+        val queued = active.count { it.status == BenchmarkRunService.Status.QUEUED }
+        val recentCompleted = runs.asSequence()
+            .filter {
+                it.status == BenchmarkRunService.Status.PASSED ||
+                it.status == BenchmarkRunService.Status.FAILED ||
+                it.status == BenchmarkRunService.Status.ERRORED ||
+                it.status == BenchmarkRunService.Status.CANCELED
+            }
+            .sortedByDescending { it.endedAt ?: java.time.Instant.EPOCH }
+            .take(100).toList()
+        val recentN = recentCompleted.size
+        val avgRunMs = if (recentN > 0) recentCompleted.map { it.durationMs }.average().toLong() else 0L
+        val passed = recentCompleted.count { it.status == BenchmarkRunService.Status.PASSED }
+        val passRate = if (recentN > 0) passed.toDouble() / recentN else 0.0
+        val sessionHorizon = java.time.Instant.now().minus(java.time.Duration.ofHours(1))
+        val sessionRuns = runs.filter { it.startedAt.isAfter(sessionHorizon) }
+        val sessionCost = sessionRuns.sumOf { it.stats.estimatedCostUsd }
+        val poolStatus = worktreePool.status()
+        val etrSec = if (avgRunMs > 0)
+            (active.size.toLong() * avgRunMs / poolStatus.cap.coerceAtLeast(1) / 1000) else null
+        return LiveProgress(
+            isPaused = pauseGate.isPaused(),
+            active = active.size,
+            running = running,
+            queued = queued,
+            poolCap = poolStatus.cap,
+            poolAvailable = poolStatus.available,
+            recentCompleted = recentN,
+            recentPassRate = passRate,
+            avgRunMs = avgRunMs,
+            etrSec = etrSec,
+            sessionCostUsd = sessionCost
+        )
     }
 
     /**
