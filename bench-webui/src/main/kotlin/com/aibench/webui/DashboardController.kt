@@ -23,7 +23,8 @@ class DashboardController(
     private val bugCatalog: BugCatalog,
     private val navieCache: NavieCacheManager,
     private val tracesAdmin: AdminTracesController,
-    private val throttler: AdaptiveThrottler
+    private val throttler: AdaptiveThrottler,
+    private val bugLint: BugLintService
 ) {
 
     /** Compact row for the dashboard's "Background tasks" tile. Mirrors
@@ -35,6 +36,16 @@ class DashboardController(
         val phase: String,
         val elapsedSec: Long,
         val link: String
+    )
+
+    /** Inline "vs leader" deltas surfaced on every non-leader row.
+     *  Negative percents mean "better than leader" (faster / cheaper);
+     *  positive means worse. The leader's own row gets zeros. */
+    data class LeaderboardDelta(
+        val rowKey: String,
+        val solvedDelta: Int,
+        val avgMsPctVsLeader: Int,
+        val avgCostPctVsLeader: Int
     )
 
     /** Per-bug rollup for the leaderboard drilldown. Aggregates every
@@ -119,6 +130,14 @@ class DashboardController(
         // to know "how many distinct bugs have I actually benchmarked"
         // -- a 12/12 catalog with no runs should read 0 here.
         model.addAttribute("availableBugs", runs.map { it.issueId }.distinct().size)
+        // Static bug-definition leakiness check. Counts every HIGH
+        // severity finding across every bug yaml; the dashboard tile
+        // appears only when this is non-zero so a clean catalog stays
+        // visually quiet.
+        model.addAttribute("bugLintHighCount",
+            bugCatalog.allBugs().sumOf { bug ->
+                bugLint.lint(bug).count { it.severity == BugLintService.Severity.HIGH }
+            })
 
         // Leaderboard — group PASSED runs by the FULL execution context
         // (LLM provider, model id, context provider, AppMap mode), so
@@ -210,6 +229,24 @@ class DashboardController(
                 .thenBy { it.avgPassMs }
         )
         model.addAttribute("leaderboard", leaderboard)
+        // Vs-leader deltas. Used by the template to render inline
+        // "+15% slower" / "+8% more expensive" / "-2 fewer solves"
+        // on every non-leader row so the operator can dimension how
+        // much the lower-ranked configurations cost vs the leader.
+        // Leader = first row; deltas measured relative to it.
+        val leader = leaderboard.firstOrNull()
+        val deltas: List<LeaderboardDelta> = if (leader == null) emptyList()
+        else leaderboard.map { lb ->
+            LeaderboardDelta(
+                rowKey = "${lb.modelId}|${lb.contextProvider}|${lb.appmapMode}",
+                solvedDelta = lb.passedRuns - leader.passedRuns,
+                avgMsPctVsLeader = if (leader.avgPassMs > 0)
+                    ((lb.avgPassMs - leader.avgPassMs) * 100.0 / leader.avgPassMs).toInt() else 0,
+                avgCostPctVsLeader = if (leader.avgPassCostUsd > 0)
+                    ((lb.avgPassCostUsd - leader.avgPassCostUsd) * 100.0 / leader.avgPassCostUsd).toInt() else 0
+            )
+        }
+        model.addAttribute("leaderboardDeltas", deltas)
         // When the leaderboard is empty BUT we DO have passing oracle
         // runs in the runs list, surface "Oracle is excluded from the
         // ranking — try a non-Oracle context" instead of just hiding
@@ -220,6 +257,101 @@ class DashboardController(
         }
         model.addAttribute("leaderboardEmptyOracleOnly",
             leaderboard.isEmpty() && hasOraclePass)
+
+        // Pre-training contamination signal: a model that PASSES with
+        // contextProvider="none" is producing the fix from memory --
+        // there's no source code or trace in the prompt to reason
+        // about. Either the bug is from the model's training corpus
+        // (memorization) or the problem statement is leaky enough to
+        // give the answer away. Either way the benchmark can't fairly
+        // grade that model, so we surface every such (model, bug)
+        // pair on the dashboard to flag for the operator -- WITH the
+        // problem statement + hints inline so the operator can audit
+        // whether the prompt itself is leaky (which would be a fixable
+        // bug-definition issue) vs the model truly having memorized
+        // the fix (which is a fixable model-eligibility issue).
+        data class ContaminationRow(
+            val provider: String,
+            val modelId: String,
+            val issueId: String,
+            val issueTitle: String,
+            val passes: Int,
+            val total: Int,
+            val latestRunId: String,
+            val problemStatement: String,
+            val hints: List<String>,
+            val filesTouched: List<String>,
+            /** "not-run" | "running" | "passed" | "failed" -- derived
+             *  from the most recent (issueId, ctx=none, appmap=OFF)
+             *  run by a model NOT in the original contamination set. */
+            val probeStatus: String,
+            val probeModelLabel: String?,
+            val probeRunId: String?
+        )
+        // Pass 1: build the un-probed contamination list.
+        val draftContamination = runs
+            .filter { it.contextProvider.equals("none", ignoreCase = true) }
+            .groupBy { Triple(it.provider, it.modelId, it.issueId) }
+            .mapNotNull { (k, group) ->
+                val passes = group.count { it.status.name == "PASSED" }
+                if (passes == 0) return@mapNotNull null
+                val sample = group.first()
+                val bug = bugCatalog.getBug(k.third)
+                Triple(k, group, Pair(passes, bug)) to sample
+            }
+        // Pass 2: collect the (provider, modelId) set of originally-
+        // contaminated models so probe correlation can exclude them.
+        val originalSet: Set<Pair<String, String>> = draftContamination
+            .map { (t, _) -> t.first.first to t.first.second }.toSet()
+        // Pass 3: attach probe correlation per row.
+        val contamination = draftContamination.map { (t, sample) ->
+            val (k, _, p) = t
+            val (passes, bug) = p
+            val probeRun = runs
+                .filter { r ->
+                    r.issueId == k.third &&
+                    r.contextProvider.equals("none", ignoreCase = true) &&
+                    r.appmapMode.equals("OFF", ignoreCase = true) &&
+                    (r.provider to r.modelId) !in originalSet
+                }
+                .maxByOrNull { it.startedAt }
+            val probeStatus = when (probeRun?.status?.name) {
+                "RUNNING", "QUEUED" -> "running"
+                "PASSED" -> "passed"
+                "FAILED", "ERRORED", "CANCELED" -> "failed"
+                null -> "not-run"
+                else -> "not-run"
+            }
+            ContaminationRow(
+                provider = k.first, modelId = k.second, issueId = k.third,
+                issueTitle = sample.issueTitle,
+                passes = passes, total = runs.count {
+                    it.provider == k.first && it.modelId == k.second &&
+                    it.issueId == k.third && it.contextProvider.equals("none", true)
+                },
+                latestRunId = runs
+                    .filter { it.provider == k.first && it.modelId == k.second &&
+                              it.issueId == k.third && it.contextProvider.equals("none", true) }
+                    .maxBy { it.startedAt }.id,
+                problemStatement = bug?.problemStatement ?: "(bug definition not found)",
+                hints = bug?.hints ?: emptyList(),
+                filesTouched = bug?.filesTouched ?: emptyList(),
+                probeStatus = probeStatus,
+                probeModelLabel = probeRun?.let { "${it.provider}/${it.modelId}" },
+                probeRunId = probeRun?.id
+            )
+        }.sortedWith(compareByDescending<ContaminationRow> { it.passes }
+            .thenBy { it.modelId }.thenBy { it.issueId })
+        model.addAttribute("contamination", contamination)
+        model.addAttribute("contaminationModels",
+            contamination.map { "${it.provider}/${it.modelId}" }.distinct().sorted())
+        model.addAttribute("contaminationBugs",
+            contamination.map { it.issueId }.distinct().sorted())
+        // Models the operator can select as the probe. We don't filter
+        // out the original contamination models here -- the probe
+        // controller skips self-probes server-side; surface every
+        // available model so the operator can experiment.
+        model.addAttribute("availableProbeModels", registeredModels.availableModels(session))
 
         // Background-task tile: surface in-flight Navie precomputes +
         // AppMap trace generations on the dashboard so the operator

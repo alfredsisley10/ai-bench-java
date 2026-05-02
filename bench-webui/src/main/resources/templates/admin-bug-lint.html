@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Admin: Bug-definition lint', ~{::main})}">
+<body>
+<main>
+    <h1>Bug-definition leakiness lint</h1>
+
+    <p>
+        Static check over <code>bugs/*.yaml</code> for cases where the
+        problem statement or hints accidentally name something that
+        gives the fix away — the file or class the human edit touched,
+        the production class derived from the hidden test, package
+        path fragments, or the test method name itself. A leaky bug
+        definition lets any model "solve" the bug from the description
+        alone, with no code in the prompt; that result cannot be
+        distinguished from <a href="/">pre-training contamination</a>
+        without the negative-control probe.
+    </p>
+
+    <div style="display:flex; gap:1em; flex-wrap:wrap; margin:1em 0">
+        <div class="card">
+            <span class="label">Bugs scanned</span>
+            <span class="value" th:text="${totalBugs}">0</span>
+        </div>
+        <div class="card" th:classappend="${flaggedCount > 0 ? 'warn' : ''}">
+            <span class="label">Flagged</span>
+            <span class="value" th:text="${flaggedCount}">0</span>
+        </div>
+        <div class="card" th:classappend="${highCount > 0 ? 'warn' : ''}">
+            <span class="label">HIGH findings</span>
+            <span class="value" th:text="${highCount}">0</span>
+        </div>
+        <div class="card">
+            <span class="label">MEDIUM</span>
+            <span class="value" th:text="${mediumCount}">0</span>
+        </div>
+        <div class="card">
+            <span class="label">INFO</span>
+            <span class="value" th:text="${infoCount}">0</span>
+        </div>
+    </div>
+
+    <p style="font-size:0.9em; color:#555">
+        CI hook: <code>curl -s :7777/admin/bug-lint.json | jq '.highCount'</code> —
+        fail the build if non-zero.
+    </p>
+
+    <div th:if="${flaggedCount == 0}"
+         style="padding:1em; background:#ecfdf5; border:1px solid #86efac;
+                border-radius:4px; color:#065f46; margin:1em 0">
+        ✓ No leaky bug definitions detected.
+    </div>
+
+    <section th:each="r : ${flagged}"
+             style="margin:1em 0; padding:0.8em 1em;
+                    border:1px solid #ddd; border-radius:4px"
+             th:style="${r.highCount > 0 ?
+                 'margin:1em 0; padding:0.8em 1em; border:1px solid #f59e0b; background:#fef3c7; border-radius:4px' :
+                 'margin:1em 0; padding:0.8em 1em; border:1px solid #ddd; background:#fafaf5; border-radius:4px'}">
+        <h3 style="margin:0">
+            <code th:text="${r.bug.id}">BUG-…</code>
+            — <span th:text="${r.bug.title}">…</span>
+            <span style="float:right; font-size:0.85em; font-weight:normal">
+                <span th:if="${r.highCount > 0}"
+                      style="color:#991b1b; font-weight:bold"
+                      th:text="${r.highCount + ' HIGH'}">…</span>
+                <span th:if="${r.mediumCount > 0}"
+                      style="color:#92400e"
+                      th:text="' · ' + ${r.mediumCount} + ' MED'">…</span>
+                <span th:if="${r.infoCount > 0}"
+                      style="color:#555"
+                      th:text="' · ' + ${r.infoCount} + ' INFO'">…</span>
+            </span>
+        </h3>
+
+        <table style="width:100%; margin-top:0.6em; font-size:0.9em;
+                      background:#fff; border-collapse:collapse">
+            <thead>
+                <tr style="border-bottom:1px solid #ddd">
+                    <th style="text-align:left; padding:4px 8px">Severity</th>
+                    <th style="text-align:left; padding:4px 8px">Rule</th>
+                    <th style="text-align:left; padding:4px 8px">In</th>
+                    <th style="text-align:left; padding:4px 8px">Match</th>
+                    <th style="text-align:left; padding:4px 8px">Context</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="f : ${r.findings}"
+                    style="border-bottom:1px solid #eee; vertical-align:top">
+                    <td style="padding:4px 8px">
+                        <span th:if="${f.severity.name() == 'HIGH'}"
+                              style="background:#fee2e2; color:#991b1b;
+                                     padding:1px 6px; border-radius:3px;
+                                     font-weight:bold; font-size:0.85em">HIGH</span>
+                        <span th:if="${f.severity.name() == 'MEDIUM'}"
+                              style="background:#fef3c7; color:#92400e;
+                                     padding:1px 6px; border-radius:3px;
+                                     font-size:0.85em">MED</span>
+                        <span th:if="${f.severity.name() == 'INFO'}"
+                              style="background:#e0e7ff; color:#3730a3;
+                                     padding:1px 6px; border-radius:3px;
+                                     font-size:0.85em">INFO</span>
+                    </td>
+                    <td style="padding:4px 8px"><code th:text="${f.rule}">…</code></td>
+                    <td style="padding:4px 8px">
+                        <span th:if="${f.source.name() == 'PROBLEM_STATEMENT'}">problem statement</span>
+                        <span th:if="${f.source.name() == 'HINT'}"
+                              th:text="'hint #' + ${f.sourceIndex + 1}">…</span>
+                    </td>
+                    <td style="padding:4px 8px">
+                        <code th:text="${f.offendingToken}">…</code>
+                        <div style="font-size:0.8em; color:#666"
+                             th:text="'(matched: ' + ${f.expected} + ')'">…</div>
+                    </td>
+                    <td style="padding:4px 8px">
+                        <div style="font-style:italic; color:#444"
+                             th:text="${f.contextLine}">…</div>
+                        <div style="font-size:0.85em; color:#555; margin-top:4px"
+                             th:text="${f.suggestion}">…</div>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+</main>
+</body>
+</html>

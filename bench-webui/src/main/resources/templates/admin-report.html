@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="utf-8" />
+  <title>ai-bench Executive Report</title>
+  <style>
+    /* Screen styles */
+    body {
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #1a1a1a;
+      max-width: 920px;
+      margin: 32px auto;
+      padding: 0 32px 64px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 28px; margin: 0 0 4px; }
+    h2 { font-size: 18px; margin-top: 28px; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+    h3 { font-size: 14px; margin-top: 18px; color: #444; }
+    .cover {
+      page-break-after: always;
+      min-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      text-align: center;
+    }
+    .cover h1 { font-size: 38px; margin-bottom: 16px; }
+    .cover .subtitle { font-size: 16px; color: #555; }
+    .cover .meta { margin-top: 32px; font-size: 12px; color: #777; }
+    .actions {
+      background: #fef3c7;
+      border: 1px solid #f59e0b;
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin-bottom: 24px;
+      font-size: 13px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 16px;
+      font-size: 12px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    th { background: #f4f4f4; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pill {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      background: #eef;
+      color: #226;
+    }
+    .pill.passed { background: #d1fae5; color: #065f46; }
+    .pill.partial { background: #fef3c7; color: #92400e; }
+    .pill.zero { background: #fee2e2; color: #991b1b; }
+
+    /* Print styles -- triggered by Cmd+P. */
+    @media print {
+      body { max-width: none; margin: 0; padding: 0 18mm; font-size: 11pt; }
+      .actions, .no-print { display: none !important; }
+      h2 { page-break-after: avoid; }
+      table, tr, td, th { page-break-inside: avoid; }
+      .section { page-break-inside: avoid; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Cover page -->
+<section class="cover">
+  <h1>ai-bench</h1>
+  <div class="subtitle">Enterprise Java LLM Benchmark — Executive Report</div>
+  <div class="meta">
+    <div>Generated: <span th:text="${generatedAt}">…</span></div>
+    <div>
+      <span th:text="${totalRuns}">0</span> total runs ·
+      <span th:text="${bugsBenchmarked}">0</span> of
+      <span th:text="${totalBugs}">0</span> bugs covered
+    </div>
+  </div>
+</section>
+
+<div class="actions no-print">
+  <strong>To save as PDF:</strong> use <kbd>Cmd</kbd>+<kbd>P</kbd> (or
+  <kbd>Ctrl</kbd>+<kbd>P</kbd>) and choose <em>Save as PDF</em>.
+  Margins, page breaks, and the cover page are tuned for the print
+  preview — not for screen viewing.
+</div>
+
+<section class="section">
+  <h2>1. What is being benchmarked</h2>
+  <p>
+    ai-bench evaluates how well large language models (LLMs) can
+    autonomously diagnose and fix bugs in a realistic enterprise-style
+    Java codebase (<code>banking-app</code>). Each <strong>bug</strong>
+    is a verified regression: a known commit that breaks at least one
+    pre-existing test case. The model is given a problem statement plus
+    a configurable amount of code context, and is asked to produce a
+    git-style patch. The patch is applied to a clean worktree, the
+    Gradle test suite is executed, and the run is graded by counting
+    the JUnit-XML test outcomes.
+  </p>
+  <p>
+    Unlike toy benchmarks that score by free-form output similarity,
+    ai-bench scores by <strong>whether the fix actually compiles and
+    passes the same tests a human reviewer would require</strong>.
+  </p>
+</section>
+
+<section class="section">
+  <h2>2. Methodology</h2>
+
+  <h3>Context providers</h3>
+  <ul>
+    <li>
+      <strong>Oracle</strong> — for calibration only. The model is
+      handed the exact files the human fix touched. Oracle entries are
+      excluded from the leaderboard since they leak ground truth.
+    </li>
+    <li>
+      <strong>BM25</strong> — classic lexical retrieval over the
+      repository using the bug's problem statement as the query. No
+      runtime traces, no LLM in the retrieval step.
+    </li>
+    <li>
+      <strong>AppMap</strong> — uses pre-recorded runtime traces
+      (AppMap files generated from the project's own unit tests) ranked
+      via <code>appmap search</code> (vector retrieval, no LLM in
+      retrieval). Captures behavior the source alone doesn't show.
+    </li>
+  </ul>
+
+  <h3>AppMap modes</h3>
+  <ul>
+    <li><strong>OFF</strong> — no traces injected into the prompt.</li>
+    <li>
+      <strong>ON</strong> — top-K traces selected by the active context
+      provider are appended to the prompt as compact summaries.
+    </li>
+  </ul>
+
+  <h3>Scoring rubric</h3>
+  <p>
+    A run is <strong>PASSED</strong> only if (a) the produced patch
+    applies cleanly with <code>git apply</code>, (b) the project
+    compiles, and (c) every previously-failing test for the bug now
+    passes <em>and</em> no previously-passing tests regress.
+  </p>
+</section>
+
+<section class="section">
+  <h2>3. Configuration matrix executed</h2>
+  <p>
+    <strong>Models:</strong>
+    <span th:each="m, i : ${distinctModels}">
+      <span class="pill" th:text="${m}">…</span><span th:if="${!i.last}"> </span>
+    </span>
+  </p>
+  <p>
+    <strong>Context providers:</strong>
+    <span th:each="c, i : ${distinctContexts}">
+      <span class="pill" th:text="${c}">…</span><span th:if="${!i.last}"> </span>
+    </span>
+  </p>
+  <p>
+    <strong>AppMap modes:</strong>
+    <span th:each="a, i : ${distinctModes}">
+      <span class="pill" th:text="${a}">…</span><span th:if="${!i.last}"> </span>
+    </span>
+  </p>
+</section>
+
+<section class="section" th:unless="${#lists.isEmpty(contamination)}">
+  <h2>4. Pre-training contamination warning</h2>
+  <p>
+    The runs below passed with <strong>contextProvider = none</strong> — no
+    source code, no traces, no oracle file list was supplied to the model.
+    A passing patch in this configuration means one of two things:
+  </p>
+  <ol>
+    <li>
+      <strong>Model contamination</strong> — the bug (or its real fix
+      commit) was in the model's pre-training data. The model is
+      effectively answering from memory; benchmark scores against
+      this model on this bug are not meaningful.
+    </li>
+    <li>
+      <strong>Bug-definition contamination</strong> — the problem
+      statement or hints below give the fix away. Any reasonably-
+      capable model would pass without code, with or without
+      pre-training exposure.
+    </li>
+  </ol>
+  <p>
+    To verify which case applies, read each problem statement /
+    hint set below and ask: "could a competent engineer write the
+    fix from this text alone, with no access to the codebase?"
+    If yes, the bug definition is the leak. If no, the model is.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>Bug</th>
+        <th class="num">Passes / Total</th>
+        <th>Problem statement (verbatim, as shipped to the model)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr th:each="c : ${contamination}">
+        <td>
+          <code th:text="${c.provider + '/' + c.modelId}">…</code>
+        </td>
+        <td>
+          <code th:text="${c.issueId}">BUG-…</code><br>
+          <span th:text="${c.issueTitle}" style="font-size:11px; color:#555">…</span>
+        </td>
+        <td class="num">
+          <strong th:text="${c.passes}">0</strong> /
+          <span th:text="${c.total}">0</span>
+        </td>
+        <td>
+          <div th:text="${c.problemStatement}"
+               style="white-space:pre-wrap; font-size:11px;
+                      max-width:480px">…</div>
+          <div th:unless="${#lists.isEmpty(c.hints)}"
+               style="margin-top:6px; font-size:11px">
+            <strong>Hints:</strong>
+            <ul style="margin:2px 0 0 14px; padding:0">
+              <li th:each="h : ${c.hints}" th:text="${h}">…</li>
+            </ul>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <h2 th:text="${#lists.isEmpty(contamination) ? '4. Headline results' : '5. Headline results'}">4. Headline results</h2>
+  <p>
+    Sorted by total bugs solved, then by average wall-clock time on
+    successful runs. Oracle excluded. The leaderboard on the live
+    dashboard shows the same ordering with deltas.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Rank</th>
+        <th>Model</th>
+        <th>Context</th>
+        <th>AppMap</th>
+        <th class="num">Solved / Total</th>
+        <th class="num">Pass rate</th>
+        <th class="num">Avg time</th>
+        <th class="num">Avg cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr th:each="r, iter : ${nonOracleRollups}">
+        <td class="num" th:text="${iter.index + 1}">1</td>
+        <td>
+          <span th:text="${r.provider}">…</span> /
+          <span th:text="${r.modelId}">…</span>
+        </td>
+        <td th:text="${r.contextProvider}">…</td>
+        <td th:text="${r.appmapMode}">…</td>
+        <td class="num">
+          <span th:text="${r.solved}">0</span> /
+          <span th:text="${r.total}">0</span>
+        </td>
+        <td class="num">
+          <span th:text="${#numbers.formatPercent(r.passRate, 1, 0)}">0%</span>
+        </td>
+        <td class="num"
+            th:text="${#numbers.formatDecimal(r.avgMs / 1000.0, 1, 1) + ' s'}">0 s</td>
+        <td class="num"
+            th:text="${'$' + #numbers.formatDecimal(r.avgCostUsd, 1, 4)}">$0</td>
+      </tr>
+      <tr th:if="${nonOracleRollups.isEmpty()}">
+        <td colspan="8"
+            style="text-align: center; padding: 16px; color: #888;">
+          No non-Oracle runs recorded yet.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <h2 th:text="${#lists.isEmpty(contamination) ? '5. Per-bug coverage' : '6. Per-bug coverage'}">5. Per-bug coverage</h2>
+  <p>
+    Each row is a bug from the curated catalog. <em>Solved by</em>
+    lists every distinct configuration that produced a passing patch
+    for that bug. Rows with no entries in <em>Solved by</em> represent
+    bugs no configuration solved in this run set.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Bug</th>
+        <th>Title</th>
+        <th>Difficulty</th>
+        <th>Category</th>
+        <th class="num">Attempts</th>
+        <th class="num">Passed</th>
+        <th>Solved by</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr th:each="b : ${bugRows}">
+        <td><code th:text="${b.bugId}">BUG-…</code></td>
+        <td th:text="${b.title}">…</td>
+        <td th:text="${b.difficulty}">…</td>
+        <td th:text="${b.category}">…</td>
+        <td class="num" th:text="${b.totalAttempts}">0</td>
+        <td class="num">
+          <span th:if="${b.passedAttempts > 0 and b.passedAttempts == b.totalAttempts}"
+                class="pill passed" th:text="${b.passedAttempts}">0</span>
+          <span th:if="${b.passedAttempts > 0 and b.passedAttempts != b.totalAttempts}"
+                class="pill partial" th:text="${b.passedAttempts}">0</span>
+          <span th:if="${b.passedAttempts == 0}"
+                class="pill zero" th:text="${b.passedAttempts}">0</span>
+        </td>
+        <td>
+          <span th:if="${b.solvedBy.isEmpty()}" style="color: #999;">—</span>
+          <span th:each="s, i : ${b.solvedBy}">
+            <span class="pill" th:text="${s}">…</span>
+            <span th:if="${!i.last}">&nbsp;</span>
+          </span>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="section">
+  <h2 th:text="${#lists.isEmpty(contamination) ? '6. Glossary' : '7. Glossary'}">6. Glossary</h2>
+  <dl>
+    <dt><strong>BM25</strong></dt>
+    <dd>Classic information-retrieval ranking function (Okapi BM25).
+        Used here to surface candidate files from the repository.</dd>
+    <dt><strong>AppMap</strong></dt>
+    <dd>Runtime trace format (recorded from JUnit tests) capturing
+        executed methods, SQL, HTTP calls and code paths.</dd>
+    <dt><strong>Oracle context</strong></dt>
+    <dd>The exact files the human fix touched. A control / upper bound
+        — not eligible for the leaderboard.</dd>
+    <dt><strong>Pass rate</strong></dt>
+    <dd>Fraction of attempts that produced a verified passing patch.</dd>
+    <dt><strong>Avg cost</strong></dt>
+    <dd>Mean estimated USD cost per successful run, computed from the
+        provider's published per-token pricing.</dd>
+    <dt><strong>Pre-training contamination</strong></dt>
+    <dd>A model passing a benchmark with no context provider supplied
+        cannot be reasoning from the codebase — it is either reproducing
+        a fix from its training corpus, or the prompt itself is leaky
+        enough to give the answer away. Such (model, bug) pairs are
+        flagged in §4 and excluded from interpretation of headline
+        scores until the leak source is identified.</dd>
+  </dl>
+</section>
+
+</body>
+</html>
