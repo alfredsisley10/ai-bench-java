@@ -104,6 +104,7 @@
                     <td style="padding:4px 8px"><code th:text="${f.rule}">…</code></td>
                     <td style="padding:4px 8px">
                         <span th:if="${f.source.name() == 'PROBLEM_STATEMENT'}">problem statement</span>
+                        <span th:if="${f.source.name() == 'TITLE'}">title</span>
                         <span th:if="${f.source.name() == 'HINT'}"
                               th:text="'hint #' + ${f.sourceIndex + 1}">…</span>
                     </td>
