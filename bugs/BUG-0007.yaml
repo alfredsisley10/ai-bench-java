@@ -1,5 +1,5 @@
 id: BUG-0007
-title: "Amortization schedule final installment leaves non-zero closing balance"
+title: "Amortization schedule's last scheduled payment fails to close the loan to zero"
 module: lending-corporate
 difficulty: MEDIUM
 category: NUMERIC
@@ -17,12 +17,13 @@ hiddenTest:
   file: lending-corporate/src/test/java/com/omnibank/lending/corporate/api/AmortizationCalculatorTest.java
 
 problemStatement: |
-  The final installment of a standard amortization schedule fails to close the
-  loan at exactly zero. A regression removed the special case that absorbs
-  rounding drift on the last period; the installment is now computed using the
-  normal formula, leaving a residual of a few cents. The final installment must
-  set its principal portion to the remaining balance so that the closing balance
-  is forced to zero.
+  The last scheduled payment of a standard amortization schedule does not
+  close the loan to zero. A regression removed the special-case logic that
+  absorbed accumulated cents-of-precision error on the closing period; the
+  value is now derived from the regular periodic formula, leaving a residual
+  of a few cents after the schedule completes. The closing payment's
+  principal portion must be set to whatever remains outstanding so the loan
+  settles cleanly.
 
 appmap:
   recommendedTests:
