@@ -92,6 +92,23 @@ class AdminPricingController(
         return "redirect:/admin/pricing"
     }
 
+    /**
+     * Add bench-webui's built-in patterns for newer models (Claude
+     * Opus 4.6, GPT-5 Mini, Gemini 2.5 Pro, etc.) that the operator's
+     * pricing.json may not have yet. Existing entries are NEVER
+     * overwritten; only missing patterns are prepended (so the more
+     * specific new patterns beat generic fallbacks like
+     * `^gpt-5(\.|$)` matching `gpt-5-mini`).
+     */
+    @PostMapping("/admin/pricing/seed-missing")
+    fun seedMissing(session: HttpSession): String {
+        val added = pricingStore.seedMissingPatterns()
+        session.setAttribute("pricingResult",
+            if (added > 0) "Seeded $added missing pattern(s) for newer models. Push to bridge to sync."
+            else "All built-in patterns already present in local store.")
+        return "redirect:/admin/pricing"
+    }
+
     /** Save edits from the form. The form posts parallel arrays --
      *  pattern[i], flags[i], promptPer1k[i], completionPer1k[i],
      *  label[i] -- so the operator can edit any cell without
