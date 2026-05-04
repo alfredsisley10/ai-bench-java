@@ -29,7 +29,8 @@ class MirrorConfigController(
     private val connectionSettings: ConnectionSettings,
     private val bankingApp: BankingAppManager,
     private val depCatalog: GradleDepCatalog,
-    private val depValidator: GradleDepValidator
+    private val depValidator: GradleDepValidator,
+    private val gradleProps: GradlePropertiesService
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(MirrorConfigController::class.java)
 
@@ -42,7 +43,66 @@ class MirrorConfigController(
         // build time, grouped by category. Surface lets the operator
         // toggle which categories to include in a validate run.
         model.addAttribute("depCategories", depCatalog.byCategory())
+        // The live ~/.gradle/gradle.properties text for the "compare"
+        // panel's reference column. Empty string when the file
+        // doesn't exist yet.
+        model.addAttribute("currentGradleProps", gradleProps.currentText())
         return "mirror-config"
+    }
+
+    /**
+     * Diff an operator-pasted candidate gradle.properties against
+     * the live ~/.gradle/gradle.properties. Returns per-key status
+     * (added / changed / removed / unchanged) + display-safe values
+     * (password-shaped keys masked).
+     */
+    @PostMapping("/mirror/properties/compare")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun compareProperties(@RequestParam candidateText: String): Map<String, Any?> {
+        val diff = gradleProps.diff(candidateText)
+        return mapOf(
+            "diff" to diff.map {
+                mapOf(
+                    "key" to it.key,
+                    "status" to it.status.name,
+                    "isSecret" to it.isSecret,
+                    "candidateDisplay" to it.candidateDisplay,
+                    "currentDisplay" to it.currentDisplay
+                )
+            },
+            "summary" to mapOf(
+                "added" to diff.count { it.status == GradlePropertiesService.DiffStatus.ADDED },
+                "changed" to diff.count { it.status == GradlePropertiesService.DiffStatus.CHANGED },
+                "removed" to diff.count { it.status == GradlePropertiesService.DiffStatus.REMOVED },
+                "unchanged" to diff.count { it.status == GradlePropertiesService.DiffStatus.UNCHANGED }
+            )
+        )
+    }
+
+    /**
+     * Apply selected keys from the candidate text to the live
+     * ~/.gradle/gradle.properties. Comments + unrelated keys
+     * preserved verbatim. Side-effect: stop banking-app daemon
+     * so the next gradle invocation reads the new file.
+     */
+    @PostMapping("/mirror/properties/apply")
+    fun applyProperties(
+        @RequestParam candidateText: String,
+        @RequestParam(name = "keys", required = false) keys: List<String>?,
+        session: HttpSession
+    ): String {
+        val keySet = (keys ?: emptyList()).toSet()
+        if (keySet.isEmpty()) {
+            session.setAttribute("mirrorSaveResult", "No keys selected — nothing applied.")
+            return "redirect:/mirror"
+        }
+        val r = gradleProps.apply(candidateText, keySet)
+        stopBankingAppDaemon()
+        session.setAttribute("mirrorSaveResult",
+            "Applied ${r.added + r.changed + r.removed} key(s) to ${r.filePath}: " +
+            "${r.added} added, ${r.changed} changed, ${r.removed} removed. " +
+            "Banking-app gradle daemon stopped so the next build reads the updated file.")
+        return "redirect:/mirror"
     }
 
     /**

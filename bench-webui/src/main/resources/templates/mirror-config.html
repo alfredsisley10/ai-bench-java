@@ -225,7 +225,153 @@
         </table>
     </section>
 
+    <!-- ============================================================
+         Compare gradle.properties — operator pastes a known-working
+         enterprise gradle.properties (from confluence, README, etc.)
+         and previews per-key diffs against the live
+         ~/.gradle/gradle.properties before applying anything.
+         Password-shaped keys (anything ending in -password / -token
+         / -secret / -apikey) get masked in the diff column so
+         walking past someone's screen doesn't expose the cleartext.
+    ============================================================ -->
+    <section>
+        <h3>Compare &amp; apply gradle.properties</h3>
+        <p class="help-text" style="margin-top:0">
+            Paste a candidate <code>gradle.properties</code> snippet
+            (typically a known-working version from your enterprise's
+            internal docs) and preview how each key would change
+            <code>~/.gradle/gradle.properties</code>. Apply selected
+            keys only; comments + unrelated keys are preserved.
+        </p>
+        <form id="propsForm" method="post" action="/mirror/properties/apply"
+              onsubmit="return confirmApplyProps()">
+            <textarea id="candidateText" name="candidateText" rows="8"
+                      style="width:100%; font-family:monospace; font-size:0.85em;
+                             padding:0.5em; border:1px solid #cbd5e1; border-radius:4px"
+                      placeholder="# Paste gradle.properties content here&#10;systemProp.https.proxyHost=corp.proxy.example.com&#10;systemProp.https.proxyPort=8080&#10;org.gradle.jvmargs=-Xmx4g"></textarea>
+            <div class="button-row" style="margin:0.4em 0">
+                <button type="button" class="btn-sm" onclick="compareProps()">
+                    Compare against current
+                </button>
+                <span id="propsCompareStatus" class="help-text" style="margin-left:0.6em"></span>
+            </div>
+
+            <table id="propsDiffTable" style="width:100%; margin-top:0.4em;
+                                              font-size:0.85em; border-collapse:collapse">
+                <thead>
+                    <tr style="background:#f3f4f6">
+                        <th style="padding:4px 6px"><input type="checkbox" id="propsCheckAll"
+                                onchange="document.querySelectorAll('.props-key-check').forEach(function(c){c.checked=this.checked}.bind(this))"></th>
+                        <th style="text-align:left; padding:4px 6px">Key</th>
+                        <th style="text-align:left; padding:4px 6px">Status</th>
+                        <th style="text-align:left; padding:4px 6px">Current value</th>
+                        <th style="text-align:left; padding:4px 6px">Candidate value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td colspan="5" style="text-align:center; padding:0.6em; color:#6b7280">
+                        Paste a candidate above and click <em>Compare against current</em>.
+                    </td></tr>
+                </tbody>
+            </table>
+
+            <div class="button-row" style="margin:0.6em 0">
+                <button type="submit" class="btn-sm"
+                        style="background:#dbeafe; border-color:#93c5fd; color:#1e40af; font-weight:bold">
+                    Apply selected keys to ~/.gradle/gradle.properties
+                </button>
+                <span class="help-text" style="margin-left:0.5em">
+                    Applies only the rows you've checked above. Comments
+                    + un-checked keys preserved. Banking-app gradle daemon
+                    is stopped so the next build picks up the change.
+                </span>
+            </div>
+        </form>
+    </section>
+
     <script>
+        // ---- Compare gradle.properties (PR-K) --------------------------
+        function escapeHtmlLocal(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+        }
+        function compareProps() {
+            var status = document.getElementById('propsCompareStatus');
+            var tbody = document.querySelector('#propsDiffTable tbody');
+            var text = document.getElementById('candidateText').value;
+            if (!text.trim()) {
+                status.textContent = 'Paste a candidate gradle.properties first.';
+                status.style.color = '#b91c1c';
+                return;
+            }
+            status.textContent = 'Parsing + diffing…';
+            status.style.color = '';
+            var form = new URLSearchParams();
+            form.append('candidateText', text);
+            fetch('/mirror/properties/compare', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: form
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var s = data.summary || {};
+                    status.textContent = '✓ ' + (data.diff || []).length + ' keys analysed: ' +
+                        (s.added || 0) + ' added, ' + (s.changed || 0) + ' changed, ' +
+                        (s.removed || 0) + ' removed, ' + (s.unchanged || 0) + ' unchanged.';
+                    status.style.color = '#067647';
+                    tbody.innerHTML = '';
+                    (data.diff || []).forEach(function (row) {
+                        var tr = document.createElement('tr');
+                        tr.style.borderBottom = '1px solid #f3f4f6';
+                        var statusBadge;
+                        switch (row.status) {
+                            case 'ADDED':
+                                statusBadge = '<span style="background:#dcfce7; color:#065f46; padding:1px 5px; border-radius:3px; font-size:0.75em">ADD</span>'; break;
+                            case 'CHANGED':
+                                statusBadge = '<span style="background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; font-size:0.75em">CHANGE</span>'; break;
+                            case 'REMOVED':
+                                statusBadge = '<span style="background:#fee2e2; color:#991b1b; padding:1px 5px; border-radius:3px; font-size:0.75em">REMOVE</span>'; break;
+                            default:
+                                statusBadge = '<span style="color:#6b7280; font-size:0.75em">unchanged</span>';
+                        }
+                        // Default-checked for rows that would change something;
+                        // unchecked for UNCHANGED rows to make the per-key apply
+                        // button do something useful out of the box.
+                        var checked = (row.status !== 'UNCHANGED') ? 'checked' : '';
+                        var secretBadge = row.isSecret
+                            ? ' <span title="Credential-shaped key — value masked in display" style="color:#92400e; font-size:0.7em">🔒</span>'
+                            : '';
+                        tr.innerHTML =
+                            '<td style="padding:4px 6px"><input type="checkbox" class="props-key-check" name="keys" value="' +
+                                escapeHtmlLocal(row.key) + '" ' + checked + '></td>' +
+                            '<td style="padding:4px 6px"><code>' + escapeHtmlLocal(row.key) + '</code>' +
+                                secretBadge + '</td>' +
+                            '<td style="padding:4px 6px">' + statusBadge + '</td>' +
+                            '<td style="padding:4px 6px"><code style="font-size:0.8em">' +
+                                escapeHtmlLocal(row.currentDisplay == null ? '(not set)' : row.currentDisplay) + '</code></td>' +
+                            '<td style="padding:4px 6px"><code style="font-size:0.8em">' +
+                                escapeHtmlLocal(row.candidateDisplay == null ? '(absent)' : row.candidateDisplay) + '</code></td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                });
+        }
+        function confirmApplyProps() {
+            var n = document.querySelectorAll('.props-key-check:checked').length;
+            if (n === 0) {
+                alert('Select at least one key to apply.');
+                return false;
+            }
+            return confirm('Apply ' + n + ' selected key(s) to ~/.gradle/gradle.properties? ' +
+                'Other keys + comments are preserved unchanged. Banking-app gradle daemon ' +
+                'will be stopped.');
+        }
+
         // ---- Verify dependencies (PR-J) ------------------------------
         function validateDeps() {
             var status = document.getElementById('depValidateStatus');
