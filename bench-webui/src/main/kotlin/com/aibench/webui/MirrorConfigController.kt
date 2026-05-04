@@ -27,7 +27,9 @@ import org.springframework.web.bind.annotation.RequestParam
 @Controller
 class MirrorConfigController(
     private val connectionSettings: ConnectionSettings,
-    private val bankingApp: BankingAppManager
+    private val bankingApp: BankingAppManager,
+    private val depCatalog: GradleDepCatalog,
+    private val depValidator: GradleDepValidator
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(MirrorConfigController::class.java)
 
@@ -36,7 +38,47 @@ class MirrorConfigController(
         model.addAttribute("settings", connectionSettings.settings)
         model.addAttribute("saveResult", session.getAttribute("mirrorSaveResult"))
         session.removeAttribute("mirrorSaveResult")
+        // Catalog of every dep bench-webui + banking-app need at
+        // build time, grouped by category. Surface lets the operator
+        // toggle which categories to include in a validate run.
+        model.addAttribute("depCategories", depCatalog.byCategory())
         return "mirror-config"
+    }
+
+    /**
+     * Probe every catalog entry whose category is in the supplied
+     * list. Empty list = probe all. Returns one row per coordinate
+     * with HTTP status / latency / mirror-vs-public route.
+     */
+    @PostMapping("/mirror/validate-deps")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun validateDeps(
+        @RequestParam(name = "categories", required = false) categories: List<String>?
+    ): Map<String, Any?> {
+        val catSet = (categories ?: emptyList())
+            .mapNotNull { runCatching { GradleDepCatalog.Category.valueOf(it) }.getOrNull() }
+            .toSet()
+        val results = depValidator.validate(catSet)
+        val passed = results.count { it.ok }
+        return mapOf(
+            "summary" to "$passed of ${results.size} dependencies resolved.",
+            "ok" to (passed == results.size),
+            "results" to results.map { r ->
+                mapOf(
+                    "category" to r.entry.category.name,
+                    "categoryDisplay" to r.entry.category.displayName,
+                    "coord" to r.entry.coord,
+                    "description" to r.entry.description,
+                    "probeUrl" to r.probeUrl,
+                    "viaProxy" to r.viaProxy,
+                    "viaMirror" to r.viaMirror,
+                    "statusCode" to r.statusCode,
+                    "durationMs" to r.durationMs,
+                    "ok" to r.ok,
+                    "message" to r.message
+                )
+            }
+        )
     }
 
     @PostMapping("/mirror/save")

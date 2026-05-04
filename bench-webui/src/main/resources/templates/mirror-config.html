@@ -155,7 +155,150 @@
         </fieldset>
     </section>
 
+    <!-- ============================================================
+         Verify dependencies — probe every coordinate bench-webui +
+         banking-app need at build time against the active mirror +
+         proxy. Operator toggles category checkboxes (default all on)
+         then clicks "Validate selected" to issue HEAD requests in
+         parallel. Each row shows the probe URL, route (mirror vs
+         public), HTTP status, latency, and a green/red verdict.
+    ============================================================ -->
+    <section>
+        <h3>Verify dependencies</h3>
+        <p class="help-text" style="margin-top:0">
+            Probes every gradle plugin / Spring Boot starter / banking-app
+            dep / JDK toolchain endpoint / gradle distribution against
+            your <strong>active mirror + proxy</strong>. Catches
+            "mirror serves Spring Boot but not testcontainers" gaps
+            (the root cause of the recent Windows trace-gen failure)
+            BEFORE the operator wastes 5 minutes on a benchmark run
+            that fails at gradle resolution.
+        </p>
+
+        <div style="margin:0.5em 0; padding:0.5em 0.7em; background:#f8fafc;
+                    border:1px solid #e2e8f0; border-radius:4px">
+            <strong style="margin-right:0.6em">Categories to validate:</strong>
+            <label th:each="cat : ${depCategories.keySet()}"
+                   style="margin-right:1em; font-size:0.9em; white-space:nowrap">
+                <input type="checkbox" class="dep-cat-toggle"
+                       th:value="${cat.name()}" checked>
+                <span th:text="${cat.displayName}"></span>
+                <span class="help-text"
+                      th:text="'(' + ${depCategories.get(cat).size()} + ')'"></span>
+            </label>
+        </div>
+
+        <div class="button-row" style="margin:0.4em 0">
+            <button type="button" class="btn-sm" onclick="validateDeps()">
+                Validate selected
+            </button>
+            <button type="button" class="btn-sm"
+                    onclick="document.querySelectorAll('.dep-cat-toggle').forEach(function(c){c.checked=true});">
+                Toggle: all on
+            </button>
+            <button type="button" class="btn-sm"
+                    onclick="document.querySelectorAll('.dep-cat-toggle').forEach(function(c){c.checked=false});">
+                Toggle: all off
+            </button>
+            <span id="depValidateStatus" class="help-text" style="margin-left:0.6em"></span>
+        </div>
+
+        <table id="depValidateTable" style="width:100%; margin-top:0.4em;
+                                            font-size:0.85em; border-collapse:collapse">
+            <thead>
+                <tr style="background:#f3f4f6">
+                    <th style="text-align:left; padding:4px 6px">Category</th>
+                    <th style="text-align:left; padding:4px 6px">Coordinate</th>
+                    <th style="text-align:left; padding:4px 6px">Route</th>
+                    <th style="text-align:right; padding:4px 6px">Status</th>
+                    <th style="text-align:right; padding:4px 6px">Time</th>
+                    <th style="text-align:left; padding:4px 6px">Result</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td colspan="6" style="text-align:center; padding:0.6em; color:#6b7280">
+                        Click <em>Validate selected</em> to probe.
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </section>
+
     <script>
+        // ---- Verify dependencies (PR-J) ------------------------------
+        function validateDeps() {
+            var status = document.getElementById('depValidateStatus');
+            var tbody = document.querySelector('#depValidateTable tbody');
+            var cats = Array.prototype.slice.call(
+                document.querySelectorAll('.dep-cat-toggle:checked')
+            ).map(function (c) { return c.value; });
+            if (cats.length === 0) {
+                status.textContent = 'Select at least one category.';
+                status.style.color = '#b91c1c';
+                return;
+            }
+            status.textContent = 'Probing ' + cats.length + ' categor' +
+                (cats.length === 1 ? 'y' : 'ies') + '… (HEAD requests run in parallel; expect ~3-8s)';
+            status.style.color = '';
+            tbody.innerHTML =
+                '<tr><td colspan="6" style="text-align:center; padding:0.6em; color:#6b7280">' +
+                'Probing…</td></tr>';
+            var form = new URLSearchParams();
+            cats.forEach(function (c) { form.append('categories', c); });
+            fetch('/mirror/validate-deps', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: form
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var passed = (data.results || []).filter(function (r) { return r.ok; }).length;
+                    var total = (data.results || []).length;
+                    status.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
+                    status.style.color = data.ok ? '#067647' : '#b91c1c';
+                    tbody.innerHTML = '';
+                    (data.results || []).forEach(function (row) {
+                        var tr = document.createElement('tr');
+                        tr.style.borderBottom = '1px solid #f3f4f6';
+                        var routeBadge = row.viaMirror
+                            ? '<span style="background:#dbeafe; color:#1e40af; padding:1px 5px; border-radius:3px; font-size:0.75em">mirror</span>'
+                            : (row.statusCode > 0
+                                ? '<span style="background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; font-size:0.75em">public</span>'
+                                : '');
+                        var statusBadge = row.statusCode > 0
+                            ? '<span style="font-family:monospace">' + row.statusCode + '</span>'
+                            : '<span style="color:#7f1d1d">err</span>';
+                        var verdict = row.ok
+                            ? '<span style="color:#067647">✓ ' + escapeHtml(row.message) + '</span>'
+                            : '<span style="color:#b91c1c">✗ ' + escapeHtml(row.message) + '</span>';
+                        tr.innerHTML =
+                            '<td style="padding:4px 6px"><span style="font-size:0.75em; color:#475569">' +
+                                escapeHtml(row.categoryDisplay) + '</span></td>' +
+                            '<td style="padding:4px 6px"><code style="font-size:0.78em">' +
+                                escapeHtml(row.coord) + '</code>' +
+                                '<div style="font-size:0.75em; color:#64748b">' +
+                                escapeHtml(row.description) + '</div>' +
+                                '<div style="font-size:0.7em; color:#94a3b8">' +
+                                escapeHtml(row.probeUrl) + '</div></td>' +
+                            '<td style="padding:4px 6px">' + routeBadge +
+                                (row.viaProxy ? ' <span class="help-text" style="font-size:0.75em">via proxy</span>' : '') +
+                                '</td>' +
+                            '<td style="padding:4px 6px; text-align:right">' + statusBadge + '</td>' +
+                            '<td style="padding:4px 6px; text-align:right; font-size:0.85em">' +
+                                row.durationMs + 'ms</td>' +
+                            '<td style="padding:4px 6px">' + verdict + '</td>';
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                    tbody.innerHTML =
+                        '<tr><td colspan="6" style="text-align:center; padding:0.6em; color:#7f1d1d">' +
+                        'Validate request failed.</td></tr>';
+                });
+        }
         // Self-contained mirror-verify JS. Identical helpers used to
         // live in proxy-config.html; duplicated here so the page works
         // standalone after the split.
