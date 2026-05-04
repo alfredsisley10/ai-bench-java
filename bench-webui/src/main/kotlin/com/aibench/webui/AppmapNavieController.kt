@@ -167,12 +167,11 @@ class AppmapNavieController(
                 .uri(java.net.URI.create("$savedBaseUrl/models"))
                 .timeout(java.time.Duration.ofSeconds(2))
                 .GET().build()
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(2)).build()
+            val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(2))
             val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.discarding())
             val code = resp.statusCode()
             (code == 200 || code == 401 || code == 403) to "HTTP $code from $savedBaseUrl/models"
-        }.getOrElse { false to "${it.javaClass.simpleName}: ${it.message ?: ""}" }
+        }.getOrElse { false to connectionSettings.formatProbeException(it) }
 
         val ready = copilotHealthy && shimReachable && cliPresent && configExists
 
@@ -365,9 +364,7 @@ class AppmapNavieController(
             """"messages":[{"role":"user","content":"Reply with the single word: ok"}],""" +
             """"max_tokens":5,"temperature":0}"""
         return try {
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(5))
-                .build()
+            val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(5))
             val req = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create(url))
                 .timeout(java.time.Duration.ofSeconds(30))
@@ -561,9 +558,7 @@ class AppmapNavieController(
                 .uri(java.net.URI.create("$baseUrl/models"))
                 .timeout(java.time.Duration.ofSeconds(2))
                 .GET().build()
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(2))
-                .build()
+            val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(2))
             val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.discarding())
             val code = resp.statusCode()
             // 200 = open; 401/403 = up but auth required; either way the
@@ -571,7 +566,7 @@ class AppmapNavieController(
             val ok = code == 200 || code == 401 || code == 403
             Triple(ok, code, "HTTP $code")
         }.getOrElse {
-            Triple(false, -1, "${it.javaClass.simpleName}: ${it.message ?: "no detail"}")
+            Triple(false, -1, connectionSettings.formatProbeException(it))
         }
     }
 

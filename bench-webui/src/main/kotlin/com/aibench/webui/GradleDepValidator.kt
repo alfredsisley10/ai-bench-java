@@ -150,24 +150,11 @@ class GradleDepValidator(
         return "$publicBase/${entry.pomPath}" to false
     }
 
-    /** HTTP client honoring the configured proxy. Reusing connectionSettings'
-     *  built-in client would be cleaner but it's bound to per-request flags
-     *  this validator doesn't need; building a small one inline is fine. */
-    private fun httpClient(): HttpClient {
-        val s = connectionSettings.settings
-        val builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4))
-        val proxy = s.httpsProxy.ifBlank { s.httpProxy }
-        if (proxy.isNotBlank()) {
-            // Reuse parseHostPort via the public facade is awkward
-            // here -- just inline a minimal parse.
-            val cleaned = proxy.removePrefix("http://").removePrefix("https://")
-                .substringBefore('/').substringBefore('?')
-            val parts = cleaned.split(":")
-            if (parts.size >= 2 && parts[1].all { it.isDigit() }) {
-                builder.proxy(java.net.ProxySelector.of(
-                    java.net.InetSocketAddress(parts[0], parts[1].toInt())))
-            }
-        }
-        return builder.build()
-    }
+    /** HTTP client honoring the configured proxy + TLS settings. Routed
+     *  through ConnectionSettings.httpClient() so insecure-SSL +
+     *  OS-truststore augmentation apply uniformly with /proxy + /mirror
+     *  probes; the previous inline builder skipped both, which surfaced
+     *  as SSLHandshakeException for hosts behind corp MITM proxies even
+     *  with the operator's "ignore TLS errors" toggle on. */
+    private fun httpClient(): HttpClient = connectionSettings.httpClient(Duration.ofSeconds(4))
 }
