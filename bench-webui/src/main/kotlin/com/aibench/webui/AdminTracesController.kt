@@ -28,7 +28,9 @@ import java.util.concurrent.Executors
 class AdminTracesController(
     private val appmapTraces: AppMapTraceManager,
     private val bugCatalog: BugCatalog,
-    private val bankingApp: BankingAppManager
+    private val bankingApp: BankingAppManager,
+    private val llmDiagnostician: LlmDiagnostician,
+    private val registeredModelsRegistry: RegisteredModelsRegistry
 ) {
     private val log = LoggerFactory.getLogger(AdminTracesController::class.java)
 
@@ -89,7 +91,7 @@ class AdminTracesController(
     }
 
     @GetMapping("/admin/appmap-traces")
-    fun page(model: Model): String {
+    fun page(model: Model, session: jakarta.servlet.http.HttpSession): String {
         val modules = targetModules()
         val coverage = appmapTraces.realTraceCoverage(modules)
         val testCounts = countTestsPerModule(modules)
@@ -108,7 +110,95 @@ class AdminTracesController(
         model.addAttribute("totalTraces", coverage.values.sumOf { it.size })
         model.addAttribute("totalTests", testCounts.values.sum())
         model.addAttribute("activeCount", rows.count { it.running })
+        // Models available for the per-module "Diagnose trace recording
+        // failure" buttons. Filter to chat-capable, non-Navie entries
+        // (Navie is a context-search loop, not a chat completion).
+        model.addAttribute("diagnoseModels",
+            registeredModelsRegistry.availableModels(session)
+                .filter { it.provider != "appmap-navie" })
         return "admin-traces"
+    }
+
+    /**
+     * Diagnose a failed (or in-flight-but-stalled) trace generation
+     * job using the operator's chosen LLM. Pairs the gradle output
+     * tail captured on the Job with a system prompt that asks for
+     * TWO sections of recommendations:
+     *   1. Local resolutions the operator can apply on this machine
+     *      now (env tweaks, gradle.properties edits, JDK install,
+     *      cleared caches, etc).
+     *   2. Source-code-project fixes that should be raised as PRs
+     *      against the canonical repo so the failure mode is
+     *      eliminated for everyone (build.gradle.kts adjustments,
+     *      AppMap plugin pin, settings.gradle.kts checks, etc).
+     */
+    @org.springframework.web.bind.annotation.GetMapping("/admin/appmap-traces/diagnose-with-llm")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun diagnoseWithLlm(
+        @RequestParam module: String,
+        @RequestParam(defaultValue = "copilot-default") modelId: String,
+        session: jakarta.servlet.http.HttpSession
+    ): Map<String, Any?> {
+        val job = activeJobs[module]
+            ?: return mapOf(
+                "ok" to false,
+                "reason" to "No trace-generation job recorded for module '$module'. " +
+                    "Click Generate first; the diagnose button uses the captured gradle output."
+            )
+        val tail = job.result?.tail
+            ?: job.error
+            ?: "(no output captured -- job may still be initialising)"
+        val exit = job.result?.exitCode
+        val durationMs = job.result?.durationMs ?: 0L
+
+        val systemPrompt = """
+            You are a senior Gradle / AppMap / JVM engineer triaging a
+            failed AppMap trace recording job on an enterprise developer
+            box. The operator clicked "Generate traces" for a single
+            banking-app module, the gradle subprocess exited non-zero
+            (or produced zero .appmap.json files), and the captured
+            output tail is below.
+
+            Respond in TWO clearly-delimited sections:
+
+            ## Local resolutions
+            Concrete steps the operator can take on THIS machine right
+            now to unblock the trace generation. Examples: install a
+            specific JDK toolchain, adjust ~/.gradle/gradle.properties,
+            kill a stale daemon, set an env var, change a /proxy or
+            /llm setting in bench-webui. Cite specific commands.
+
+            ## Source-code project fixes
+            Changes that should be raised as PRs against the
+            ai-bench-java repo so this failure mode stops happening for
+            future developers. Examples: bump or pin an AppMap plugin
+            version in banking-app/build.gradle.kts, add a guard in
+            settings.gradle.kts, write a clearer error from
+            AppMapTraceManager.generateRealTracesForModule, document a
+            JDK requirement in README. Name the file path and the
+            change in 1-2 sentences each.
+
+            Be concrete. Cite line numbers from the gradle output when
+            possible. 2-5 bullets per section. If the output doesn't
+            reveal anything actionable, say so in one line per section
+            instead of inventing recommendations.
+        """.trimIndent()
+
+        val userPrompt = """
+            Module: `$module`
+            Gradle exit code: ${exit ?: "(none recorded)"}
+            Job duration: ${durationMs / 1000}s
+            Job error string: ${job.error ?: "(none)"}
+
+            Captured gradle output tail:
+            ```
+            $tail
+            ```
+        """.trimIndent()
+
+        return llmDiagnostician
+            .diagnose(modelId, systemPrompt, userPrompt, session, timeoutSec = 60)
+            .toMap()
     }
 
     @PostMapping("/admin/appmap-traces/generate")

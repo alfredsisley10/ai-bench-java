@@ -87,8 +87,13 @@
         <span id="app-diag-status" class="help-text" style="margin-left:0.5em"></span>
         <div id="app-diag-findings" style="margin-top:0.4em"></div>
         <div id="app-diag-llm-section" style="display:none; margin-top:0.5em">
+            <label class="help-text" style="margin-right:0.4em">Model:
+                <select id="app-diag-llm-model" style="font-size:0.85em">
+                    <option value="copilot-default">copilot-default (loading…)</option>
+                </select>
+            </label>
             <button type="button" class="btn-sm btn-secondary" onclick="runAppLlmDiagnose(this)">
-                Run LLM-assisted analysis (Copilot bridge)
+                Run LLM-assisted analysis
             </button>
             <span id="app-diag-llm-status" class="help-text" style="margin-left:0.5em"></span>
             <div id="app-diag-llm-result" style="display:none; margin-top:0.4em;
@@ -186,7 +191,10 @@
                             findingsDiv.appendChild(renderFinding(f));
                         });
                     }
-                    if (data.llmAvailable) llmSection.style.display = '';
+                    if (data.llmAvailable) {
+                        llmSection.style.display = '';
+                        ensureDiagModels();
+                    }
                 })
                 .catch(function (e) {
                     status.textContent = '✗ ' + ((e && e.message) || e);
@@ -252,15 +260,49 @@
                 });
         }
 
+        // Populate the model picker the first time the LLM section is
+        // shown. /api/diagnose-models returns chat-capable entries
+        // (excludes appmap-navie which is a context-search loop, not
+        // a chat completion).
+        var diagModelsLoaded = false;
+        function ensureDiagModels() {
+            if (diagModelsLoaded) return;
+            diagModelsLoaded = true;
+            var sel = document.getElementById('app-diag-llm-model');
+            if (!sel) return;
+            fetch('/api/diagnose-models')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    sel.innerHTML = '';
+                    (data.models || []).forEach(function (m) {
+                        var opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                        sel.appendChild(opt);
+                    });
+                    if (sel.options.length === 0) {
+                        var opt = document.createElement('option');
+                        opt.value = 'copilot-default';
+                        opt.textContent = '(no models discovered — bridge offline?)';
+                        sel.appendChild(opt);
+                    }
+                })
+                .catch(function () {
+                    sel.innerHTML = '<option value="copilot-default">copilot-default</option>';
+                });
+        }
         function runAppLlmDiagnose(btn) {
+            ensureDiagModels();
             var status = document.getElementById('app-diag-llm-status');
             var result = document.getElementById('app-diag-llm-result');
+            var sel = document.getElementById('app-diag-llm-model');
+            var modelId = sel ? sel.value : 'copilot-default';
             btn.disabled = true;
-            status.textContent = 'Calling LLM (this can take 5-30s)…';
+            status.textContent = 'Calling ' + modelId + ' (this can take 5-30s)…';
             status.style.color = '';
             result.style.display = 'none';
             result.textContent = '';
-            fetch('/demo/app/diagnose-with-llm?lines=500')
+            fetch('/demo/app/diagnose-with-llm?lines=500&modelId=' + encodeURIComponent(modelId))
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
                     if (data.ok) {
