@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component
 class ModelPriceCatalog {
 
     /** ISO-8601 date the prices below were last cross-referenced. */
-    val lastUpdated: String = "2026-04-28"
+    val lastUpdated: String = "2026-05-04"
 
     /**
      * Where to verify or update the per-1K-token rates. Listed by
@@ -53,7 +53,16 @@ class ModelPriceCatalog {
      * operators can override after adding the model.
      */
     val catalog: List<ModelPrice> = listOf(
-        // --- OpenAI ------------------------------------------------------
+        // --- OpenAI (GPT-5 family — 2026 release) ------------------------
+        ModelPrice("openai-gpt-5", "GPT-5", "corp-openai", "gpt-5", 0.005, 0.015, "chat",
+                   notes = "GPT-5 base; 200K ctx"),
+        ModelPrice("openai-gpt-5-mini", "GPT-5 Mini", "corp-openai", "gpt-5-mini", 0.00025, 0.002, "chat",
+                   notes = "GPT-5 family value tier"),
+        ModelPrice("openai-gpt-5-2-codex", "GPT-5.2 Codex", "corp-openai", "gpt-5.2-codex", 0.0075, 0.030, "chat",
+                   notes = "code-specialised reasoning variant; higher output cost"),
+        ModelPrice("openai-gpt-5-3-codex", "GPT-5.3 Codex", "corp-openai", "gpt-5.3-codex", 0.0090, 0.036, "chat",
+                   notes = "latest code reasoning variant"),
+        // --- OpenAI (GPT-4 family — pre-2026 baseline) -------------------
         ModelPrice("openai-gpt-4o", "GPT-4o", "corp-openai", "gpt-4o", 0.0025, 0.010, "chat"),
         ModelPrice("openai-gpt-4o-mini", "GPT-4o mini", "corp-openai", "gpt-4o-mini", 0.00015, 0.0006, "chat"),
         ModelPrice("openai-gpt-4-turbo", "GPT-4 Turbo", "corp-openai", "gpt-4-turbo", 0.010, 0.030, "chat"),
@@ -68,7 +77,20 @@ class ModelPriceCatalog {
         ModelPrice("openai-embed-3-large", "text-embedding-3-large", "corp-openai", "text-embedding-3-large",
                    0.00013, null, "embedding"),
 
-        // --- Anthropic (via direct API; not through corp-openai) --------
+        // --- Anthropic (Claude 4 family — current as of 2026-05) --------
+        ModelPrice("anthropic-claude-opus-4-6", "Claude Opus 4.6", "anthropic", "claude-opus-4-6",
+                   0.018, 0.090, "chat",
+                   notes = "current flagship; reasoning + coding"),
+        ModelPrice("anthropic-claude-opus-4-5", "Claude Opus 4.5", "anthropic", "claude-opus-4-5",
+                   0.015, 0.075, "chat"),
+        ModelPrice("anthropic-claude-sonnet-4-6", "Claude Sonnet 4.6", "anthropic", "claude-sonnet-4-6",
+                   0.003, 0.015, "chat"),
+        ModelPrice("anthropic-claude-sonnet-4", "Claude Sonnet 4", "anthropic", "claude-sonnet-4",
+                   0.003, 0.015, "chat"),
+        ModelPrice("anthropic-claude-haiku-4-5", "Claude Haiku 4.5", "anthropic", "claude-haiku-4-5",
+                   0.001, 0.005, "chat",
+                   notes = "value tier; fastest Claude 4"),
+        // --- Anthropic (Claude 3.x — pre-Claude-4 baseline) -------------
         ModelPrice("anthropic-claude-3-5-sonnet", "Claude 3.5 Sonnet", "anthropic", "claude-3-5-sonnet-latest",
                    0.003, 0.015, "chat"),
         ModelPrice("anthropic-claude-3-5-haiku", "Claude 3.5 Haiku", "anthropic", "claude-3-5-haiku-latest",
@@ -81,6 +103,12 @@ class ModelPriceCatalog {
                    0.00025, 0.00125, "chat"),
 
         // --- Google -----------------------------------------------------
+        ModelPrice("google-gemini-2-5-pro", "Gemini 2.5 Pro", "google", "gemini-2.5-pro",
+                   0.00125, 0.010, "chat",
+                   notes = "thinking model; 1M ctx; output cost includes reasoning tokens"),
+        ModelPrice("google-gemini-2-5-flash", "Gemini 2.5 Flash", "google", "gemini-2.5-flash",
+                   0.0003, 0.0025, "chat",
+                   notes = "value tier"),
         ModelPrice("google-gemini-1-5-pro", "Gemini 1.5 Pro (<128K ctx)", "google", "gemini-1.5-pro",
                    0.00125, 0.005, "chat", notes = "above 128K: 2x rate"),
         ModelPrice("google-gemini-1-5-flash", "Gemini 1.5 Flash (<128K ctx)", "google", "gemini-1.5-flash",

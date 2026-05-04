@@ -130,6 +130,61 @@ class ModelPricingStore {
         storeFile.delete()
     }
 
+    /**
+     * Patterns the bench-webui knows publicly-correct rates for as of
+     * the build's [ModelPriceCatalog.lastUpdated] date. Surfaced via
+     * the admin page's "Seed missing patterns" action: any pattern in
+     * BUILT_IN_PATTERNS whose `pattern` literal does not already exist
+     * in the local store gets prepended (so it wins over generic
+     * fallback patterns like `^gpt-5(\.|$)` matching against
+     * `gpt-5-mini`).
+     *
+     * Existing operator edits are NEVER overwritten -- this only ADDS
+     * missing entries. Use [clearLocal] + bridge pull to reset hard.
+     *
+     * Patterns ordered most-specific to least-specific because [priceFor]
+     * walks them top-down. The user's original pricing.json may have
+     * these in a different order; the seed inserts at the front of the
+     * existing list to take precedence.
+     */
+    val BUILT_IN_PATTERNS: List<Entry> = listOf(
+        // Anthropic Claude 4 family (claude-opus-4-6 etc.)
+        Entry("^claude-opus-4-6", "i", 0.018, 0.090, "Claude Opus 4.6"),
+        Entry("^claude-opus-4-5", "i", 0.015, 0.075, "Claude Opus 4.5"),
+        Entry("^claude-opus-4(?!-)", "i", 0.015, 0.075, "Claude Opus 4"),
+        Entry("^claude-sonnet-4-6", "i", 0.003, 0.015, "Claude Sonnet 4.6"),
+        Entry("^claude-sonnet-4-5", "i", 0.003, 0.015, "Claude Sonnet 4.5"),
+        Entry("^claude-sonnet-4(?!-)", "i", 0.003, 0.015, "Claude Sonnet 4"),
+        Entry("^claude-haiku-4-5", "i", 0.001, 0.005, "Claude Haiku 4.5"),
+        // OpenAI GPT-5 family — Codex variants distinct from base
+        Entry("^gpt-5\\.3-codex", "i", 0.0090, 0.036, "GPT-5.3 Codex"),
+        Entry("^gpt-5\\.2-codex", "i", 0.0075, 0.030, "GPT-5.2 Codex"),
+        Entry("^gpt-5-codex", "i", 0.005, 0.020, "GPT-5 Codex"),
+        Entry("^gpt-5-mini", "i", 0.00025, 0.002, "GPT-5 Mini"),
+        // Google Gemini 2.5 family
+        Entry("^gemini-2\\.5-pro", "i", 0.00125, 0.010, "Gemini 2.5 Pro"),
+        Entry("^gemini-2\\.5-flash", "i", 0.0003, 0.0025, "Gemini 2.5 Flash")
+    )
+
+    /**
+     * Add any [BUILT_IN_PATTERNS] entries whose `pattern` literal is
+     * not already present in the local store. Returns the count of
+     * patterns actually added (0 = already up to date). Inserts at the
+     * front so newer specific patterns beat existing generic fallbacks
+     * during top-down match.
+     */
+    fun seedMissingPatterns(): Int {
+        val current = state() ?: PricingStore(emptyList(), Instant.now().toString(), "seeded")
+        val haveByPattern = current.entries.associateBy { it.pattern }
+        val missing = BUILT_IN_PATTERNS.filter { it.pattern !in haveByPattern }
+        if (missing.isEmpty()) return 0
+        val merged = missing + current.entries  // missing first → matches first
+        write(PricingStore(merged, Instant.now().toString(),
+            current.source.takeIf { it.startsWith("seeded") } ?: "operator-edit+seeded"))
+        log.info("seedMissingPatterns: added {} pattern(s)", missing.size)
+        return missing.size
+    }
+
     /** Best-effort price lookup by model id. Walks the entries top-
      *  down (matches VSIX semantics). Returns null when no pattern
      *  matches OR when the store is empty. */

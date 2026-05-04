@@ -26,6 +26,12 @@
         <form th:action="@{/admin/pricing/push}" method="post" style="display:inline">
             <button type="submit" th:disabled="${!hasLocal or !hasBridge}">Push to bridge</button>
         </form>
+        <form th:action="@{/admin/pricing/seed-missing}" method="post" style="display:inline">
+            <button type="submit"
+                    title="Add bench-webui's built-in patterns for newer models (Claude Opus 4.6, GPT-5 Mini, Gemini 2.5 Pro, etc.) that your local store doesn't have yet. Existing entries are not overwritten.">
+                Seed missing defaults
+            </button>
+        </form>
         <form th:action="@{/admin/pricing/clear-local}" method="post" style="display:inline">
             <button type="submit" th:disabled="${!hasLocal}"
                     style="color:#7f1d1d; background:#fef2f2; border:1px solid #fca5a5">
