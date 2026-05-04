@@ -74,8 +74,21 @@ class GradleDepCatalog {
         val coord: String,           // groupId:artifactId:version (Maven) or full URL (non-Maven probes)
         val description: String,
         val pomPath: String,         // Maven repo path (.pom) when category is Maven; "" for URLs
-        val isUrl: Boolean = false   // true when coord IS the URL to probe (jdk toolchain, gradle dist)
-    )
+        val isUrl: Boolean = false,  // true when coord IS the URL to probe (jdk toolchain, gradle dist)
+        // True for coordinates whose published artifact is the POM
+        // itself with no companion .jar -- BOMs (e.g.
+        // testcontainers-bom, spring-boot-dependencies) live here.
+        // The validator probes the JAR in addition to the POM for
+        // every other entry so "POM serves but JAR doesn't" mirror
+        // misconfigs (the testcontainers junit-jupiter case where
+        // gradle dep validation passes but the real build fails on
+        // junit-jupiter-1.20.1.jar) actually surface in the table.
+        val isPomOnly: Boolean = false
+    ) {
+        /** Companion .jar path (or null if the coord is POM-only/URL-only). */
+        val jarPath: String? = if (isUrl || isPomOnly) null
+            else pomPath.removeSuffix(".pom") + ".jar"
+    }
 
     /** Build the (groupId, artifactId, version) triple's POM repo
      *  path: `groupId/artifactId/version/artifactId-version.pom`. */
@@ -86,8 +99,20 @@ class GradleDepCatalog {
         return g.replace('.', '/') + "/" + a + "/" + v + "/" + a + "-" + v + ".pom"
     }
 
-    private fun maven(category: Category, coord: String, description: String) =
-        Entry(category, coord, description, mavenPomPath(coord), isUrl = false)
+    private fun maven(category: Category, coord: String, description: String): Entry {
+        // Heuristic BOM detection so we don't have to remember to
+        // hand-flag each BOM entry. Both Spring Boot's "-dependencies"
+        // convention and Gradle/Testcontainers/etc.'s "-bom" suffix
+        // are POM-packaging-only (no companion .jar). False positives
+        // would just trigger an extra .jar probe that 404s -- a flag
+        // is enough to suppress that, but the heuristic catches the
+        // current catalog cleanly.
+        val artifactId = coord.split(":").getOrNull(1).orEmpty()
+        val isBomLike = artifactId.endsWith("-bom") ||
+                        artifactId.endsWith("-dependencies")
+        return Entry(category, coord, description, mavenPomPath(coord),
+            isUrl = false, isPomOnly = isBomLike)
+    }
 
     private fun url(category: Category, url: String, description: String) =
         Entry(category, url, description, "", isUrl = true)

@@ -144,18 +144,44 @@
                             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                             body: form
                         })
-                            .then(function (r) { return r.json(); })
-                            .then(function (data) {
-                                if (data.ok) {
+                            // Read the body once as text; parse as JSON only if
+                            // we can. Spring 5xx error pages are HTML, so a
+                            // blind r.json() previously threw and the .catch
+                            // surfaced "✗ Unexpected token <" -- not actionable.
+                            // The text-then-parse path lets us surface the HTTP
+                            // status + the first line of the error page when
+                            // the response isn't well-formed JSON.
+                            .then(function (r) {
+                                return r.text().then(function (body) {
+                                    return {status: r.status, ok: r.ok, body: body};
+                                });
+                            })
+                            .then(function (resp) {
+                                var data = null;
+                                try { data = JSON.parse(resp.body); } catch (_) {}
+                                if (data && data.ok) {
                                     s.textContent = '✓ ' + (data.model || modelId) +
                                         ' (' + (data.durationMs || '?') + 'ms)';
                                     s.style.color = '#067647';
                                     out.textContent = data.analysis || '(empty response)';
                                     out.style.display = '';
-                                } else {
-                                    s.textContent = '✗ ' + (data.reason || 'unknown failure');
-                                    s.style.color = '#b91c1c';
+                                    return;
                                 }
+                                // ok=false (or non-JSON response). Surface the
+                                // most-specific signal we have so the operator
+                                // doesn't see "unknown failure" again.
+                                var msg;
+                                if (data && data.reason) {
+                                    msg = data.reason;
+                                } else if (!resp.ok) {
+                                    msg = 'HTTP ' + resp.status + ' from /diagnose ' +
+                                          '(body: ' + (resp.body || '').slice(0, 200) + ')';
+                                } else {
+                                    msg = 'No reason returned (response: ' +
+                                          (resp.body || '').slice(0, 200) + ')';
+                                }
+                                s.textContent = '✗ ' + msg;
+                                s.style.color = '#b91c1c';
                             })
                             .catch(function (e) {
                                 s.textContent = '✗ ' + ((e && e.message) || e);

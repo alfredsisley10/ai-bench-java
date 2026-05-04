@@ -18,6 +18,7 @@ class AppMapController(
     private val llmDiagnostician: LlmDiagnostician,
     private val connectionSettings: ConnectionSettings,
 ) {
+    private val log = org.slf4j.LoggerFactory.getLogger(AppMapController::class.java)
 
     @GetMapping("/demo/appmap")
     fun list(
@@ -229,12 +230,36 @@ class AppMapController(
         @PathVariable id: String,
         @RequestParam(defaultValue = "copilot-default") modelId: String,
         session: HttpSession
-    ): Map<String, Any?> {
+    ): Map<String, Any?> = try {
         val recording = appmaps.recording(id)
-            ?: return mapOf(
+            ?: return@diagnoseRecording mapOf(
                 "ok" to false,
-                "reason" to "Unknown recording id: $id (was the WebUI restarted?)"
+                "reason" to "Unknown recording id: $id (was the WebUI restarted? " +
+                    "Server-side recording state is in-memory only and clears on restart.)"
             )
+        diagnoseRecordingInternal(recording, modelId, session)
+    } catch (e: Exception) {
+        // Defensive guard: previously any throw inside this handler
+        // produced a Spring 5xx page and the JS .catch / verdict
+        // displayed "✗ unknown failure" -- the empty-reason path on
+        // a 200-but-malformed-body. Now any unexpected failure
+        // surfaces with a class+message so the operator can report
+        // it without server-log access.
+        connectionSettings // touch to keep import live
+        log.error("AppMap diagnose endpoint threw for recording id={}", id, e)
+        mapOf(
+            "ok" to false,
+            "reason" to "Diagnose endpoint failed: ${e.javaClass.simpleName}: " +
+                (e.message ?: "(no detail)") +
+                ". Check bench-webui logs for the stack trace."
+        )
+    }
+
+    private fun diagnoseRecordingInternal(
+        recording: AppMapService.Recording,
+        modelId: String,
+        session: HttpSession
+    ): Map<String, Any?> {
         val s = connectionSettings.settings
         // Recording.command is already credential-masked at storage
         // time (PR #27), so this joinToString is safe to embed in the
