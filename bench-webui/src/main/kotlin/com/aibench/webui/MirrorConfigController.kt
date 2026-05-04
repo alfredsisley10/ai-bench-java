@@ -397,6 +397,8 @@ class MirrorConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
         @RequestParam(required = false, defaultValue = "false") bypassMirror: Boolean,
         @RequestParam(required = false, defaultValue = "") artifactoryRepoKey: String,
+        @RequestParam(required = false, defaultValue = "false") centralViaMirrorOnly: Boolean,
+        @RequestParam(required = false, defaultValue = "") mavenExternalVirtualUrl: String,
         session: HttpSession
     ): String {
         val existing = connectionSettings.settings
@@ -407,7 +409,9 @@ class MirrorConfigController(
                 mirrorAuthUser = mirrorAuthUser.trim(),
                 mirrorAuthPassword = if (keepPw) existing.mirrorAuthPassword else mirrorAuthPassword,
                 bypassMirror = bypassMirror,
-                artifactoryRepoKey = artifactoryRepoKey.trim()
+                artifactoryRepoKey = artifactoryRepoKey.trim(),
+                centralViaMirrorOnly = centralViaMirrorOnly,
+                mavenExternalVirtualUrl = mavenExternalVirtualUrl.trim()
             )
         )
         // Same daemon-stop pattern as ProxyConfigController so a
@@ -426,6 +430,173 @@ class MirrorConfigController(
         parts += "Banking-app gradle daemon stopped so next build picks up the change."
         session.setAttribute("mirrorSaveResult", parts.joinToString(" "))
         return "redirect:/mirror"
+    }
+
+    /**
+     * Diagnostic: probe the three signals that distinguish the four
+     * Maven-Central resolution patterns, then return a structured
+     * recommendation the /mirror UI can render as a one-click apply.
+     *
+     * The classic enterprise failure mode is "mirror works fine +
+     * direct repo.maven.apache.org returns 403 from the corp proxy",
+     * which means corp policy mandates Central content via the
+     * mirror only. Operators don't always know that's the design --
+     * they just see the verify panel turn ✗ on the Central row and
+     * assume something is broken. This endpoint detects that pattern
+     * and proposes the centralViaMirrorOnly toggle.
+     */
+    @PostMapping("/mirror/recommend-config")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun recommendConfig(): Map<String, Any?> {
+        val s = connectionSettings.settings
+        val client = connectionSettings.httpClient(java.time.Duration.ofSeconds(8))
+
+        // Signal 1: is the mirror itself reachable + serving content?
+        val mirrorOk = s.hasMirror && runCatching {
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(s.mirrorUrl.trimEnd('/') + "/"))
+                .timeout(java.time.Duration.ofSeconds(6))
+                .GET().build()
+            val withAuth = if (s.hasMirrorAuth) {
+                java.net.http.HttpRequest.newBuilder(req, { _, _ -> true })
+                    .header("Authorization", "Basic " +
+                        java.util.Base64.getEncoder().encodeToString(
+                            "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()))
+                    .build()
+            } else req
+            client.send(withAuth, java.net.http.HttpResponse.BodyHandlers.discarding())
+                .statusCode() in 200..399
+        }.getOrDefault(false)
+
+        // Signal 2: is the corp proxy blocking direct Maven Central?
+        // 403 from the proxy is the canonical signal for the pattern
+        // we're detecting; 200 means direct egress works, in which
+        // case there's nothing to recommend.
+        val centralDirectStatus = runCatching {
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create("https://repo.maven.apache.org/maven2/"))
+                .timeout(java.time.Duration.ofSeconds(6))
+                .GET().build()
+            client.send(req, java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode()
+        }.getOrDefault(-1)
+        val centralBlockedDirect = centralDirectStatus == 403 ||
+                                    centralDirectStatus == 407 ||
+                                    centralDirectStatus == 502
+
+        // Signal 3: does the mirror (or maven-external-virtual when
+        // set) actually serve Central content? Probe a Spring Core
+        // POM that banking-app needs. Prefers the external virtual
+        // since that's the canonical Central path in two-virtual
+        // setups; falls back to the main mirror in single-virtual
+        // setups.
+        val centralProbeBase = (if (s.hasMavenExternalVirtual)
+            s.mavenExternalVirtualUrl else s.mirrorUrl).trimEnd('/')
+        val centralProbeSource = if (s.hasMavenExternalVirtual) "maven-external-virtual"
+                                 else "mirror"
+        val centralViaMirrorOk = s.hasMirror && runCatching {
+            val url = "$centralProbeBase/org/springframework/spring-core/" +
+                "6.1.13/spring-core-6.1.13.pom"
+            val req = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(url))
+                .timeout(java.time.Duration.ofSeconds(6))
+                .GET().build()
+            val withAuth = if (s.hasMirrorAuth) {
+                java.net.http.HttpRequest.newBuilder(req, { _, _ -> true })
+                    .header("Authorization", "Basic " +
+                        java.util.Base64.getEncoder().encodeToString(
+                            "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()))
+                    .build()
+            } else req
+            client.send(withAuth, java.net.http.HttpResponse.BodyHandlers.discarding())
+                .statusCode() in 200..299
+        }.getOrDefault(false)
+
+        // Pattern matching → recommendation.
+        val recommendation: String?
+        val applyToggle: String?
+        when {
+            !s.hasMirror -> {
+                recommendation = "No mirror configured. Configure a mirror first " +
+                    "if your corp environment requires one."
+                applyToggle = null
+            }
+            !mirrorOk -> {
+                recommendation = "Mirror URL is unreachable. Fix the mirror URL or " +
+                    "credentials before changing resolution mode."
+                applyToggle = null
+            }
+            centralBlockedDirect && centralViaMirrorOk && !s.centralViaMirrorOnly -> {
+                recommendation = "Detected: corp proxy returned HTTP $centralDirectStatus " +
+                    "for direct repo.maven.apache.org, but the mirror IS serving Central " +
+                    "content. Recommended: enable \"Maven Central via mirror only\" so " +
+                    "the verify panel + banking-app build skip the blocked upstream."
+                applyToggle = "centralViaMirrorOnly"
+            }
+            centralBlockedDirect && !centralViaMirrorOk -> {
+                recommendation = "Corp proxy blocks direct Central (HTTP $centralDirectStatus) " +
+                    "but the mirror does NOT serve Central content either. The mirror needs " +
+                    "to be reconfigured to proxy Maven Central before banking-app can build."
+                applyToggle = null
+            }
+            !centralBlockedDirect && s.centralViaMirrorOnly -> {
+                recommendation = "Direct repo.maven.apache.org is reachable (HTTP " +
+                    "$centralDirectStatus). \"Maven Central via mirror only\" is on but not " +
+                    "required -- builds would still work either way. Safe to leave as-is " +
+                    "or toggle off if you'd prefer the mirror+fallback configuration."
+                applyToggle = null
+            }
+            else -> {
+                recommendation = "Current resolution mode (\"${s.resolutionMode}\") matches " +
+                    "the detected network: mirror reachable=$mirrorOk, " +
+                    "direct Central=HTTP $centralDirectStatus, " +
+                    "mirror serves Central=$centralViaMirrorOk. No change recommended."
+                applyToggle = null
+            }
+        }
+
+        return mapOf(
+            "ok" to true,
+            "currentMode" to s.resolutionMode,
+            "mirrorOk" to mirrorOk,
+            "centralDirectStatus" to centralDirectStatus,
+            "centralBlockedDirect" to centralBlockedDirect,
+            "centralViaMirrorOk" to centralViaMirrorOk,
+            "centralProbeSource" to centralProbeSource,
+            "centralViaMirrorOnly" to s.centralViaMirrorOnly,
+            "hasMavenExternalVirtual" to s.hasMavenExternalVirtual,
+            "recommendation" to recommendation,
+            "applyToggle" to applyToggle
+        )
+    }
+
+    /**
+     * One-click apply for a recommended toggle. Currently only
+     * supports `centralViaMirrorOnly`; structured so future
+     * recommendations (auto-fill mirror URL, swap to bypass-mirror,
+     * etc.) can extend the same endpoint without a new route.
+     */
+    @PostMapping("/mirror/apply-recommendation")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun applyRecommendation(
+        @RequestParam toggle: String,
+        session: HttpSession
+    ): Map<String, Any?> {
+        val s = connectionSettings.settings
+        val updated = when (toggle) {
+            "centralViaMirrorOnly" -> s.copy(centralViaMirrorOnly = true)
+            else -> return mapOf("ok" to false,
+                "reason" to "Unknown toggle '$toggle'. " +
+                    "Currently supported: centralViaMirrorOnly.")
+        }
+        connectionSettings.update(updated)
+        stopBankingAppDaemon()
+        return mapOf(
+            "ok" to true,
+            "newMode" to updated.resolutionMode,
+            "message" to "Toggle '$toggle' applied. New resolution mode: " +
+                "${updated.resolutionMode}. Banking-app gradle daemon stopped " +
+                "so the next build picks up the change."
+        )
     }
 
     private fun stopBankingAppDaemon() {

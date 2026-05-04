@@ -27,6 +27,24 @@ allprojects {
         // Bypass-mirror toggle on /proxy clears enterprise.sim.mirror
         // for the subprocess so we land in the else branch.
         val mirror = System.getProperty("enterprise.sim.mirror")
+        // centralViaMirror = true means corp policy blocks direct
+        // egress to repo.maven.apache.org (typically the corp proxy
+        // 403s on it); set by bench-webui /mirror's
+        // "Maven Central via mirror only" toggle. When on, we DROP
+        // the mavenCentral() last-ditch fallback below so gradle
+        // never tries the blocked upstream -- otherwise gradle's
+        // resolution logic falls through to it on any mirror-miss
+        // and the build fails on the proxy 403.
+        val centralViaMirror = System.getProperty("centralViaMirror") == "true"
+        // Optional second virtual on the same corp Artifactory --
+        // the canonical "external proxy" virtual Artifactory
+        // operators carve out for Maven Central content. Distinct
+        // from the primary mirror, which usually carries internal
+        // libs + plugins. When set, added as its own repo source so
+        // gradle resolves Central content from there directly
+        // (matches the corp routing intent: internal vs external
+        // virtuals stay separate). Same Artifactory creds.
+        val externalVirtual = System.getProperty("mavenExternalVirtual")
         if (mirror != null) {
             val mirrorUser = System.getProperty("mirrorUsername")
             val mirrorPass = System.getProperty("mirrorPassword")
@@ -49,10 +67,27 @@ allprojects {
                     credentials { username = mirrorUser; password = mirrorPass }
                 }
             }
+            // Dedicated maven-external-virtual when configured. Sits
+            // alongside (not instead of) the primary mirror so a
+            // miss on internal artifacts in the external virtual
+            // still falls through to the next repo declaration.
+            if (!externalVirtual.isNullOrBlank()) {
+                maven {
+                    url = uri(externalVirtual)
+                    isAllowInsecureProtocol = true
+                    if (mirrorUser != null && mirrorPass != null) {
+                        credentials { username = mirrorUser; password = mirrorPass }
+                    }
+                }
+            }
             // Direct Maven Central as a last-ditch fallback for any
             // dep the mirror doesn't carry. Goes through https.proxyHost
             // automatically when a corp proxy is configured.
-            mavenCentral()
+            // Skipped when centralViaMirror is set -- see comment on
+            // the property declaration above.
+            if (!centralViaMirror) {
+                mavenCentral()
+            }
         } else {
             mavenCentral()
         }
