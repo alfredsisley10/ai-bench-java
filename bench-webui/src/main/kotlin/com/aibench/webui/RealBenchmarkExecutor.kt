@@ -264,7 +264,11 @@ class RealBenchmarkExecutor(
                 add("--console=plain")
                 addAll(connectionSettings.gradleSystemProps())
             }
-            val cmdJoined = cmd.joinToString(" ")
+            // Mask any -D*Password=<cleartext> portions before joining --
+            // the result is what we persist on the SeedAudit and surface
+            // in the result-detail page, so cleartext credentials must
+            // not slip into the H2 DB or any UI render.
+            val cmdJoined = connectionSettings.maskCredentialArgsInLine(cmd.joinToString(" "))
             logFn("Seed $seedNumber: running ${cmd.subList(0, 3).joinToString(" ")} … (cap 5min)")
             val testProc = runProcess(cmd, seedRoot, 300)
             // Test counts come from the JUnit XML reports gradle writes

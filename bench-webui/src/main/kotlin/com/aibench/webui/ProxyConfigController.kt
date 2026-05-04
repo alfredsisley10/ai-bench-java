@@ -56,7 +56,13 @@ class ProxyConfigController(
     @GetMapping("/proxy")
     fun proxyConfig(model: Model, session: HttpSession): String {
         model.addAttribute("settings", connectionSettings.settings)
-        model.addAttribute("gradleSystemProps", connectionSettings.gradleSystemProps())
+        // Mask the credential portions before rendering. The raw list
+        // includes -Dhttp.proxyPassword=<cleartext> /
+        // -Dhttps.proxyPassword=<cleartext>; the masked variant has
+        // those swapped for ********. The page uses this for display only;
+        // the actual gradle subprocess args still get the real values.
+        model.addAttribute("gradleSystemProps",
+            connectionSettings.maskCredentialArgs(connectionSettings.gradleSystemProps()))
         model.addAttribute("saveResult", session.getAttribute("proxySaveResult"))
         session.removeAttribute("proxySaveResult")
         return "proxy-config"
