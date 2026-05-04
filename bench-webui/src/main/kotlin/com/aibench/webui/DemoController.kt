@@ -14,7 +14,8 @@ class DemoController(
     private val bankingApp: BankingAppManager,
     private val benchmarkRuns: BenchmarkRunService,
     private val connectionSettings: ConnectionSettings,
-    private val registeredModelsRegistry: RegisteredModelsRegistry
+    private val registeredModelsRegistry: RegisteredModelsRegistry,
+    private val llmDiagnostician: LlmDiagnostician
 ) {
 
     data class VerificationStep(
@@ -603,15 +604,10 @@ class DemoController(
     @GetMapping("/demo/app/diagnose-with-llm")
     @org.springframework.web.bind.annotation.ResponseBody
     fun appDiagnoseWithLlm(
-        @RequestParam(defaultValue = "500") lines: Int
-    ): Map<String, Any> {
-        if (!copilotBridgeReachable()) {
-            return mapOf(
-                "ok" to false,
-                "reason" to "Copilot bridge not reachable at 127.0.0.1:11434. " +
-                    "Configure an LLM via the Copilot Bridge VSCode extension on /llm first."
-            )
-        }
+        @RequestParam(defaultValue = "500") lines: Int,
+        @RequestParam(defaultValue = "copilot-default") modelId: String,
+        session: jakarta.servlet.http.HttpSession
+    ): Map<String, Any?> {
         val log = bankingApp.logTail(lines)
         val findings = BankingAppDiagnostics.analyze(log)
         val findingsBlock = if (findings.isEmpty()) "(none)"
@@ -642,47 +638,9 @@ class DemoController(
             ```
         """.trimIndent()
 
-        val start = System.currentTimeMillis()
-        return try {
-            val body = """{"model":"copilot","temperature":0.1,"messages":[""" +
-                """{"role":"system","content":${jsonString(systemPrompt)}},""" +
-                """{"role":"user","content":${jsonString(userPrompt)}}""" +
-                """]}"""
-            val req = java.net.http.HttpRequest.newBuilder()
-                .uri(java.net.URI.create("http://127.0.0.1:11434/v1/chat/completions"))
-                .timeout(java.time.Duration.ofSeconds(45))
-                .header("Content-Type", "application/json")
-                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
-                .build()
-            val client = java.net.http.HttpClient.newBuilder()
-                .connectTimeout(java.time.Duration.ofSeconds(3)).build()
-            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-            val ms = System.currentTimeMillis() - start
-            if (resp.statusCode() !in 200..299) {
-                return mapOf(
-                    "ok" to false,
-                    "reason" to "LLM bridge returned HTTP ${resp.statusCode()}. " +
-                        "Body (first 200 chars): ${resp.body().take(200)}"
-                )
-            }
-            // Extract content with a regex rather than pulling kotlinx.serialization
-            // for one field; the OpenAI shim's response shape is stable enough.
-            val content = Regex("\"content\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-                .find(resp.body())?.groupValues?.get(1)
-                ?.replace("\\n", "\n")?.replace("\\\"", "\"")?.replace("\\\\", "\\")
-                ?: "(empty response)"
-            mapOf(
-                "ok" to true,
-                "analysis" to content,
-                "durationMs" to ms,
-                "model" to "copilot"
-            )
-        } catch (e: Exception) {
-            mapOf(
-                "ok" to false,
-                "reason" to "LLM call failed: ${e.javaClass.simpleName}: ${e.message ?: ""}"
-            )
-        }
+        return llmDiagnostician
+            .diagnose(modelId, systemPrompt, userPrompt, session)
+            .toMap()
     }
 
     /**

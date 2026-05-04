@@ -50,7 +50,8 @@
         </tr>
         </thead>
         <tbody>
-        <tr th:each="r : ${rows}">
+        <th:block th:each="r, iter : ${rows}">
+        <tr>
             <td><code th:text="${r.module}"></code></td>
             <td th:text="${r.testCount}"></td>
             <td th:text="${r.traceCount}"></td>
@@ -84,10 +85,117 @@
                         cancel
                     </button>
                 </form>
+                <!-- Diagnose button: only meaningful AFTER a job has
+                     run (we need the captured gradle tail). Surfaced
+                     when there's a lastError OR when the job ended
+                     with zero traces (failure modes worth diagnosing). -->
+                <button th:if="${r.lastError != null or (r.lastDurationMs != null and r.traceCount == 0)}"
+                        type="button" class="btn-sm"
+                        th:attr="data-module=${r.module}, data-row=${iter.index}"
+                        onclick="diagnoseTraceFailure(this)"
+                        style="margin-left:0.4em">
+                    🩺 Diagnose
+                </button>
             </td>
         </tr>
+        <!-- Diagnose result panel — hidden until the operator clicks.
+             Shows the model picker + the LLM analysis split into
+             "Local resolutions" and "Source-code project fixes". -->
+        <tr th:if="${r.lastError != null or (r.lastDurationMs != null and r.traceCount == 0)}"
+            th:id="'diag-row-' + ${iter.index}"
+            style="display:none">
+            <td colspan="7" style="background:#f9fafb; padding:0.6em 0.9em">
+                <div style="display:flex; gap:0.6em; align-items:center; flex-wrap:wrap">
+                    <strong>Diagnose trace recording failure</strong>
+                    <label class="help-text">Model:
+                        <select class="diag-model-select" style="font-size:0.85em">
+                            <option value="copilot-default">copilot-default (loading…)</option>
+                        </select>
+                    </label>
+                    <button type="button" class="btn-sm" th:attr="data-module=${r.module}, data-row=${iter.index}"
+                            onclick="runDiagnoseLlm(this)">Run analysis</button>
+                    <span class="diag-status help-text"></span>
+                </div>
+                <div class="diag-result" style="display:none; margin-top:0.5em;
+                    padding:0.6em 0.8em; background:#eef2ff; border:1px solid #c7d2fe;
+                    border-radius:4px; white-space:pre-wrap; font-size:0.9em"></div>
+            </td>
+        </tr>
+        </th:block>
         </tbody>
     </table>
+
+    <script>
+        // Populate every model picker on the page on first interaction
+        // with any Diagnose button. Cached after first fetch.
+        var diagModelsCache = null;
+        function loadDiagModels() {
+            if (diagModelsCache) return Promise.resolve(diagModelsCache);
+            return fetch('/api/diagnose-models')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    diagModelsCache = data.models || [];
+                    document.querySelectorAll('.diag-model-select').forEach(function (sel) {
+                        sel.innerHTML = '';
+                        diagModelsCache.forEach(function (m) {
+                            var opt = document.createElement('option');
+                            opt.value = m.id;
+                            opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                            sel.appendChild(opt);
+                        });
+                        if (sel.options.length === 0) {
+                            sel.innerHTML = '<option value="copilot-default">' +
+                                '(no models — bridge offline?)</option>';
+                        }
+                    });
+                    return diagModelsCache;
+                });
+        }
+        function diagnoseTraceFailure(btn) {
+            var idx = btn.getAttribute('data-row');
+            var row = document.getElementById('diag-row-' + idx);
+            if (!row) return;
+            row.style.display = (row.style.display === 'none' ? '' : 'none');
+            if (row.style.display !== 'none') loadDiagModels();
+        }
+        function runDiagnoseLlm(btn) {
+            var idx = btn.getAttribute('data-row');
+            var module = btn.getAttribute('data-module');
+            var row = document.getElementById('diag-row-' + idx);
+            if (!row) return;
+            var sel = row.querySelector('.diag-model-select');
+            var status = row.querySelector('.diag-status');
+            var result = row.querySelector('.diag-result');
+            var modelId = sel ? sel.value : 'copilot-default';
+            btn.disabled = true;
+            status.textContent = 'Calling ' + modelId + '… (5–60s)';
+            status.style.color = '';
+            result.style.display = 'none';
+            result.textContent = '';
+            var url = '/admin/appmap-traces/diagnose-with-llm?module=' +
+                encodeURIComponent(module) + '&modelId=' + encodeURIComponent(modelId);
+            fetch(url)
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.ok) {
+                        status.textContent = '✓ ' + (data.model || modelId) +
+                            ' (' + (data.durationMs || '?') + 'ms)';
+                        status.style.color = '#067647';
+                        result.textContent = data.analysis || '(empty response)';
+                        result.style.display = '';
+                    } else {
+                        status.textContent = '✗ ' + (data.reason || 'unknown failure');
+                        status.style.color = '#b91c1c';
+                    }
+                    btn.disabled = false;
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                    btn.disabled = false;
+                });
+        }
+    </script>
 
     <p style="margin-top:2em; font-size:0.85em; color:#555">
         Generated-* modules (regional / channels / brands / swift / nacha)
