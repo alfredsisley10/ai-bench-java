@@ -99,14 +99,53 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         // Prefer real traces from banking-app/<module>/tmp/appmap/junit/
         // if any exist for the bug's module — they're produced by the
         // operator's `Generate traces` admin action and reflect the
-        // real test execution. Falls through to the synthetic-stub
-        // path below when no real traces are available.
+        // real test execution.
         val real = realTracesForBug(mode, bug)
         if (real.isNotEmpty()) {
             log("AppMap mode=$mode: using ${real.size} real recording(s) " +
                 "from banking-app/${bug?.module ?: "?"}/tmp/appmap/junit/.")
             return TraceInventory(mode, headSha() ?: "unknown-sha", null,
                 real, generated = false, synthetic = false)
+        }
+        // Real traces missing for the bug's module. Before falling
+        // through to synthetic stubs (which previously gave the
+        // operator a silent "AppMap=ON but no real traces shipped"
+        // experience -- particularly painful on Windows where the
+        // gradle wrapper bug above stopped generation entirely),
+        // auto-trigger a `gradle test` with the AppMap agent for
+        // the bug's module. If the run succeeds we get real
+        // traces; if it fails (Windows JDK mismatch, gradle plugin
+        // crash, etc.) we fall through to synthetic stubs WITH a
+        // loud warning so the operator knows the AppMap=ON setting
+        // didn't deliver real recordings.
+        val module = bug?.module?.takeIf { it.isNotBlank() }
+        if (module != null) {
+            log("AppMap mode=$mode: no real traces in banking-app/$module/tmp/appmap/junit/ " +
+                "— auto-running `gradle :$module:test` with AppMap agent (this may take 30s-5min) …")
+            val gen = runCatching { generateRealTracesForModule(module) }
+                .onFailure { log("AppMap auto-generation threw: ${it.message}; " +
+                                  "falling through to synthetic stubs.") }
+                .getOrNull()
+            if (gen != null && gen.ok && gen.tracesAfter > 0) {
+                val regenerated = realTracesForBug(mode, bug)
+                log("AppMap mode=$mode: auto-generation produced ${regenerated.size} " +
+                    "real trace(s) in ${gen.durationMs / 1000}s.")
+                return TraceInventory(mode, headSha() ?: "unknown-sha", null,
+                    regenerated, generated = true, synthetic = false)
+            }
+            // Generation failed or produced 0 traces. Surface the
+            // gradle exit code + tail so the operator can diagnose
+            // (often: JDK class-file-version mismatch on a Windows
+            // host where banking-app expects JDK 25 but the host
+            // has 21; or AppMap plugin incompatibility with current
+            // Gradle version).
+            if (gen != null) {
+                log("AppMap auto-generation FAILED (exit=${gen.exitCode}, " +
+                    "tracesAfter=${gen.tracesAfter}). Last gradle output: " +
+                    gen.tail.takeLast(400) +
+                    " — falling through to synthetic stubs; AppMap context " +
+                    "in this run will NOT include real recordings.")
+            }
         }
         val sha = headSha() ?: "unknown-sha"
         val rootDir = File(System.getProperty("user.home"), ".ai-bench/appmap-traces")
@@ -403,19 +442,47 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
     ): GenerationResult {
         val repo = bankingApp.bankingAppDir
         val started = System.currentTimeMillis()
-        val proc = ProcessBuilder(
-            File(repo, "gradlew").absolutePath,
-            ":$module:cleanTest",
-            ":$module:test",
-            "-Pappmap_enabled=true",
-            "--no-configuration-cache",
-            "--no-build-cache",
-            "--no-daemon",
-            "-q"
-        )
+        // Use Platform.gradleWrapper so Windows hosts launch
+        // `gradlew.bat`, not the POSIX `gradlew` shell script (which
+        // ProcessBuilder cannot invoke directly under cmd.exe and was
+        // the root cause of "no traces collected" on Windows test runs).
+        val cmd = mutableListOf<String>().apply {
+            addAll(Platform.gradleWrapper(repo))
+            add(":$module:cleanTest")
+            add(":$module:test")
+            add("-Pappmap_enabled=true")
+            add("--no-configuration-cache")
+            add("--no-build-cache")
+            add("--no-daemon")
+            add("-q")
+        }
+        val pb = ProcessBuilder(cmd)
             .directory(repo)
             .redirectErrorStream(true)
-            .start()
+        // Pin JAVA_HOME to a JDK matching banking-app's toolchain
+        // (currently 25). Without this, `gradle test` on a host
+        // whose default `java -version` is older than the toolchain
+        // fails with "Unsupported class file major version 69" once
+        // gradle's daemon-internal tasks try to load compiled
+        // bytecode. Same pattern AppMapService.kt uses for its other
+        // gradle launches.
+        val pinnedMajor = bankingApp.toolchainMajor()
+        if (pinnedMajor != null) {
+            val javaHome = runCatching {
+                JdkDiscovery.bestAvailableHome(matchMajor = pinnedMajor)
+            }.getOrNull()
+            if (javaHome != null) {
+                pb.environment()["JAVA_HOME"] = javaHome
+                log.info("appmap-gen[{}]: JAVA_HOME={} (toolchain major={})",
+                    module, javaHome, pinnedMajor)
+            } else {
+                log.warn("appmap-gen[{}]: no JDK {} found via JdkDiscovery; gradle daemon " +
+                    "will use the host's default java which is likely to fail with " +
+                    "'Unsupported class file major version' for banking-app's toolchain pin.",
+                    module, pinnedMajor)
+            }
+        }
+        val proc = pb.start()
         // Hand the live Process back to the caller (AdminTracesController)
         // so a cancel button can destroyForcibly() it. Also register a
         // shutdown hook so the gradle child dies when bench-webui dies

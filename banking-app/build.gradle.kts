@@ -2,7 +2,12 @@ plugins {
     java
     id("org.springframework.boot") version "3.5.14" apply false
     id("io.spring.dependency-management") version "1.1.6" apply false
-    id("com.appland.appmap") version "1.+" apply false
+    // Pinned to 1.2.0 -- the version bench-webui's harness was developed
+    // against. The earlier `1.+` floater could resolve to different
+    // patch levels across hosts (and across Maven cache states), making
+    // "works on my machine" tracebacks harder to triage. Re-pin only
+    // after re-verifying AppMap CLI compatibility on each target OS.
+    id("com.appland.appmap") version "1.2.0" apply false
 }
 
 val appmapEnabled = (findProperty("appmap_enabled") as String?)?.toBoolean() ?: false
