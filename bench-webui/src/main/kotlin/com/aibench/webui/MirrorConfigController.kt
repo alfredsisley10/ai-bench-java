@@ -30,7 +30,9 @@ class MirrorConfigController(
     private val bankingApp: BankingAppManager,
     private val depCatalog: GradleDepCatalog,
     private val depValidator: GradleDepValidator,
-    private val gradleProps: GradlePropertiesService
+    private val gradleProps: GradlePropertiesService,
+    private val enterpriseSamples: EnterpriseGradleSamples,
+    private val llmDiagnostician: LlmDiagnostician
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(MirrorConfigController::class.java)
 
@@ -76,6 +78,111 @@ class MirrorConfigController(
                 "removed" to diff.count { it.status == GradlePropertiesService.DiffStatus.REMOVED },
                 "unchanged" to diff.count { it.status == GradlePropertiesService.DiffStatus.UNCHANGED }
             )
+        )
+    }
+
+    /**
+     * Recommend a gradle.properties shape for the operator's
+     * environment. The LLM gets:
+     *   - Current settings (proxy / mirror / bypass)
+     *   - Live ~/.gradle/gradle.properties (masked)
+     *   - The full enterprise-sample catalog as reference
+     *   - Any dep-validator results the operator already ran
+     *     (passed as latestDepFailures so the LLM can target
+     *     fixes for the actual broken artifacts)
+     * It returns a recommended snippet PLUS a 2-3 bullet rationale.
+     * The operator pastes the snippet into the Compare-and-apply
+     * form above, reviews per-key, and applies what they want.
+     */
+    @PostMapping("/mirror/properties/recommend")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun recommendProperties(
+        @RequestParam(defaultValue = "copilot-default") modelId: String,
+        @RequestParam(required = false, defaultValue = "") latestDepFailures: String,
+        @RequestParam(required = false, defaultValue = "") freeFormHint: String,
+        session: HttpSession
+    ): Map<String, Any?> {
+        val s = connectionSettings.settings
+        // Render samples as a markdown-style block the LLM can pattern-match against.
+        val sampleBlock = enterpriseSamples.samples.joinToString("\n\n") { sample ->
+            """
+            ### Sample: ${sample.title} (id=${sample.id})
+            ${sample.description}
+            When to use: ${sample.whenToUse}
+
+            ```properties
+            ${sample.text}
+            ```
+            """.trimIndent()
+        }
+        // Mask the live file before showing it to the LLM -- the
+        // actual cleartext password should never go over the bridge.
+        val liveMasked = gradleProps.diff(gradleProps.currentText())
+            .joinToString("\n") { "${it.key}=${it.currentDisplay ?: ""}" }
+            .ifBlank { "(file does not exist or is empty)" }
+
+        val systemPrompt = """
+            You are a senior Gradle / corporate-build engineer helping
+            an operator pick a working gradle.properties for their
+            enterprise dev box. Bench-webui has a small catalog of
+            known-working enterprise shapes; your job is to pick the
+            one that best matches the operator's current state and
+            ADAPT it to their actual proxy / mirror values.
+
+            Output strictly in three sections, separated by blank
+            lines + a markdown header:
+
+            ## Recommended sample
+            One sentence naming the sample id from the catalog you're
+            adapting (e.g. "Adapting `artifactory-virtual-with-auth`")
+            and a 1-line WHY.
+
+            ## Recommended gradle.properties
+            A complete `.properties` block in a fenced code block. Use
+            placeholders for any value the operator hasn't supplied
+            (mirror auth user / token). Leave existing values where
+            possible.
+
+            ## Apply notes
+            2-4 bullets calling out which keys differ from the live
+            file and what each one fixes. Cite specific symptoms (e.g.
+            "the testcontainers 401s on the validate-deps panel will
+            resolve once orgInternalMavenPassword is set").
+        """.trimIndent()
+
+        val userPrompt = """
+            Operator's current bench-webui connection settings:
+            - HTTPS proxy: ${s.httpsProxy.ifBlank { "(none)" }}
+            - HTTP proxy: ${s.httpProxy.ifBlank { "(none)" }}
+            - Mirror URL: ${s.mirrorUrl.ifBlank { "(none)" }}
+            - Mirror auth user: ${s.mirrorAuthUser.ifBlank { "(none)" }}
+            - Mirror auth password: ${if (s.mirrorAuthPassword.isNotBlank()) "(set, masked)" else "(unset)"}
+            - Bypass mirror: ${s.bypassMirror}
+            - Insecure SSL: ${s.insecureSsl}
+
+            Operator's CURRENT ~/.gradle/gradle.properties (credential values masked):
+            ```
+            $liveMasked
+            ```
+
+            Recent dep-validator failures the operator pasted in
+            (empty if not run):
+            ```
+            ${latestDepFailures.ifBlank { "(no dep-validator results supplied)" }}
+            ```
+
+            Operator's free-form note (empty if none):
+            "${freeFormHint.ifBlank { "(none)" }}"
+
+            Reference catalog of enterprise gradle.properties shapes:
+            $sampleBlock
+        """.trimIndent()
+
+        val r = llmDiagnostician.diagnose(modelId, systemPrompt, userPrompt, session, timeoutSec = 60)
+        return r.toMap() + mapOf(
+            "samples" to enterpriseSamples.samples.map {
+                mapOf("id" to it.id, "title" to it.title, "description" to it.description)
+            }
         )
     }
 
