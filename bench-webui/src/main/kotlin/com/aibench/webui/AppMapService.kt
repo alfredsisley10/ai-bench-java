@@ -513,7 +513,16 @@ class AppMapService(
         val proc = pb.start()
         val recording = Recording(
             id = recordingId,
-            command = cmd.toList(),
+            // Mask credential-shaped args before stashing on the
+            // Recording -- this is what the appmap-recording fragment
+            // renders raw via #strings.listJoin(rec.command, ' '), so
+            // any -DhttpsProxyPassword=cleartext / -DmirrorPassword=…
+            // contributed by gradleSystemProps() would otherwise show
+            // up verbatim on the in-page Command detail view. The
+            // ProcessBuilder spawned above already has the unmasked
+            // cmd, so masking the snapshot doesn't affect the actual
+            // gradle invocation.
+            command = connectionSettings.maskCredentialArgs(cmd.toList()),
             // Concatenate the picked modules for the recording metadata
             // (used by the live status panel + log line). null when the
             // operator left the multi-select empty (record everything).
@@ -672,7 +681,12 @@ class AppMapService(
                     (System.getenv("PATH") ?: "")
         }
         val diag = StringBuilder()
-        diag.appendLine("$ ${cmd.joinToString(" ")}")
+        // maskCredentialArgsInLine wipes -D*Password=… cleartext from
+        // the joined cmd line before it lands in the diag buffer. The
+        // diag buffer is surfaced verbatim on the AppMap status page;
+        // unmasked it leaks the proxy + mirror passwords from
+        // gradleSystemProps() via the agent-jar-resolution path.
+        diag.appendLine("$ " + connectionSettings.maskCredentialArgsInLine(cmd.joinToString(" ")))
         diag.appendLine("[env] JAVA_HOME=$javaHome")
         return runCatching {
             val p = pb.start()
