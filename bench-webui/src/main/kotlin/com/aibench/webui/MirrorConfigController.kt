@@ -390,6 +390,177 @@ class MirrorConfigController(
         )
     }
 
+    /**
+     * Iterate the supplied list of failed coordinates through every
+     * connectivity option the operator has configured: primary
+     * mirror, maven-external-virtual, direct upstream, and (for
+     * gradle plugin markers) the rewrite-target maven coord that
+     * the corp init script would substitute at build time.
+     *
+     * Used by the /mirror "🔄 Retry failed with alternative paths"
+     * button. Catches the case where (for example) every gradle
+     * plugin row goes red on the validator with HttpTimeoutException
+     * because the configured probe path went direct to
+     * plugins.gradle.org from a corp network that doesn't allow
+     * direct egress -- the alternative routes via the mirror often
+     * resolve fine, and the operator just needs to see which path
+     * works.
+     */
+    @PostMapping("/mirror/validate-deps/retry-alternatives")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun retryAlternatives(
+        @RequestParam(name = "coord") coords: List<String>
+    ): Map<String, Any?> {
+        val results = depValidator.probeAlternatives(coords)
+        val anySucceeded = results.any { r -> r.attempts.any { it.ok } }
+        return mapOf(
+            "ok" to anySucceeded,
+            "summary" to (if (anySucceeded)
+                "${results.count { r -> r.attempts.any { it.ok } }} of ${results.size} " +
+                "failed coords have at least one working alternative path."
+            else
+                "None of the ${results.size} failed coords resolved through any configured option."),
+            "results" to results.map { r ->
+                mapOf(
+                    "coord" to r.coord,
+                    "category" to r.category.name,
+                    "categoryDisplay" to r.category.displayName,
+                    "recommendation" to r.recommendation,
+                    "attempts" to r.attempts.map { a ->
+                        mapOf(
+                            "label" to a.label,
+                            "probeUrl" to a.probeUrl,
+                            "viaProxy" to a.viaProxy,
+                            "ok" to a.ok,
+                            "statusCode" to a.statusCode,
+                            "durationMs" to a.durationMs,
+                            "message" to a.message
+                        )
+                    }
+                )
+            }
+        )
+    }
+
+    /**
+     * Discovery wizard: operator hands us one or more candidate
+     * Artifactory URLs (typically pasted from internal docs / IT
+     * email), and we probe every meaningful combination of
+     * (URL × proxy on/off × TLS secure/insecure × auth on/off)
+     * against a small reference artifact set. Returns the combos
+     * ranked by pass-rate so the operator can pick the best and
+     * one-click apply via /mirror/discover/apply.
+     *
+     * The point of the feature: a corp Artifactory deployment can
+     * be exposed at multiple URLs (one per realm / virtual / cluster),
+     * and the operator often doesn't know in advance which combo of
+     * proxy routing + TLS verification their network actually allows.
+     * Brute-forcing the matrix in ~5s saves them from playing
+     * /proxy + /mirror tag for half a day.
+     */
+    @PostMapping("/mirror/discover")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun discoverConfig(
+        @RequestParam(name = "candidateUrl") candidateUrls: List<String>
+    ): Map<String, Any?> {
+        val combos = depValidator.discoverConfig(candidateUrls)
+        val winners = combos.filter { it.passedCount == it.totalCount }
+        val partial = combos.filter { it.passedCount in 1 until it.totalCount }
+        return mapOf(
+            "ok" to combos.isNotEmpty(),
+            "summary" to (when {
+                winners.isNotEmpty() ->
+                    "${winners.size} of ${combos.size} combos passed all reference probes. " +
+                    "Top: ${winners.first().label}"
+                partial.isNotEmpty() ->
+                    "${partial.size} of ${combos.size} combos partially worked. " +
+                    "Best: ${partial.first().label} (${partial.first().passedCount}/${partial.first().totalCount} probes)"
+                else ->
+                    "0 of ${combos.size} combos resolved any reference probe -- " +
+                    "the URLs may be wrong, or the corp proxy / firewall is rejecting all paths."
+            }),
+            "combos" to combos.map { c ->
+                mapOf(
+                    "candidateUrl" to c.candidateUrl,
+                    "useProxy" to c.useProxy,
+                    "insecureSsl" to c.insecureSsl,
+                    "useAuth" to c.useAuth,
+                    "passedCount" to c.passedCount,
+                    "totalCount" to c.totalCount,
+                    "score" to c.score,
+                    "label" to c.label,
+                    "probedArtifacts" to c.probedArtifacts.map { a ->
+                        mapOf(
+                            "label" to a.label,
+                            "ok" to a.ok,
+                            "statusCode" to a.statusCode,
+                            "durationMs" to a.durationMs,
+                            "message" to a.message
+                        )
+                    }
+                )
+            }
+        )
+    }
+
+    /**
+     * Scan the operator's local profile for Artifactory URLs the
+     * machine is already aware of: ~/.gradle/gradle.properties,
+     * ~/.gradle/init.d/ scripts, ~/.m2/settings.xml. Returns
+     * deduped URL list + per-source breakdown, so the discovery
+     * wizard can pre-populate its candidates textarea with values
+     * the operator's IT setup likely already endorses.
+     */
+    @PostMapping("/mirror/discover/scan-local")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun discoverScanLocal(): Map<String, Any?> {
+        val scan = depValidator.scanLocalProfile()
+        return mapOf(
+            "ok" to true,
+            "urls" to scan.urls,
+            "sources" to scan.sources,
+            "notes" to scan.notes,
+            "summary" to (if (scan.urls.isEmpty())
+                "No Artifactory-shaped URLs found in ~/.gradle/{gradle.properties, init.d/} or ~/.m2/settings.xml."
+            else
+                "Found ${scan.urls.size} candidate URL(s) across " +
+                "${scan.sources.size} local profile file(s).")
+        )
+    }
+
+    /**
+     * Apply a chosen discovery combo to ConnectionSettings: sets
+     * mirrorUrl + insecureSsl from the combo. Doesn't modify
+     * proxy fields (those are managed on /proxy and the operator
+     * can toggle "Bypass mirror" / "Maven Central via mirror only"
+     * separately afterwards). Reloads the page on success.
+     */
+    @PostMapping("/mirror/discover/apply")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun applyDiscoveryCombo(
+        @RequestParam candidateUrl: String,
+        @RequestParam(defaultValue = "false") insecureSsl: Boolean,
+        session: HttpSession
+    ): Map<String, Any?> {
+        val s = connectionSettings.settings
+        val updated = s.copy(
+            mirrorUrl = candidateUrl.trim(),
+            insecureSsl = insecureSsl
+        )
+        connectionSettings.update(updated)
+        stopBankingAppDaemon()
+        val parts = mutableListOf<String>()
+        parts += "Mirror URL set to $candidateUrl."
+        if (insecureSsl != s.insecureSsl) {
+            parts += "TLS verification: ${if (insecureSsl) "DISABLED" else "ENABLED"}."
+        }
+        parts += "Banking-app gradle daemon stopped so next build picks up the change."
+        return mapOf(
+            "ok" to true,
+            "message" to parts.joinToString(" ")
+        )
+    }
+
     @PostMapping("/mirror/save")
     fun save(
         @RequestParam(required = false, defaultValue = "") mirrorUrl: String,

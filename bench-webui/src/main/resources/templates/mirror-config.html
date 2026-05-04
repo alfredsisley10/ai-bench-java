@@ -154,6 +154,242 @@
         </script>
     </section>
 
+    <!-- Discovery wizard: paste candidate Artifactory URLs IT
+         provided + click Discover. The server probes every meaningful
+         (URL × proxy on/off × TLS secure/insecure × auth on/off)
+         combo against a small reference artifact set, ranks the
+         results, and lets the operator one-click Apply the winner
+         to the mirror config below. Useful when the operator knows
+         their corp Artifactory exposes multiple URLs / virtuals and
+         doesn't know which combo their network actually allows. -->
+    <section>
+        <h3>🔍 Discover working configuration</h3>
+        <p class="help-text" style="margin-top:0">
+            Paste one or more candidate Artifactory URLs (one per line)
+            from your IT team. Bench-webui probes every combination of
+            <em>URL × proxy on/off × TLS secure/insecure × auth on/off</em>
+            against a small reference artifact set (Spring Boot starter,
+            testcontainers, gradle plugin marker), ranks the combos by
+            pass rate, and lets you one-click apply the winner. Uses
+            the credentials + proxy already configured on this page +
+            <a href="/proxy">/proxy</a>.
+        </p>
+        <textarea id="discoverCandidates" rows="3"
+                  placeholder="https://artifactory.corp.example.com/artifactory/maven-virtual&#10;https://artifactory.corp.example.com/artifactory/maven-external-virtual"
+                  style="width:100%; font-family:monospace; font-size:0.9em;
+                         padding:0.5em; border:1px solid #cbd5e1; border-radius:4px"></textarea>
+        <div class="button-row" style="margin-top:0.4em">
+            <button type="button" class="btn-sm" onclick="discoverConfigs(this)">
+                🔍 Discover
+            </button>
+            <!-- Pre-fill the textarea with URLs found in the local
+                 profile (gradle.properties, init.d, .m2/settings.xml).
+                 Uses what the operator's IT setup has already endorsed
+                 as a starting point so they don't have to type known-
+                 working URLs from scratch. -->
+            <button type="button" class="btn-sm" onclick="scanLocalProfile(this)">
+                🔎 Scan local profile
+            </button>
+            <span id="discoverStatus" class="help-text" style="margin-left:0.5em"></span>
+        </div>
+        <div id="scanLocalOutput" style="display:none; margin-top:0.4em;
+              padding:0.5em 0.7em; border-radius:4px; font-size:0.85em;
+              background:#f4f6fa; border:1px solid #cbd5e1"></div>
+        <div id="discoverOutput" style="display:none; margin-top:0.6em">
+            <div id="discoverSummary" style="padding:0.5em 0.7em; border-radius:4px;
+                  background:#f4f6fa; border:1px solid #cbd5e1; margin-bottom:0.4em"></div>
+            <table id="discoverTable" style="width:100%; font-size:0.85em">
+                <thead><tr style="background:#f3f4f6">
+                    <th style="text-align:left; padding:4px 6px">URL</th>
+                    <th style="text-align:left; padding:4px 6px">Proxy</th>
+                    <th style="text-align:left; padding:4px 6px">TLS</th>
+                    <th style="text-align:left; padding:4px 6px">Auth</th>
+                    <th style="text-align:right; padding:4px 6px">Passed</th>
+                    <th style="text-align:left; padding:4px 6px">Action</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <script>
+            function discoverConfigs(btn) {
+                var status = document.getElementById('discoverStatus');
+                var output = document.getElementById('discoverOutput');
+                var summary = document.getElementById('discoverSummary');
+                var tbody = document.querySelector('#discoverTable tbody');
+                var raw = (document.getElementById('discoverCandidates').value || '').trim();
+                if (!raw) {
+                    status.textContent = 'Paste at least one URL first.';
+                    status.style.color = '#b91c1c';
+                    return;
+                }
+                var urls = raw.split(/\r?\n/).map(function (s) { return s.trim(); })
+                              .filter(function (s) { return s.length > 0; });
+                btn.disabled = true;
+                status.textContent = 'Probing ' + urls.length + ' URL(s) × combo matrix… (5–15s)';
+                status.style.color = '';
+                output.style.display = 'none';
+                tbody.innerHTML = '';
+                var form = new URLSearchParams();
+                urls.forEach(function (u) { form.append('candidateUrl', u); });
+                fetch('/mirror/discover', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: form
+                })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        status.textContent = '';
+                        output.style.display = '';
+                        summary.textContent = data.summary || '';
+                        (data.combos || []).forEach(function (c, idx) {
+                            var tr = document.createElement('tr');
+                            tr.style.borderBottom = '1px solid #f3f4f6';
+                            var passColor = (c.passedCount === c.totalCount && c.totalCount > 0)
+                                ? '#067647'
+                                : (c.passedCount > 0 ? '#92400e' : '#b91c1c');
+                            tr.innerHTML =
+                                '<td style="padding:4px 6px"><code style="font-size:0.85em">' +
+                                    escapeHtmlD(c.candidateUrl) + '</code></td>' +
+                                '<td style="padding:4px 6px">' + (c.useProxy ? 'on' : 'off') + '</td>' +
+                                '<td style="padding:4px 6px">' + (c.insecureSsl ? 'insecure' : 'secure') + '</td>' +
+                                '<td style="padding:4px 6px">' + (c.useAuth ? 'on' : 'off') + '</td>' +
+                                '<td style="padding:4px 6px; text-align:right; color:' + passColor + '">' +
+                                    c.passedCount + ' / ' + c.totalCount + '</td>' +
+                                '<td style="padding:4px 6px"></td>';
+                            // Apply button only on combos that passed at least one ref.
+                            if (c.passedCount > 0) {
+                                var apply = document.createElement('button');
+                                apply.type = 'button';
+                                apply.className = 'btn-sm';
+                                apply.style.cssText = 'font-size:0.8em; padding:2px 8px';
+                                apply.textContent = (idx === 0 ? '✓ Apply (best)' : 'Apply');
+                                if (idx === 0) {
+                                    apply.style.background = '#dcfce7';
+                                    apply.style.borderColor = '#86efac';
+                                    apply.style.color = '#065f46';
+                                }
+                                apply.onclick = function () {
+                                    if (!confirm('Apply combo:\nURL=' + c.candidateUrl +
+                                        '\nTLS=' + (c.insecureSsl ? 'insecure' : 'secure') +
+                                        '\n\nThis will save mirrorUrl + insecureSsl. ' +
+                                        'Proxy + auth toggles are managed separately on /proxy + the mirror form. Continue?')) {
+                                        return;
+                                    }
+                                    apply.disabled = true;
+                                    apply.textContent = 'Applying…';
+                                    var f = new URLSearchParams();
+                                    f.append('candidateUrl', c.candidateUrl);
+                                    f.append('insecureSsl', c.insecureSsl ? 'true' : 'false');
+                                    fetch('/mirror/discover/apply', {
+                                        method:'POST',
+                                        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+                                        body: f
+                                    })
+                                        .then(function (r) { return r.json(); })
+                                        .then(function (resp) {
+                                            if (resp.ok) {
+                                                apply.textContent = '✓ ' + (resp.message || 'Applied');
+                                                setTimeout(function () { window.location.reload(); }, 1200);
+                                            } else {
+                                                apply.textContent = '✗ ' + (resp.reason || 'failed');
+                                            }
+                                        })
+                                        .catch(function (e) {
+                                            apply.textContent = '✗ ' + ((e && e.message) || e);
+                                        });
+                                };
+                                tr.lastChild.appendChild(apply);
+                            }
+                            tbody.appendChild(tr);
+                            // Add a per-combo expandable details row.
+                            var detailsTr = document.createElement('tr');
+                            detailsTr.innerHTML = '<td colspan="6" style="padding:0">' +
+                                '<details style="margin:0 6px 4px 6px"><summary class="help-text" ' +
+                                'style="cursor:pointer; font-size:0.8em">probe details</summary>' +
+                                '<table style="width:100%; font-size:0.8em; margin:0.3em 0">' +
+                                '<thead><tr><th style="text-align:left">Reference</th>' +
+                                '<th>Status</th><th>ms</th><th>Result</th></tr></thead><tbody>' +
+                                (c.probedArtifacts || []).map(function (a) {
+                                    return '<tr><td>' + escapeHtmlD(a.label) + '</td>' +
+                                        '<td>' + (a.statusCode > 0 ? a.statusCode : '—') + '</td>' +
+                                        '<td>' + a.durationMs + '</td>' +
+                                        '<td style="color:' + (a.ok ? '#067647' : '#b91c1c') + '">' +
+                                        (a.ok ? '✓ ' : '✗ ') + escapeHtmlD(a.message) + '</td></tr>';
+                                }).join('') + '</tbody></table></details></td>';
+                            tbody.appendChild(detailsTr);
+                        });
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + ((e && e.message) || e);
+                        status.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+            function escapeHtmlD(s) {
+                var d = document.createElement('div');
+                d.appendChild(document.createTextNode(String(s == null ? '' : s)));
+                return d.innerHTML;
+            }
+            function scanLocalProfile(btn) {
+                var status = document.getElementById('discoverStatus');
+                var out = document.getElementById('scanLocalOutput');
+                btn.disabled = true;
+                status.textContent = 'Scanning ~/.gradle and ~/.m2…';
+                status.style.color = '';
+                out.style.display = 'none';
+                fetch('/mirror/discover/scan-local', {method: 'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        status.textContent = '';
+                        out.style.display = '';
+                        var urls = data.urls || [];
+                        if (urls.length > 0) {
+                            // Pre-fill the candidates textarea with the
+                            // discovered URLs (one per line). Don't
+                            // overwrite if operator already typed
+                            // something -- append instead.
+                            var ta = document.getElementById('discoverCandidates');
+                            var existing = (ta.value || '').trim();
+                            var existingSet = new Set(existing.split(/\r?\n/)
+                                .map(function (s) { return s.trim(); })
+                                .filter(function (s) { return s.length > 0; }));
+                            var added = urls.filter(function (u) { return !existingSet.has(u); });
+                            ta.value = existing.length > 0
+                                ? existing + '\n' + added.join('\n')
+                                : urls.join('\n');
+                        }
+                        // Render per-source breakdown so operator sees WHERE
+                        // each candidate came from (audit trail in case the
+                        // discovered value looks suspect).
+                        var lines = [];
+                        lines.push('✓ ' + (data.summary || ''));
+                        Object.keys(data.sources || {}).forEach(function (path) {
+                            lines.push('  • ' + path + ':');
+                            (data.sources[path] || []).forEach(function (u) {
+                                lines.push('      ' + u);
+                            });
+                        });
+                        if ((data.notes || []).length > 0) {
+                            lines.push('');
+                            lines.push('Best-effort notes:');
+                            (data.notes || []).forEach(function (n) {
+                                lines.push('  - ' + n);
+                            });
+                        }
+                        out.textContent = lines.join('\n');
+                        out.style.whiteSpace = 'pre-wrap';
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        status.textContent = '✗ ' + ((e && e.message) || e);
+                        status.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+        </script>
+    </section>
+
     <section>
         <h3>Configure Artifactory mirror</h3>
         <p class="help-text" style="margin-top:0">
