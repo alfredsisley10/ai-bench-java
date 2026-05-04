@@ -1083,6 +1083,35 @@ class ConnectionSettings {
     }
 
     /**
+     * Mask credential values inside any `-D*Password=...` /
+     * `-D*orgInternalMavenPassword=...` arg so the result is safe
+     * to render in the UI, persist on a SeedAudit, log, or paste
+     * into a bug report. Pass `gradleSystemProps()` through this
+     * before any operator-visible surface; ALWAYS use the masked
+     * form for `verificationCommand` on persisted audits.
+     */
+    fun maskCredentialArgs(args: List<String>): List<String> {
+        // Match anything ending in `Password=...` or
+        // `passw...=...` (case-insensitive) so future credential-
+        // shaped flags (mirrorAuthPassword, jdk.http.auth.password,
+        // etc.) get covered without per-key bookkeeping.
+        val maskRe = Regex("(-D[^=]*(?:[Pp]assword|[Pp]asswd)[^=]*)=.*")
+        return args.map { arg ->
+            maskRe.matchEntire(arg)?.let { "${it.groupValues[1]}=********" } ?: arg
+        }
+    }
+
+    /** Mask any `-D*Password=cleartext` substring inside a joined
+     *  command-line string. Use on `cmd.joinToString(" ")` shapes
+     *  before persisting / logging / displaying. */
+    fun maskCredentialArgsInLine(line: String): String {
+        return line.replace(
+            Regex("(-D[^=\\s]*(?:[Pp]assword|[Pp]asswd)[^=\\s]*=)[^\\s]+"),
+            "$1********"
+        )
+    }
+
+    /**
      * JVM system-property args (e.g. {@code -Dhttps.proxyHost=...}) that
      * must be appended to Gradle subprocess command lines so the child
      * honors the same proxy and TLS preferences.
