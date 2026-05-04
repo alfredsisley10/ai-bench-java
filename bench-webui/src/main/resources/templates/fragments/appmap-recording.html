@@ -59,6 +59,113 @@
             <pre class="log-tail" th:text="${logTail}"></pre>
         </details>
 
+        <!-- 🩺 Diagnose with LLM. Persists across refreshes only when
+             the recording is no longer RUNNING (htmx polling stops
+             once status flips to FAILED / SUCCEEDED / SUCCEEDED_NO_TRACES);
+             during RUNNING the result may get wiped by the 2s panel
+             swap, but operators rarely diagnose mid-run anyway. -->
+        <div style="margin-top:0.75em; padding:0.6em 0.8em;
+                    background:#fff7ed; border:1px solid #fed7aa;
+                    border-radius:4px">
+            <strong>🩺 Diagnose this recording with LLM</strong>
+            <span class="help-text" style="margin-left:0.5em">
+                — sends the log tail + your settings to the bridge;
+                emits local fixes + source-code project fixes.
+            </span>
+            <div style="margin-top:0.4em">
+                <label class="help-text">Model:
+                    <select th:id="'recDiagModel-' + ${rec.id}"
+                            class="diag-model-select" style="font-size:0.85em">
+                        <option value="copilot-default">copilot-default (loading…)</option>
+                    </select>
+                </label>
+                <button type="button" class="btn-sm"
+                        style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                        th:attr="onclick='diagnoseAppmapRecording(\'' + ${rec.id} + '\')'">
+                    Run diagnose
+                </button>
+                <span th:id="'recDiagStatus-' + ${rec.id}"
+                      class="help-text" style="margin-left:0.5em"></span>
+            </div>
+            <div th:id="'recDiagOutput-' + ${rec.id}"
+                 style="display:none; margin-top:0.5em;
+                        padding:0.6em 0.8em; background:#fff;
+                        border:1px solid #fdba74; border-radius:4px;
+                        white-space:pre-wrap; font-size:0.85em"></div>
+        </div>
+        <script th:inline="javascript">
+            (function () {
+                var recId = /*[[${rec.id}]]*/ '';
+                if (!recId) return;
+                // Populate the model picker once. Same /api/diagnose-models
+                // endpoint /mirror uses; falls back to "(no models —
+                // bridge offline?)" when the bridge is down so the
+                // operator can tell the difference.
+                var sel = document.getElementById('recDiagModel-' + recId);
+                if (sel && !sel.dataset.loaded) {
+                    sel.dataset.loaded = '1';
+                    fetch('/api/diagnose-models')
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                            var models = data.models || [];
+                            sel.innerHTML = '';
+                            if (models.length === 0) {
+                                sel.innerHTML = '<option value="copilot-default">(no models — bridge offline?)</option>';
+                                return;
+                            }
+                            models.forEach(function (m) {
+                                var opt = document.createElement('option');
+                                opt.value = m.id;
+                                opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                                sel.appendChild(opt);
+                            });
+                        })
+                        .catch(function () {
+                            sel.innerHTML = '<option value="copilot-default">copilot-default</option>';
+                        });
+                }
+                // Defined as a window-scoped helper so the inline
+                // onclick from the button (which lives outside this
+                // IIFE) can find it.
+                if (typeof window.diagnoseAppmapRecording !== 'function') {
+                    window.diagnoseAppmapRecording = function (recordingId) {
+                        var s   = document.getElementById('recDiagStatus-' + recordingId);
+                        var out = document.getElementById('recDiagOutput-' + recordingId);
+                        var sel = document.getElementById('recDiagModel-' + recordingId);
+                        var modelId = sel ? sel.value : 'copilot-default';
+                        s.textContent = 'Calling ' + modelId + '… (5–60s)';
+                        s.style.color = '';
+                        out.style.display = 'none';
+                        out.textContent = '';
+                        var form = new URLSearchParams();
+                        form.append('modelId', modelId);
+                        fetch('/demo/appmap/recording/' + encodeURIComponent(recordingId) + '/diagnose', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                            body: form
+                        })
+                            .then(function (r) { return r.json(); })
+                            .then(function (data) {
+                                if (data.ok) {
+                                    s.textContent = '✓ ' + (data.model || modelId) +
+                                        ' (' + (data.durationMs || '?') + 'ms)';
+                                    s.style.color = '#067647';
+                                    out.textContent = data.analysis || '(empty response)';
+                                    out.style.display = '';
+                                } else {
+                                    s.textContent = '✗ ' + (data.reason || 'unknown failure');
+                                    s.style.color = '#b91c1c';
+                                }
+                            })
+                            .catch(function (e) {
+                                s.textContent = '✗ ' + ((e && e.message) || e);
+                                s.style.color = '#b91c1c';
+                            });
+                    };
+                }
+            })();
+        </script>
+
         <div style="margin-top:0.75em">
             <span th:if="${rec.status.name() == 'RUNNING'}" class="help-text">
                 Recording is in flight — the log above auto-refreshes. Traces
