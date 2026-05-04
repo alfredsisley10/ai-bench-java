@@ -82,6 +82,118 @@ class MirrorConfigController(
     }
 
     /**
+     * Diagnose a gradle connectivity / resolution failure with the
+     * operator's chosen LLM. Mirrors the existing AppMap-trace
+     * diagnose pattern (PR #16): produces two clearly-labelled
+     * sections of recommendations:
+     *   - Local resolutions (what to change on this box now)
+     *   - Source-code project fixes (PRs to raise against
+     *     ai-bench-java so the failure mode is eliminated)
+     *
+     * Inputs the prompt sees:
+     *   - Current bench-webui connection settings (proxy/mirror)
+     *   - The masked live gradle.properties
+     *   - The recent dep-validator failure summary (scraped from
+     *     the in-page table by JS and POSTed in)
+     *   - The recent banking-app boot log tail (when the operator
+     *     supplied one)
+     *
+     * Cleartext credentials NEVER make it into the prompt; the
+     * masking helpers from PR-K + the proxy-args masker do that.
+     */
+    @PostMapping("/mirror/diagnose")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun diagnoseGradleFailure(
+        @RequestParam(defaultValue = "copilot-default") modelId: String,
+        @RequestParam(required = false, defaultValue = "") depFailures: String,
+        @RequestParam(required = false, defaultValue = "") logTail: String,
+        @RequestParam(required = false, defaultValue = "") freeFormHint: String,
+        session: HttpSession
+    ): Map<String, Any?> {
+        val s = connectionSettings.settings
+        val maskedProps = gradleProps.diff(gradleProps.currentText())
+            .joinToString("\n") { "${it.key}=${it.currentDisplay ?: ""}" }
+            .ifBlank { "(file does not exist or is empty)" }
+        val maskedGradleArgs = connectionSettings.maskCredentialArgs(
+            connectionSettings.gradleSystemProps()
+        )
+
+        val systemPrompt = """
+            You are a senior Gradle / corp-build engineer triaging a
+            gradle connectivity or dependency-resolution failure on
+            an enterprise developer box. Bench-webui has captured the
+            operator's current settings + recent failure signals; your
+            job is to spot the actual root cause and recommend
+            actionable fixes.
+
+            Respond in TWO clearly-delimited sections:
+
+            ## Local resolutions
+            Concrete steps the operator can take on THIS machine right
+            now. Examples: change a /mirror or /proxy field in
+            bench-webui, edit ~/.gradle/gradle.properties (cite the
+            specific systemProp.* line), kill a stale gradle daemon,
+            install a missing JDK toolchain, ask the corp ITA team
+            for a token to a different Artifactory virtual. Cite
+            specific commands or button names.
+
+            ## Source-code project fixes
+            Changes that should be raised as PRs against the
+            ai-bench-java repo so this failure mode stops happening
+            for future developers. Examples: bump or pin a plugin
+            version in banking-app/build.gradle.kts, add a clearer
+            error in ConnectionSettings.parseHostPort, add a
+            defensive check in AppMapTraceManager, document a JDK
+            requirement in README. Name the file path and the change
+            in 1-2 sentences each.
+
+            Be concrete. Cite the specific failing coordinate or
+            error string when present. 2-5 bullets per section. If
+            no fix is needed in one section, say so in one line
+            instead of inventing recommendations.
+        """.trimIndent()
+
+        val userPrompt = """
+            Operator's current bench-webui connection settings:
+            - HTTPS proxy: ${s.httpsProxy.ifBlank { "(none)" }}
+            - HTTP proxy: ${s.httpProxy.ifBlank { "(none)" }}
+            - Mirror URL: ${s.mirrorUrl.ifBlank { "(none)" }}
+            - Mirror auth: ${if (s.hasMirrorAuth) "configured (user '${s.mirrorAuthUser}')" else "(none)"}
+            - Bypass mirror: ${s.bypassMirror}
+            - Insecure SSL: ${s.insecureSsl}
+
+            Gradle subprocess JVM args bench-webui appends (credentials masked):
+            ```
+            ${maskedGradleArgs.joinToString(" ")}
+            ```
+
+            Live ~/.gradle/gradle.properties (credential values masked):
+            ```
+            $maskedProps
+            ```
+
+            Recent dep-validator failures the operator captured
+            (empty when no validate-deps run yet):
+            ```
+            ${depFailures.ifBlank { "(no dep-validator failures supplied)" }}
+            ```
+
+            Recent log tail (banking-app bootRun.log or similar; empty
+            when not provided):
+            ```
+            ${logTail.take(8000).ifBlank { "(no log tail supplied)" }}
+            ```
+
+            Operator's free-form note (empty when none):
+            "${freeFormHint.ifBlank { "(none)" }}"
+        """.trimIndent()
+
+        return llmDiagnostician
+            .diagnose(modelId, systemPrompt, userPrompt, session, timeoutSec = 60)
+            .toMap()
+    }
+
+    /**
      * Recommend a gradle.properties shape for the operator's
      * environment. The LLM gets:
      *   - Current settings (proxy / mirror / bypass)

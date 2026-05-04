@@ -203,6 +203,35 @@
             <span id="depValidateStatus" class="help-text" style="margin-left:0.6em"></span>
         </div>
 
+        <!-- AI diagnose for the validate-deps results. Surfaces only
+             after the operator has at least one ✗ row in the table
+             (when there's nothing failing, there's nothing to
+             diagnose). Same model picker + 2-section output pattern
+             as the AppMap-trace diagnose (PR #16). -->
+        <div id="diagnoseGradleSection" style="display:none; margin:0.5em 0;
+             padding:0.6em 0.8em; background:#fff7ed; border:1px solid #fed7aa;
+             border-radius:4px">
+            <strong>🩺 Diagnose gradle failure with LLM</strong>
+            <span class="help-text" style="margin-left:0.5em">
+                — analyzes the failing rows above + your settings; emits
+                local fixes + source-code-project fixes.
+            </span>
+            <div style="margin-top:0.4em">
+                <label class="help-text">Model:
+                    <select id="diagnoseGradleModel" class="diag-model-select" style="font-size:0.85em">
+                        <option value="copilot-default">copilot-default (loading…)</option>
+                    </select>
+                </label>
+                <button type="button" class="btn-sm"
+                        style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                        onclick="diagnoseGradleFailure()">Run diagnose</button>
+                <span id="diagnoseGradleStatus" class="help-text" style="margin-left:0.5em"></span>
+            </div>
+            <div id="diagnoseGradleOutput" style="display:none; margin-top:0.5em;
+                 padding:0.6em 0.8em; background:#fff; border:1px solid #fdba74;
+                 border-radius:4px; white-space:pre-wrap; font-size:0.85em"></div>
+        </div>
+
         <table id="depValidateTable" style="width:100%; margin-top:0.4em;
                                             font-size:0.85em; border-collapse:collapse">
             <thead>
@@ -315,6 +344,71 @@
     </section>
 
     <script>
+        // ---- AI diagnose gradle failure (PR-M) ------------------------
+        var diagnoseGradleModelsLoaded = false;
+        function ensureDiagnoseGradleModels() {
+            if (diagnoseGradleModelsLoaded) return;
+            diagnoseGradleModelsLoaded = true;
+            var sel = document.getElementById('diagnoseGradleModel');
+            if (!sel) return;
+            fetch('/api/diagnose-models')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    sel.innerHTML = '';
+                    (data.models || []).forEach(function (m) {
+                        var opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                        sel.appendChild(opt);
+                    });
+                    if (sel.options.length === 0) {
+                        sel.innerHTML = '<option value="copilot-default">(no models — bridge offline?)</option>';
+                    }
+                })
+                .catch(function () {
+                    sel.innerHTML = '<option value="copilot-default">copilot-default</option>';
+                });
+        }
+        function diagnoseGradleFailure() {
+            ensureDiagnoseGradleModels();
+            var status = document.getElementById('diagnoseGradleStatus');
+            var output = document.getElementById('diagnoseGradleOutput');
+            var sel = document.getElementById('diagnoseGradleModel');
+            var modelId = sel ? sel.value : 'copilot-default';
+            status.textContent = 'Calling ' + modelId + '… (5–60s)';
+            status.style.color = '';
+            output.style.display = 'none';
+            output.textContent = '';
+            var form = new URLSearchParams();
+            form.append('modelId', modelId);
+            form.append('depFailures', extractDepFailureSummary());
+            // Best-effort log tail pickup -- if the operator has the
+            // banking-app log open elsewhere, no-op here. Could fetch
+            // /demo/app/log but keep this lightweight.
+            fetch('/mirror/diagnose', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: form
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.ok) {
+                        status.textContent = '✓ ' + (data.model || modelId) +
+                            ' (' + (data.durationMs || '?') + 'ms)';
+                        status.style.color = '#067647';
+                        output.textContent = data.analysis || '(empty response)';
+                        output.style.display = '';
+                    } else {
+                        status.textContent = '✗ ' + (data.reason || 'unknown failure');
+                        status.style.color = '#b91c1c';
+                    }
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                });
+        }
+
         // ---- AI recommend gradle.properties (PR-L) --------------------
         // Populate the model picker on first interaction.
         var recommendModelsLoaded = false;
@@ -533,6 +627,13 @@
                     var total = (data.results || []).length;
                     status.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
                     status.style.color = data.ok ? '#067647' : '#b91c1c';
+                    // Surface the diagnose section only when there are
+                    // actually failed rows to ask the LLM about.
+                    var diagSection = document.getElementById('diagnoseGradleSection');
+                    if (diagSection) {
+                        diagSection.style.display = (passed < total) ? '' : 'none';
+                        if (passed < total) ensureDiagnoseGradleModels();
+                    }
                     tbody.innerHTML = '';
                     (data.results || []).forEach(function (row) {
                         var tr = document.createElement('tr');
