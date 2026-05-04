@@ -253,7 +253,32 @@
                 <button type="button" class="btn-sm" onclick="compareProps()">
                     Compare against current
                 </button>
+                <span style="margin-left:1em">
+                    <label class="help-text">AI recommend with:
+                        <select id="recommendModel" class="diag-model-select" style="font-size:0.85em">
+                            <option value="copilot-default">copilot-default (loading…)</option>
+                        </select>
+                    </label>
+                    <button type="button" class="btn-sm"
+                            style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                            onclick="recommendProps()">
+                        🪄 Recommend
+                    </button>
+                </span>
                 <span id="propsCompareStatus" class="help-text" style="margin-left:0.6em"></span>
+            </div>
+            <!-- AI recommend output panel — hidden until first run. -->
+            <div id="recommendOutput" style="display:none; margin:0.5em 0;
+                 padding:0.6em 0.8em; background:#fffbeb; border:1px solid #fcd34d;
+                 border-radius:4px; white-space:pre-wrap; font-size:0.85em">
+            </div>
+            <div id="recommendActions" style="display:none; margin:0.4em 0">
+                <button type="button" class="btn-sm" onclick="loadRecommendIntoTextarea()">
+                    Load recommended snippet into textarea above
+                </button>
+                <span class="help-text" style="margin-left:0.5em">
+                    Then click <em>Compare against current</em> to preview per-key diffs.
+                </span>
             </div>
 
             <table id="propsDiffTable" style="width:100%; margin-top:0.4em;
@@ -290,6 +315,111 @@
     </section>
 
     <script>
+        // ---- AI recommend gradle.properties (PR-L) --------------------
+        // Populate the model picker on first interaction.
+        var recommendModelsLoaded = false;
+        function ensureRecommendModels() {
+            if (recommendModelsLoaded) return;
+            recommendModelsLoaded = true;
+            var sel = document.getElementById('recommendModel');
+            if (!sel) return;
+            fetch('/api/diagnose-models')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    sel.innerHTML = '';
+                    (data.models || []).forEach(function (m) {
+                        var opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                        sel.appendChild(opt);
+                    });
+                    if (sel.options.length === 0) {
+                        sel.innerHTML = '<option value="copilot-default">(no models — bridge offline?)</option>';
+                    }
+                })
+                .catch(function () {
+                    sel.innerHTML = '<option value="copilot-default">copilot-default</option>';
+                });
+        }
+        // Last recommend output cached so the "Load into textarea" button
+        // can extract the fenced code block without re-calling the LLM.
+        var lastRecommendAnalysis = null;
+        function recommendProps() {
+            ensureRecommendModels();
+            var status = document.getElementById('propsCompareStatus');
+            var output = document.getElementById('recommendOutput');
+            var actions = document.getElementById('recommendActions');
+            var sel = document.getElementById('recommendModel');
+            var modelId = sel ? sel.value : 'copilot-default';
+            status.textContent = 'Calling ' + modelId + '… (5–60s)';
+            status.style.color = '';
+            output.style.display = 'none';
+            output.textContent = '';
+            actions.style.display = 'none';
+            var form = new URLSearchParams();
+            form.append('modelId', modelId);
+            form.append('latestDepFailures', extractDepFailureSummary());
+            fetch('/mirror/properties/recommend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: form
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.ok) {
+                        status.textContent = '✓ ' + (data.model || modelId) +
+                            ' (' + (data.durationMs || '?') + 'ms)';
+                        status.style.color = '#067647';
+                        output.textContent = data.analysis || '(empty response)';
+                        output.style.display = '';
+                        actions.style.display = '';
+                        lastRecommendAnalysis = data.analysis || '';
+                    } else {
+                        status.textContent = '✗ ' + (data.reason || 'unknown failure');
+                        status.style.color = '#b91c1c';
+                    }
+                })
+                .catch(function (e) {
+                    status.textContent = '✗ ' + ((e && e.message) || e);
+                    status.style.color = '#b91c1c';
+                });
+        }
+        // Pull the most recent dep-validator results (if any) and
+        // condense the failures into a few lines for the LLM. Empty
+        // when the operator hasn't run validate yet.
+        function extractDepFailureSummary() {
+            var rows = document.querySelectorAll('#depValidateTable tbody tr');
+            var fails = [];
+            rows.forEach(function (tr) {
+                var cells = tr.querySelectorAll('td');
+                if (cells.length < 6) return;
+                var verdict = cells[5].textContent || '';
+                if (verdict.indexOf('✓') === 0) return;
+                if (verdict.indexOf('✗') !== 0) return;
+                var coord = (cells[1].querySelector('code') || {}).textContent || '';
+                fails.push(coord + ' -> ' + verdict.replace(/^✗\s*/, ''));
+            });
+            return fails.join('\n');
+        }
+        // Extract the fenced ```properties ... ``` block from the
+        // analysis text and stuff it into the candidate textarea.
+        function loadRecommendIntoTextarea() {
+            if (!lastRecommendAnalysis) return;
+            var m = lastRecommendAnalysis.match(/```properties\s*\n([\s\S]*?)\n```/);
+            if (!m) {
+                // Fallback: try a generic ``` block
+                m = lastRecommendAnalysis.match(/```\s*\n([\s\S]*?)\n```/);
+            }
+            if (!m) {
+                alert('Could not find a fenced ```properties block in the recommendation. ' +
+                    'Copy the suggested snippet manually.');
+                return;
+            }
+            document.getElementById('candidateText').value = m[1];
+            document.getElementById('candidateText').scrollIntoView(
+                { behavior: 'smooth', block: 'center' });
+        }
+
         // ---- Compare gradle.properties (PR-K) --------------------------
         function escapeHtmlLocal(s) {
             return String(s == null ? '' : s)
