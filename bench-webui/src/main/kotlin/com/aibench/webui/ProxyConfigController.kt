@@ -15,8 +15,43 @@ import org.springframework.web.bind.annotation.ResponseBody
  */
 @Controller
 class ProxyConfigController(
-    private val connectionSettings: ConnectionSettings
+    private val connectionSettings: ConnectionSettings,
+    private val bankingApp: BankingAppManager
 ) {
+
+    private val log = org.slf4j.LoggerFactory.getLogger(ProxyConfigController::class.java)
+
+    /**
+     * Stop any running gradle daemon for banking-app so it picks up
+     * the just-written ~/.gradle/gradle.properties on the next
+     * invocation. Without this, a daemon spawned BEFORE the operator
+     * saved proxy settings keeps its stale JVM args until idle-timeout
+     * (default ~3 hours), so settings.gradle.kts in that daemon still
+     * reports "no proxy configured" and downstream HTTPS to Maven
+     * Central / mirror auth fails.
+     *
+     * Best-effort: a 30s timeout, exit code is logged but never
+     * surfaced as a save failure -- daemon stop is an optimization,
+     * not a correctness requirement.
+     */
+    private fun stopBankingAppDaemon() {
+        val repo = bankingApp.bankingAppDir
+        if (!repo.isDirectory) return
+        val cmd = mutableListOf<String>().apply {
+            addAll(Platform.gradleWrapper(repo))
+            add("--stop")
+        }
+        runCatching {
+            val proc = ProcessBuilder(cmd).directory(repo).redirectErrorStream(true).start()
+            if (!proc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
+                log.warn("gradlew --stop timed out (30s) -- daemon may still be running stale")
+            } else {
+                log.info("gradlew --stop completed (exit={}) -- next gradle build will spawn a " +
+                    "fresh daemon that reads ~/.gradle/gradle.properties", proc.exitValue())
+            }
+        }.onFailure { log.warn("gradlew --stop failed: {}", it.message) }
+    }
 
     @GetMapping("/proxy")
     fun proxyConfig(model: Model, session: HttpSession): String {
@@ -79,7 +114,14 @@ class ProxyConfigController(
                 // touched -- this endpoint only saves the proxy half.
             )
         )
-        val parts = mutableListOf("Proxy settings saved and Gradle properties updated.")
+        // Kill any running banking-app gradle daemon so the next
+        // gradle invocation spawns a fresh one that reads the
+        // just-written gradle.properties. Without this, an existing
+        // daemon keeps its stale JVM args -- settings.gradle.kts
+        // still warns "no proxy configured", and mirror lookups fail.
+        stopBankingAppDaemon()
+        val parts = mutableListOf("Proxy settings saved and Gradle properties updated. " +
+            "Stopped any running banking-app gradle daemon so next build picks up new proxy.")
         if (insecureSsl) parts += "SSL verification is DISABLED for outbound WebUI connections."
         if (proxyAuthUser.isNotBlank()) parts += "Proxy HTTP-Basic auth installed."
         session.setAttribute("proxySaveResult", parts.joinToString(" "))
@@ -109,6 +151,7 @@ class ProxyConfigController(
                 bypassMirror = bypassMirror
             )
         )
+        stopBankingAppDaemon()
         val parts = mutableListOf<String>()
         parts += if (mirrorUrl.isBlank()) "Artifactory mirror cleared."
                  else "Artifactory mirror saved: $mirrorUrl"
@@ -117,6 +160,7 @@ class ProxyConfigController(
             parts += "Mirror BYPASSED for Gradle subprocesses — banking-app builds " +
                 "will hit plugins.gradle.org / Maven Central direct via the proxy."
         }
+        parts += "Banking-app gradle daemon stopped so next build picks up the change."
         session.setAttribute("proxySaveResult", parts.joinToString(" "))
         return "redirect:/proxy"
     }
@@ -158,14 +202,19 @@ class ProxyConfigController(
                 bypassMirror = bypassMirror ?: existing.bypassMirror
             )
         )
-        session.setAttribute("proxySaveResult", "Proxy + mirror settings saved.")
+        stopBankingAppDaemon()
+        session.setAttribute("proxySaveResult",
+            "Proxy + mirror settings saved. Banking-app gradle daemon stopped.")
         return "redirect:/proxy"
     }
 
     @PostMapping("/proxy/reset")
     fun reset(session: HttpSession): String {
         connectionSettings.resetToDetected()
-        session.setAttribute("proxySaveResult", "Connection settings reset to auto-detected defaults.")
+        stopBankingAppDaemon()
+        session.setAttribute("proxySaveResult",
+            "Connection settings reset to auto-detected defaults. " +
+            "Banking-app gradle daemon stopped.")
         return "redirect:/proxy"
     }
 

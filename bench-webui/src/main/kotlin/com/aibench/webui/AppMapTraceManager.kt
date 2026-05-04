@@ -43,7 +43,10 @@ import java.util.concurrent.locks.ReentrantLock
  * with the AppMap agent, producing real traces.
  */
 @Component
-class AppMapTraceManager(private val bankingApp: BankingAppManager) {
+class AppMapTraceManager(
+    private val bankingApp: BankingAppManager,
+    private val connectionSettings: ConnectionSettings
+) {
 
     private val log = LoggerFactory.getLogger(AppMapTraceManager::class.java)
 
@@ -446,6 +449,15 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
         // `gradlew.bat`, not the POSIX `gradlew` shell script (which
         // ProcessBuilder cannot invoke directly under cmd.exe and was
         // the root cause of "no traces collected" on Windows test runs).
+        // Append connectionSettings.gradleSystemProps() so corp proxy
+        // + mirror flags reach the gradle invocation -- without them,
+        // testcontainers / datafaker / other public artifacts can't
+        // resolve behind a corporate firewall and the trace-gen step
+        // fails with "Could not resolve all files for configuration
+        // ':shared-testing:compileClasspath'". The --no-daemon flag
+        // means the build runs in the gradle CLIENT JVM (not a daemon),
+        // so the -D flags from gradleSystemProps DO reach
+        // System.getProperty() inside settings.gradle.kts.
         val cmd = mutableListOf<String>().apply {
             addAll(Platform.gradleWrapper(repo))
             add(":$module:cleanTest")
@@ -455,6 +467,7 @@ class AppMapTraceManager(private val bankingApp: BankingAppManager) {
             add("--no-build-cache")
             add("--no-daemon")
             add("-q")
+            addAll(connectionSettings.gradleSystemProps())
         }
         val pb = ProcessBuilder(cmd)
             .directory(repo)
