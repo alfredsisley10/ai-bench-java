@@ -213,18 +213,18 @@
     <section>
         <h3>Verify connectivity</h3>
         <p class="help-text" style="margin-top:0">
-            Probes the endpoints Gradle needs to bootstrap a build —
-            <code>services.gradle.org</code> (wrapper distribution),
-            <code>repo.maven.apache.org</code> (Maven Central),
-            <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
-            your configured Artifactory mirror, and the corporate proxy
-            itself. Each probe runs through whatever proxy + auth +
-            mirror settings you've saved above, so a green sweep here
-            means the live config will work the next time you click
-            <em>Run gradlew --version</em> on the demo page.
+            Probes proxy reachability + a direct-internet sanity check
+            against the saved proxy + TLS settings.
+            Gradle-ecosystem probes (<code>services.gradle.org</code>,
+            Maven Central, <code>api.foojay.io</code>, configured
+            Artifactory mirror) live on the
+            <a href="/mirror"><strong>Gradle</strong></a> page now —
+            they're an independent concern and bundling them here
+            obscured which half of a failure was the operator's actual
+            problem.
         </p>
         <button type="button" class="btn-sm" onclick="runProxyVerify(this)">Verify connectivity</button>
-        <span class="help-text" style="margin-left:0.5em">~5–15 seconds for the full sweep.</span>
+        <span class="help-text" style="margin-left:0.5em">~2–5 seconds for the proxy sweep.</span>
         <details id="proxy-verify-output" style="display:none; margin-top:0.5em">
             <summary>Probe results</summary>
             <div id="proxy-verify-summary" style="margin:0.4em 0; padding:0.4em 0.6em;
@@ -279,20 +279,11 @@
         </script>
     </section>
 
-    <!-- Artifactory mirror configuration moved to its own page.
-         The split keeps proxy + TLS concerns here; mirror-specific
-         form / verify panels / multi-mirror reminder / bypass
-         toggle live at /mirror so neither page drowns the other. -->
-    <section style="background:#f4f6fa; padding:0.8em 1em; border-radius:4px;
-                    border-left:4px solid #94a3b8; margin:1em 0">
-        <h3 style="margin-top:0">Artifactory mirror configuration</h3>
-        <p style="margin:0.4em 0">
-            Configure your Maven mirror at
-            <a href="/mirror"><strong>/mirror</strong></a>. Independent
-            from this page; you can use either, both, or neither.
-        </p>
-    </section>
-    <!-- (Mirror form + verify panels removed — see /mirror) -->
+    <!-- Mirror config + gradle ecosystem verify removed entirely.
+         All gradle-related concerns (Artifactory mirror form, mirror
+         verify panel, gradle/foojay/Maven Central probes, dep
+         validator, gradle.properties paste/diff/apply, AI recommend,
+         AI diagnose) live on /mirror (linked as 'Gradle' in nav). -->
 
     <section>
         <h3>Test custom URL</h3>
@@ -364,14 +355,16 @@
              style="background:#f4f6fa; padding:0.75em; border-radius:4px; overflow-x:auto"></pre>
     </section>
 
-    <section>
-        <h3>API</h3>
-        <table>
-            <tr><td><code>GET /api/proxy</code></td><td>Current active connection settings</td></tr>
-            <tr><td><code>POST /proxy/save</code></td><td>Save proxy + TLS settings (form: httpsProxy, httpProxy, noProxy, insecureSsl)</td></tr>
-            <tr><td><code>POST /proxy/reset</code></td><td>Reset to auto-detected defaults</td></tr>
-        </table>
-    </section>
+    <!-- Per-page API tables removed -- the canonical interactive
+         reference is the auto-generated Swagger UI at /api-docs.
+         That stays in sync with the live @GetMapping/@PostMapping
+         annotations; the hand-maintained tables here drifted as
+         the controller surface grew. -->
+    <p class="help-text" style="margin-top:1.5em; font-size:0.9em">
+        REST endpoint reference for /proxy* + every other route lives
+        in the auto-generated <a href="/api-docs"><strong>API docs</strong></a>
+        (Swagger UI).
+    </p>
 </main>
 </body>
 </html>

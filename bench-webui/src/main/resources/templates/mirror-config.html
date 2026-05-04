@@ -156,6 +156,39 @@
     </section>
 
     <!-- ============================================================
+         Verify gradle ecosystem connectivity — moved from /proxy.
+         Probes services.gradle.org + Maven Central + Foojay + the
+         configured mirror through the saved proxy.
+    ============================================================ -->
+    <section>
+        <h3>Verify gradle ecosystem connectivity</h3>
+        <p class="help-text" style="margin-top:0">
+            Probes <code>services.gradle.org</code> (wrapper bootstrap),
+            <code>repo.maven.apache.org</code> (Maven Central),
+            <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
+            and your configured Artifactory mirror — all through whatever
+            proxy + auth you've saved on <a href="/proxy">/proxy</a>.
+            Green sweep = the next gradle build will resolve cleanly.
+        </p>
+        <button type="button" class="btn-sm" onclick="verifyGradleConnectivity(this)">
+            Verify connectivity
+        </button>
+        <span class="help-text" style="margin-left:0.5em">~3–10 seconds.</span>
+        <details id="gradle-verify-output" style="display:none; margin-top:0.5em">
+            <summary>Probe results</summary>
+            <div id="gradle-verify-summary" style="margin:0.4em 0; padding:0.4em 0.6em;
+                                                   background:#f4f6fa; border-radius:4px"></div>
+            <table id="gradle-verify-table" style="width:100%; margin-top:0.3em; font-size:0.9em">
+                <thead><tr>
+                    <th>Target</th><th>Purpose</th><th>Via proxy</th>
+                    <th>Status</th><th>ms</th><th>Result</th>
+                </tr></thead>
+                <tbody></tbody>
+            </table>
+        </details>
+    </section>
+
+    <!-- ============================================================
          Verify dependencies — probe every coordinate bench-webui +
          banking-app need at build time against the active mirror +
          proxy. Operator toggles category checkboxes (default all on)
@@ -344,6 +377,41 @@
     </section>
 
     <script>
+        // ---- Verify gradle ecosystem connectivity (moved from /proxy) ----
+        function verifyGradleConnectivity(btn) {
+            var details = document.getElementById('gradle-verify-output');
+            var summary = document.getElementById('gradle-verify-summary');
+            var tbody = document.querySelector('#gradle-verify-table tbody');
+            details.style.display = '';
+            details.open = true;
+            summary.textContent = 'Running…';
+            tbody.innerHTML = '';
+            btn.disabled = true;
+            fetch('/mirror/verify-connectivity', {method: 'POST'})
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    summary.textContent = (data.ok ? '✓ ' : '✗ ') + (data.summary || '');
+                    summary.style.background = data.ok ? '#dcfce7' : '#fee2e2';
+                    (data.results || []).forEach(function (row) {
+                        var tr = document.createElement('tr');
+                        tr.innerHTML =
+                            '<td><code style="font-size:0.85em">' + escapeHtml(row.target) + '</code></td>' +
+                            '<td>' + escapeHtml(row.purpose) + '</td>' +
+                            '<td>' + (row.viaProxy ? 'yes' : 'no') + '</td>' +
+                            '<td>' + (row.statusCode > 0 ? row.statusCode : '—') + '</td>' +
+                            '<td>' + row.durationMs + '</td>' +
+                            '<td style="color:' + (row.ok ? '#067647' : '#b91c1c') + '">' +
+                                (row.ok ? '✓ ' : '✗ ') + escapeHtml(row.message) + '</td>';
+                        tbody.appendChild(tr);
+                    });
+                    btn.disabled = false;
+                })
+                .catch(function (e) {
+                    summary.textContent = '✗ Request failed: ' + (e && e.message ? e.message : e);
+                    btn.disabled = false;
+                });
+        }
+
         // ---- AI diagnose gradle failure (PR-M) ------------------------
         var diagnoseGradleModelsLoaded = false;
         function ensureDiagnoseGradleModels() {

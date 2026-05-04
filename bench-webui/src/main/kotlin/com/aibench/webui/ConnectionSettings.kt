@@ -268,6 +268,42 @@ class ConnectionSettings {
         return results
     }
 
+    /**
+     * Proxy-only connectivity sweep: just the targets that test
+     * whether outbound HTTPS works at all through the saved proxy.
+     * Used by the /proxy "Verify connectivity" panel after we split
+     * gradle-specific targets out to /mirror.
+     */
+    fun probeProxyConnectivity(): List<ProbeResult> {
+        val results = mutableListOf<ProbeResult>()
+        val helper = probeConnectivity()  // reuse the full sweep, then filter
+        // Diagnostic top row (proxy parsed/unparsed) + the
+        // "Direct internet sanity check" entry.
+        for (r in helper) {
+            if (r.purpose == "Proxy configuration" ||
+                r.purpose == "Direct internet sanity check") {
+                results += r
+            }
+        }
+        return results
+    }
+
+    /**
+     * Gradle-ecosystem connectivity sweep: services.gradle.org +
+     * Maven Central + Foojay + the configured mirror. Surfaced on
+     * the /mirror page (now linked as 'Gradle' in the nav).
+     */
+    fun probeGradleConnectivity(): List<ProbeResult> {
+        val results = mutableListOf<ProbeResult>()
+        val helper = probeConnectivity()
+        for (r in helper) {
+            if (r.purpose == "Proxy configuration" ||
+                r.purpose == "Direct internet sanity check") continue
+            results += r
+        }
+        return results
+    }
+
     private fun isLoopback(url: String): Boolean = runCatching {
         val u = URI.create(url)
         val h = u.host?.lowercase() ?: return@runCatching false
@@ -381,13 +417,18 @@ class ConnectionSettings {
             //     be a covert auth failure, but tier-2 artifact
             //     resolution catches that since the actual POM GETs
             //     would still 401.)
-            //   * Generic URL probe (no auth, just connectivity): the
-            //     historical "200..499 = reachable" stance still
-            //     applies -- a 401 from Maven Central means we got there
-            //     but the endpoint requires auth, which is still useful
-            //     diagnostic info.
+            //   * Generic URL probe (no auth, "Test custom URL" on
+            //     /proxy): operator's mental model is "did this URL
+            //     load?". A 200 / 3xx redirect = yes. A 4xx (404,
+            //     403, 401, 410) = the URL doesn't serve content =
+            //     no, even though the connection succeeded. A 5xx =
+            //     server error. Earlier "200..499 = ok" treated 404
+            //     as success, which surprised operators reading the
+            //     ✓ banner -- the URL was clearly broken. 4xx detail
+            //     stays in the verbose probe log so the diagnostic
+            //     value isn't lost; the verdict just doesn't lie.
             val authoritative = useMirrorAuth && s.hasMirrorAuth
-            val ok = if (authoritative) code in 200..399 else code in 200..499
+            val ok = if (authoritative) code in 200..399 else code in 200..399
             // Mine common Artifactory body-error patterns for a more
             // actionable message. Without this, the operator sees
             // "HTTP 401 — server error" and has to dig the

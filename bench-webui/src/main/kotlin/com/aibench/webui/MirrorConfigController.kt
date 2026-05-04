@@ -325,6 +325,36 @@ class MirrorConfigController(
     }
 
     /**
+     * Gradle ecosystem connectivity sweep: services.gradle.org +
+     * Maven Central + Foojay + the configured mirror. Moved here
+     * from /proxy because the two pages are independent concerns
+     * (proxy reachability vs gradle ecosystem reachability) and
+     * bundling them under a single verdict on /proxy made it hard
+     * to tell which half failed.
+     */
+    @PostMapping("/mirror/verify-connectivity")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun verifyGradleConnectivity(): Map<String, Any> {
+        val results = connectionSettings.probeGradleConnectivity()
+        val ok = results.all { it.ok }
+        return mapOf(
+            "ok" to ok,
+            "summary" to (if (ok)
+                "All ${results.size} gradle-ecosystem probes passed."
+            else
+                "${results.count { !it.ok }} of ${results.size} gradle probes failed."),
+            "results" to results.map {
+                mapOf(
+                    "target" to it.target, "purpose" to it.purpose,
+                    "viaProxy" to it.viaProxy, "statusCode" to it.statusCode,
+                    "durationMs" to it.durationMs, "ok" to it.ok,
+                    "message" to it.message
+                )
+            }
+        )
+    }
+
+    /**
      * Probe every catalog entry whose category is in the supplied
      * list. Empty list = probe all. Returns one row per coordinate
      * with HTTP status / latency / mirror-vs-public route.
