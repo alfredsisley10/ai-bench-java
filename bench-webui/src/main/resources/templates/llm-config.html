@@ -4,6 +4,13 @@
 <body>
 <main>
     <h2>LLM providers &amp; setup wizards</h2>
+
+    <!-- One-shot toast surfaced after model save / delete actions.
+         Set by LlmConfigController via session attr; consumed once. -->
+    <p th:if="${llmConfigToast}" id="llmConfigToast"
+       style="margin:0.6em 0; padding:0.5em 0.8em; background:#dcfce7;
+              border:1px solid #86efac; border-radius:4px; color:#065f46"
+       th:text="${llmConfigToast}"></p>
     <p class="subtitle">
         Step-by-step setup for GitHub Copilot (via VSCode Bridge) and the
         Corporate OpenAI Gateway (Apigee &rarr; OpenAI-compatible endpoint).
@@ -605,8 +612,15 @@ npm run package      # produces copilot-bridge.vsix</pre>
                 <td th:text="${'$' + #numbers.formatDecimal(m.costPer1kPrompt, 1, 6, 'POINT')}"></td>
                 <td th:text="${'$' + #numbers.formatDecimal(m.costPer1kCompletion, 1, 6, 'POINT')}"></td>
                 <td>
-                    <details th:if="${m.editable}">
-                        <summary class="help-text" style="cursor:pointer">edit pricing</summary>
+                    <details>
+                        <summary class="help-text" style="cursor:pointer">
+                            <span th:if="${m.editable}">edit pricing</span>
+                            <span th:unless="${m.editable}">override pricing
+                                <span style="color:#92400e; font-size:0.85em">
+                                    (auto-derived — overriding will recompute existing benchmark cost)
+                                </span>
+                            </span>
+                        </summary>
                         <form th:action="'/llm/models/' + ${m.id} + '/update'" method="post"
                               style="margin-top:0.4em; padding:0.5em; background:#f4f6fa; border-radius:4px; border-left:3px solid #4a9be8">
                             <p class="help-text" style="margin:0 0 0.4em 0">
@@ -633,16 +647,27 @@ npm run package      # produces copilot-bridge.vsix</pre>
                                        required style="width:9em">
                                 <span class="help-text">leave 0 for embeddings / seat-priced</span>
                             </label>
+                            <p class="help-text" style="margin:0.4em 0 0; padding:0.3em; background:#fef9c3;
+                                                       border-left:3px solid #facc15; border-radius:3px">
+                                Saving will recompute <code>estimatedCostUsd</code> on every persisted
+                                benchmark run with this exact <code>modelId</code> using the new rates ×
+                                stored token counts.
+                            </p>
                             <div class="button-row" style="margin-top:0.4em">
                                 <button type="submit" class="btn-sm">Save pricing</button>
                                 <button type="submit"
                                         th:formaction="'/llm/models/' + ${m.id} + '/delete'"
                                         class="btn-danger btn-sm"
+                                        th:if="${m.editable}"
                                         onclick="return confirm('Remove this model from registered list?')">Remove model</button>
+                                <button type="submit"
+                                        th:formaction="'/llm/models/' + ${m.id} + '/delete'"
+                                        class="btn-sm"
+                                        th:unless="${m.editable}"
+                                        onclick="return confirm('Reset to auto-derived pricing? Removes the operator override.')">Reset to auto-derived</button>
                             </div>
                         </form>
                     </details>
-                    <span th:unless="${m.editable}" class="help-text">auto-derived</span>
                 </td>
             </tr>
             </tbody>

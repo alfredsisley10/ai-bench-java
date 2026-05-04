@@ -41,7 +41,8 @@ class LlmConfigController(
     private val secretStore: SecretStore,
     private val priceCatalog: ModelPriceCatalog,
     private val registeredModelsRegistry: RegisteredModelsRegistry,
-    private val registeredModelsStore: RegisteredModelsStore
+    private val registeredModelsStore: RegisteredModelsStore,
+    private val benchmarkRuns: BenchmarkRunService
 ) {
 
     private val log = LoggerFactory.getLogger(LlmConfigController::class.java)
@@ -130,6 +131,9 @@ class LlmConfigController(
 
     @GetMapping("/llm")
     fun config(model: Model, session: HttpSession): String {
+        // One-shot toast after model save / delete actions.
+        model.addAttribute("llmConfigToast", session.getAttribute("llmConfigToast"))
+        session.removeAttribute("llmConfigToast")
         // --- Copilot bridge health ------------------------------------------
         // Bridge is healthy if the port-sidecar file exists AND a TCP
         // connect to that port succeeds. The sidecar may be stale if the
@@ -1128,12 +1132,33 @@ class LlmConfigController(
         @RequestParam costPer1kCompletion: Double,
         session: HttpSession
     ): String {
+        // Upsert handles BOTH cases: existing operator-added entry
+        // (costs/displayName overwrite) and new operator override of
+        // an auto-discovered model (entry didn't exist in store
+        // before -- it gets created with the operator's values, and
+        // RegisteredModelsRegistry's merge prefers stored over
+        // auto-derived for the same id, so the override sticks).
         registeredModelsStore.upsertById(modelId) {
             it.copy(
                 displayName = displayName,
                 costPer1kPrompt = costPer1kPrompt,
                 costPer1kCompletion = costPer1kCompletion
             )
+        }
+        // Backfill: every persisted benchmark run for this modelId
+        // gets its estimatedCostUsd recomputed using the new rates ×
+        // its stored token counts. Without this the leaderboard /
+        // exports / PDF report would keep showing the stale $0 cost
+        // for runs completed before the operator set the price.
+        val updated = benchmarkRuns.recomputeCostForModel(
+            modelId, costPer1kPrompt, costPer1kCompletion
+        )
+        if (updated > 0) {
+            session.setAttribute("llmConfigToast",
+                "Saved pricing for $modelId; recomputed cost on $updated existing run(s).")
+        } else {
+            session.setAttribute("llmConfigToast",
+                "Saved pricing for $modelId.")
         }
         return "redirect:/llm"
     }
