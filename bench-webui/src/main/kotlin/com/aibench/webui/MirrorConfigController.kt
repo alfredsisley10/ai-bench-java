@@ -396,6 +396,7 @@ class MirrorConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorAuthUser: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
         @RequestParam(required = false, defaultValue = "false") bypassMirror: Boolean,
+        @RequestParam(required = false, defaultValue = "") artifactoryRepoKey: String,
         session: HttpSession
     ): String {
         val existing = connectionSettings.settings
@@ -405,7 +406,8 @@ class MirrorConfigController(
                 mirrorUrl = mirrorUrl.trim(),
                 mirrorAuthUser = mirrorAuthUser.trim(),
                 mirrorAuthPassword = if (keepPw) existing.mirrorAuthPassword else mirrorAuthPassword,
-                bypassMirror = bypassMirror
+                bypassMirror = bypassMirror,
+                artifactoryRepoKey = artifactoryRepoKey.trim()
             )
         )
         // Same daemon-stop pattern as ProxyConfigController so a

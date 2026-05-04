@@ -86,6 +86,24 @@
                        th:placeholder="${settings.mirrorAuthPassword != '' ? '(unchanged — leave blank to keep)' : ''}"
                        autocomplete="new-password" style="width:280px">
             </label>
+            <!-- artifactory_repoKey is the trailing repo segment (not
+                 the full URL) that enterprise gradle scripts often
+                 read via providers.gradleProperty("artifactory_repoKey")
+                 to construct per-repo URLs. Optional -- leave blank
+                 if the operator's scripts only need the contextUrl
+                 + auth. -->
+            <label>Artifactory repo key (optional):
+                <input name="artifactoryRepoKey" type="text"
+                       th:value="${settings.artifactoryRepoKey}"
+                       placeholder="libs-release"
+                       autocomplete="off" style="width:280px">
+                <span class="help-text" style="display:block; font-size:0.8em">
+                    Written to <code>~/.gradle/gradle.properties</code> as
+                    <code>artifactory_repoKey</code>; consumed by build
+                    scripts that read it via
+                    <code>providers.gradleProperty("artifactory_repoKey")</code>.
+                </span>
+            </label>
 
             <div style="margin-top:0.75em; padding:0.5em 0.75em; background:#fef9e7;
                         border:1px solid #f1c40f; border-radius:4px">

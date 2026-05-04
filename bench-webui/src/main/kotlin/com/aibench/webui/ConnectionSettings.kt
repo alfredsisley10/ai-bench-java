@@ -72,7 +72,16 @@ class ConnectionSettings {
         // plugins.gradle.org content (e.g. foojay-resolver, which lives
         // only at plugins.gradle.org and is not on Maven Central) but
         // the corp proxy DOES allow direct egress to those upstreams.
-        val bypassMirror: Boolean = false
+        val bypassMirror: Boolean = false,
+        // Artifactory repo key (e.g. "libs-release", "maven-virtual",
+        // "spring-plugins-virtual"). Written to ~/.gradle/gradle.properties
+        // as `artifactory_repoKey` so build scripts that read it via
+        // providers.gradleProperty("artifactory_repoKey") -- a common
+        // pattern in enterprise plugin/repo configs -- pick it up.
+        // Distinct from mirrorUrl: mirrorUrl is the FULL URL of the
+        // virtual; repoKey is the trailing path segment scripts often
+        // construct URLs from. The /mirror form lets the operator set it.
+        val artifactoryRepoKey: String = ""
     ) {
         /** Convenience flag — true when proxy auth is fully configured. */
         val hasProxyAuth: Boolean get() = proxyAuthUser.isNotBlank() && proxyAuthPassword.isNotBlank()
@@ -1564,31 +1573,60 @@ class ConnectionSettings {
         val gradleDir = java.io.File(System.getProperty("user.home"), ".gradle")
         val propsFile = java.io.File(gradleDir, "gradle.properties")
         val hasAnything = s.httpsProxy.isNotEmpty() || s.httpProxy.isNotEmpty() ||
-                          s.noProxy.isNotEmpty() || s.hasMirrorAuth
+                          s.noProxy.isNotEmpty() || s.hasMirrorAuth || s.hasMirror ||
+                          s.hasProxyAuth || s.artifactoryRepoKey.isNotBlank()
         // No new state AND no pre-existing file = nothing to do, no
         // need to even create the dir.
         if (!hasAnything && !propsFile.exists()) return
         gradleDir.mkdirs()
+        // The full set of keys this writer owns -- filtered out of any
+        // existing file before we re-emit them below. Keeping the list
+        // central avoids a stale entry surviving when we widen the
+        // managed surface (the next /mirror save would otherwise leave
+        // a duplicate next to the new one).
+        val managedPrefixes = listOf(
+            // Proxy host / port (both schemes).
+            "systemProp.http.proxyHost",
+            "systemProp.http.proxyPort",
+            "systemProp.https.proxyHost",
+            "systemProp.https.proxyPort",
+            // Proxy-auth user / password (both schemes). Newly managed
+            // -- gradle's HTTP layer reads these for HTTP Basic against
+            // the proxy, mirroring the -D args we already pass via
+            // gradleSystemProps(). Writing them to disk lets gradle
+            // builds launched OUTSIDE bench-webui (e.g. an operator
+            // running ./gradlew at a shell) authenticate without
+            // re-typing creds.
+            "systemProp.http.proxyUser",
+            "systemProp.http.proxyPassword",
+            "systemProp.https.proxyUser",
+            "systemProp.https.proxyPassword",
+            // Comma-vs-pipe-separated nonProxyHosts (gradle uses the
+            // pipe form internally; we translate from no_proxy syntax).
+            "systemProp.http.nonProxyHosts",
+            // TLS-trust keys we manage so the gradle daemon picks up
+            // the merged truststore (cacerts ∪ OS keychain) we hand
+            // the WebUI HttpClient. Wiped + re-emitted on every save
+            // so a rotated cert shows up cleanly.
+            "systemProp.javax.net.ssl.trustStore",
+            // Legacy keys consumed by the corp init script's
+            // providers.gradleProperty(...) calls. Kept for
+            // back-compat alongside the artifactory_* names below.
+            "orgInternalMavenUser",
+            "orgInternalMavenPassword",
+            // Standard Artifactory naming. Newly managed -- enterprise
+            // gradle scripts commonly read these via
+            // providers.gradleProperty("artifactory_user") etc. The
+            // contextUrl mirrors `mirrorUrl`; user/password mirror
+            // the mirror-auth fields; repoKey is its own field on the
+            // /mirror form (e.g. "libs-release", "maven-virtual").
+            "artifactory_contextUrl",
+            "artifactory_user",
+            "artifactory_password",
+            "artifactory_repoKey",
+        )
         val existingLines = if (propsFile.exists()) {
-            propsFile.readLines().filter { line ->
-                !line.startsWith("systemProp.http.proxyHost") &&
-                !line.startsWith("systemProp.http.proxyPort") &&
-                !line.startsWith("systemProp.https.proxyHost") &&
-                !line.startsWith("systemProp.https.proxyPort") &&
-                !line.startsWith("systemProp.http.nonProxyHosts") &&
-                // TLS-trust keys we manage so the gradle daemon picks
-                // up the same merged truststore (cacerts ∪ OS keychain)
-                // we hand the WebUI HttpClient. Wiped + re-emitted on
-                // every save so a rotated cert shows up cleanly.
-                !line.startsWith("systemProp.javax.net.ssl.trustStore") &&
-                // Mirror-auth keys consumed by the corp init script's
-                // providers.gradleProperty(...) calls. Wiped here on
-                // every save and re-emitted below if still applicable,
-                // so toggling off mirror auth in /proxy actually clears
-                // the password from disk.
-                !line.startsWith("orgInternalMavenUser") &&
-                !line.startsWith("orgInternalMavenPassword")
-            }
+            propsFile.readLines().filter { line -> managedPrefixes.none { line.startsWith(it) } }
         } else emptyList()
 
         val newLines = mutableListOf<String>()
@@ -1601,13 +1639,31 @@ class ConnectionSettings {
             newLines.add("systemProp.https.proxyHost=$h")
             newLines.add("systemProp.https.proxyPort=$p")
         }
+        if (s.hasProxyAuth) {
+            newLines.add("systemProp.http.proxyUser=${s.proxyAuthUser}")
+            newLines.add("systemProp.http.proxyPassword=${s.proxyAuthPassword}")
+            newLines.add("systemProp.https.proxyUser=${s.proxyAuthUser}")
+            newLines.add("systemProp.https.proxyPassword=${s.proxyAuthPassword}")
+        }
         if (s.noProxy.isNotEmpty()) {
             val gradleNoProxy = s.noProxy.split(",").joinToString("|") { it.trim() }
             newLines.add("systemProp.http.nonProxyHosts=$gradleNoProxy")
         }
         if (s.hasMirrorAuth) {
+            // Legacy + standard names -- corp init script reads the
+            // orgInternalMaven* pair, generic enterprise gradle
+            // scripts read the artifactory_* pair. Emit both so
+            // either consumer works without coordination.
             newLines.add("orgInternalMavenUser=${s.mirrorAuthUser}")
             newLines.add("orgInternalMavenPassword=${s.mirrorAuthPassword}")
+            newLines.add("artifactory_user=${s.mirrorAuthUser}")
+            newLines.add("artifactory_password=${s.mirrorAuthPassword}")
+        }
+        if (s.hasMirror) {
+            newLines.add("artifactory_contextUrl=${s.mirrorUrl}")
+        }
+        if (s.artifactoryRepoKey.isNotBlank()) {
+            newLines.add("artifactory_repoKey=${s.artifactoryRepoKey}")
         }
         managedTrustStorePath()?.let { path ->
             newLines.add("systemProp.javax.net.ssl.trustStore=$path")
