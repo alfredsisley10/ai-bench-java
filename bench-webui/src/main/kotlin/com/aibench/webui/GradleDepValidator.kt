@@ -68,63 +68,117 @@ class GradleDepValidator(
 
     private fun probeOne(entry: GradleDepCatalog.Entry): Result {
         val started = System.currentTimeMillis()
+        val s = connectionSettings.settings
         return try {
-            val (probeUrl, viaMirror) = resolveProbeUrl(entry)
+            val (pomUrl, viaMirror) = resolveProbeUrl(entry)
             val client = httpClient()
-            val req = HttpRequest.newBuilder()
-                .uri(URI.create(probeUrl))
-                .timeout(Duration.ofSeconds(8))
-                // HEAD: cheap, no body transfer, but some Maven repos
-                // (Artifactory in particular) return 405 on HEAD even
-                // when GET would 200 -- in that case we retry with GET
-                // and rely on the response code.
-                .method("HEAD", HttpRequest.BodyPublishers.noBody())
-                .build()
-            // Add Basic auth header if mirror auth is configured.
-            // System-property based auth (-Dhttp.proxyPassword) is for
-            // the proxy itself; mirror credentials need an explicit
-            // Authorization header on each request.
-            val s = connectionSettings.settings
-            val withAuth = if (viaMirror && s.hasMirrorAuth) {
-                HttpRequest.newBuilder(req, { _, _ -> true })
-                    .header("Authorization", "Basic " +
-                        java.util.Base64.getEncoder().encodeToString(
-                            "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()
-                        ))
-                    .build()
-            } else req
-            var resp = client.send(withAuth, HttpResponse.BodyHandlers.discarding())
-            // Retry HEAD-rejecters with GET. Some Artifactory configs
-            // return 405 Method Not Allowed for HEAD on .pom files.
-            if (resp.statusCode() == 405) {
-                val getReq = HttpRequest.newBuilder(withAuth, { _, _ -> true })
-                    .GET().build()
-                resp = client.send(getReq, HttpResponse.BodyHandlers.discarding())
+
+            // First: probe the POM (existing behaviour). If that
+            // already fails, the artifact is unresolvable -- short-
+            // circuit without a JAR probe.
+            val pomResult = singleProbe(client, pomUrl, viaMirror, s)
+            if (!pomResult.first) {
+                val ms = System.currentTimeMillis() - started
+                return Result(entry, pomUrl,
+                    viaProxy = s.httpsProxy.isNotBlank(), viaMirror = viaMirror,
+                    statusCode = pomResult.second, durationMs = ms, ok = false,
+                    message = pomMessage(pomResult.second, viaMirror))
             }
+
+            // Second: probe the companion JAR. Skipped when
+            // entry.jarPath is null (BOMs / URL probes don't have one
+            // -- their POM IS the artifact). The user-facing failure
+            // mode this catches is the testcontainers junit-jupiter
+            // case where the corp Artifactory virtual serves POMs
+            // from one upstream but routes JARs through a different
+            // (broken / unauthenticated) one -- POM-only validation
+            // green-lit, real build fails on junit-jupiter-1.20.1.jar.
+            val jarPath = entry.jarPath
+            if (jarPath == null) {
+                val ms = System.currentTimeMillis() - started
+                return Result(entry, pomUrl,
+                    viaProxy = s.httpsProxy.isNotBlank(), viaMirror = viaMirror,
+                    statusCode = pomResult.second, durationMs = ms, ok = true,
+                    message = "POM OK (BOM/POM-only — no companion .jar)")
+            }
+            val jarUrl = pomUrl.removeSuffix(".pom") + ".jar"
+            val jarResult = singleProbe(client, jarUrl, viaMirror, s)
             val ms = System.currentTimeMillis() - started
-            val code = resp.statusCode()
-            val ok = code in 200..299
-            val message = when {
-                ok -> "OK"
-                code == 401 -> "401 Unauthorized -- mirror auth missing or wrong token"
-                code == 403 -> "403 Forbidden -- account lacks read on this repo"
-                code == 404 -> if (viaMirror)
-                    "404 Not Found via mirror -- mirror may not carry this artifact group"
-                else "404 Not Found -- coord may not exist or version is wrong"
-                code in 500..599 -> "$code from upstream"
-                else -> "HTTP $code"
+
+            if (jarResult.first) {
+                Result(entry, pomUrl, viaProxy = s.httpsProxy.isNotBlank(),
+                    viaMirror = viaMirror, statusCode = pomResult.second,
+                    durationMs = ms, ok = true,
+                    message = "POM + JAR resolve")
+            } else {
+                Result(entry, jarUrl, viaProxy = s.httpsProxy.isNotBlank(),
+                    viaMirror = viaMirror, statusCode = jarResult.second,
+                    durationMs = ms, ok = false,
+                    message = "POM resolves but JAR does NOT (gradle build " +
+                        "would fail on this dep). " + jarMessage(jarResult.second, viaMirror))
             }
-            Result(entry, probeUrl, viaProxy = s.httpsProxy.isNotBlank(),
-                viaMirror = viaMirror, statusCode = code, durationMs = ms, ok = ok,
-                message = message)
         } catch (e: Exception) {
             val ms = System.currentTimeMillis() - started
             log.debug("validator probe failed for {}: {}", entry.coord, e.message)
             Result(entry, probeUrl = entry.coord,
-                viaProxy = connectionSettings.settings.httpsProxy.isNotBlank(),
+                viaProxy = s.httpsProxy.isNotBlank(),
                 viaMirror = false, statusCode = -1, durationMs = ms, ok = false,
-                message = "${e.javaClass.simpleName}: ${e.message ?: ""}")
+                message = connectionSettings.formatProbeException(e))
         }
+    }
+
+    /** Single HEAD-then-fall-back-to-GET probe. Returns
+     *  (ok, statusCode). Extracted so probeOne can do both POM and
+     *  JAR through the same code path without duplicating the auth /
+     *  405-fallback logic. */
+    private fun singleProbe(
+        client: HttpClient, url: String, viaMirror: Boolean,
+        s: ConnectionSettings.Settings
+    ): Pair<Boolean, Int> {
+        val req = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .timeout(Duration.ofSeconds(8))
+            .method("HEAD", HttpRequest.BodyPublishers.noBody())
+            .build()
+        val withAuth = if (viaMirror && s.hasMirrorAuth) {
+            HttpRequest.newBuilder(req, { _, _ -> true })
+                .header("Authorization", "Basic " +
+                    java.util.Base64.getEncoder().encodeToString(
+                        "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()
+                    ))
+                .build()
+        } else req
+        var resp = client.send(withAuth, HttpResponse.BodyHandlers.discarding())
+        // Some Artifactory configs return 405 Method Not Allowed for
+        // HEAD on .pom / .jar files; retry with GET.
+        if (resp.statusCode() == 405) {
+            val getReq = HttpRequest.newBuilder(withAuth, { _, _ -> true })
+                .GET().build()
+            resp = client.send(getReq, HttpResponse.BodyHandlers.discarding())
+        }
+        val code = resp.statusCode()
+        return (code in 200..299) to code
+    }
+
+    private fun pomMessage(code: Int, viaMirror: Boolean): String = when {
+        code in 200..299 -> "OK"
+        code == 401 -> "401 Unauthorized -- mirror auth missing or wrong token"
+        code == 403 -> "403 Forbidden -- account lacks read on this repo"
+        code == 404 -> if (viaMirror)
+            "404 Not Found via mirror -- mirror may not carry this artifact group"
+        else "404 Not Found -- coord may not exist or version is wrong"
+        code in 500..599 -> "$code from upstream"
+        else -> "HTTP $code"
+    }
+
+    private fun jarMessage(code: Int, viaMirror: Boolean): String = when {
+        code == 401 -> "JAR fetch returned 401 (auth shape differs from POM path)."
+        code == 403 -> "JAR fetch returned 403 (mirror routes JARs via a stricter ACL than POMs)."
+        code == 404 -> if (viaMirror)
+            "JAR fetch returned 404 via mirror — virtual serves POMs but not the JAR for this coord."
+        else "JAR fetch returned 404 — JAR may not exist at that coordinate."
+        code in 500..599 -> "JAR fetch returned $code from upstream."
+        else -> "JAR fetch returned HTTP $code."
     }
 
     /**
