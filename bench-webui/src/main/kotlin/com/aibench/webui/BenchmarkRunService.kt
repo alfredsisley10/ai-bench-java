@@ -34,7 +34,8 @@ class BenchmarkRunService(
     private val contextProvider: ContextProvider,
     private val traceManager: AppMapTraceManager,
     private val throttler: AdaptiveThrottler,
-    private val runRepo: BenchmarkRunRepository
+    private val runRepo: BenchmarkRunRepository,
+    private val priceResolver: PriceResolver
 ) {
 
     private val log = LoggerFactory.getLogger(BenchmarkRunService::class.java)
@@ -810,17 +811,20 @@ class BenchmarkRunService(
         phase(run, "report", "Summarizing pass@${run.seeds}…")
         sleep(300)
         val passCount = seedResults.count { it.passed }
-        // Look up by `id` (registry-side, e.g. "copilot-gpt-4-1") rather
-        // than `modelIdentifier` (vendor-side, e.g. "gpt-4.1"). run.modelId
-        // is the registry id chosen on the launcher form, so it matches
-        // ModelPrice.id directly. The earlier `it.modelIdentifier ==
-        // run.modelId` comparison would never match for any prefixed
-        // entry, leaving every Copilot run with $0 estimated cost.
-        val priced = priceCatalog.catalog.firstOrNull { it.id == run.modelId }
-        val pricedPrompt = priced?.costPer1kPrompt ?: 0.0
-        val pricedCompletion = priced?.costPer1kCompletion ?: 0.0
-        val cost = (totalPromptTokens * run.seeds / 1000.0) * pricedPrompt +
-                   (totalCompletion / 1000.0) * pricedCompletion
+        // Centralized resolver: walks operator override -> public
+        // catalog by vendor identifier -> pattern store -> fuzzy
+        // catalog match. The earlier `priceCatalog.catalog.firstOrNull
+        // { it.id == run.modelId }` exact-match was bypassing every
+        // Copilot model (registry id `copilot-gpt-4-1` never equals
+        // catalog id `openai-gpt-4o`), leaving every Copilot run with
+        // $0 estimated cost. PriceResolver matches by modelIdentifier
+        // (the vendor-side name like `gpt-4.1`) first, which catches
+        // Copilot models cleanly.
+        val price = priceResolver.priceFor(
+            registryId = run.modelId, vendorId = run.modelIdentifier
+        )
+        val cost = (totalPromptTokens * run.seeds / 1000.0) * price.promptPer1k +
+                   (totalCompletion / 1000.0) * price.completionPer1k
         run.stats = run.stats.copy(
             totalCompletionTokens = totalCompletion,
             estimatedCostUsd = cost
