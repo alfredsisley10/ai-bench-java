@@ -8,12 +8,16 @@ import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
 import java.net.http.HttpClient
+import java.security.KeyStore
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.time.Duration
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSession
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
 /**
@@ -253,8 +257,7 @@ class ConnectionSettings {
                 ProbeResult(url, purpose, viaProxy, code, ms, ok, msg)
             } catch (e: Exception) {
                 val ms = System.currentTimeMillis() - start
-                ProbeResult(url, purpose, viaProxy, -1, ms, false,
-                    "${e.javaClass.simpleName}: ${e.message ?: "(no detail)"}")
+                ProbeResult(url, purpose, viaProxy, -1, ms, false, formatProbeException(e))
             }
         }
 
@@ -459,16 +462,9 @@ class ConnectionSettings {
             DetailedProbe(ok, url, viaProxy, code, ms, message, log.toString())
         }.getOrElse { e ->
             val ms = System.currentTimeMillis() - start
-            log.appendLine("[err]  ${e.javaClass.simpleName}: ${e.message ?: "(no detail)"}")
-            // Surface the chained cause (often hides the real DNS / TLS / proxy auth failure).
-            var cause: Throwable? = e.cause
-            while (cause != null) {
-                log.appendLine("[err]  caused by ${cause.javaClass.simpleName}: ${cause.message ?: ""}")
-                cause = cause.cause
-            }
-            DetailedProbe(false, url, viaProxy, -1, ms,
-                "${e.javaClass.simpleName}: ${e.message ?: "request failed"}",
-                log.toString())
+            val unwrapped = formatProbeException(e)
+            log.appendLine("[err]  $unwrapped")
+            DetailedProbe(false, url, viaProxy, -1, ms, unwrapped, log.toString())
         }
     }
 
@@ -1119,6 +1115,27 @@ class ConnectionSettings {
         currentProxySelector()?.let { builder.proxy(it) }
         if (current.insecureSsl) {
             builder.sslContext(trustAllSslContext())
+            // JDK HttpClient defaults to "HTTPS" endpoint identification,
+            // which still verifies the cert SAN/CN against the requested
+            // hostname even when the trust manager accepts every chain.
+            // Corp-MITM certs commonly carry a wildcard that doesn't match
+            // every upstream — and that mismatch surfaces as
+            // SSLHandshakeException, exactly the symptom operators see
+            // when "ignore TLS errors" appears to do nothing for hosts like
+            // services.gradle.org / api.foojay.io. Clearing the algorithm
+            // makes insecure mode actually insecure end-to-end.
+            val params = SSLParameters()
+            params.endpointIdentificationAlgorithm = ""
+            builder.sslParameters(params)
+        } else {
+            // Default JDK HttpClient trusts $JAVA_HOME/lib/security/cacerts
+            // only — it does NOT consult the macOS Keychain or the
+            // Windows-ROOT store. Enterprise users put their corp MITM
+            // root in the OS keychain (so Safari, Chrome, curl all work)
+            // and are then surprised when the JVM still throws
+            // SSLHandshakeException. Layer the OS roots on top of cacerts
+            // so the JVM sees the same trust set as the rest of the OS.
+            osAugmentedSslContext()?.let { builder.sslContext(it) }
         }
         return builder.build()
     }
@@ -1223,7 +1240,79 @@ class ConnectionSettings {
             args += "-Dcom.sun.net.ssl.checkRevocation=false"
             args += "-Dtrust_all_cert=true"
         }
+        // Point the gradle subprocess at the merged truststore (JDK
+        // cacerts ∪ OS keychain). Without this, a corp MITM root that
+        // the operator has installed in macOS Keychain / Windows-ROOT
+        // is invisible to the JVM running gradle, so banking-app +
+        // AppMap recording fail with the same SSLHandshakeException
+        // the WebUI probes used to fail with. Skipped when the merge
+        // returns null (Linux, or when both stores fail to load).
+        managedTrustStorePath()?.let { path ->
+            args += "-Djavax.net.ssl.trustStore=$path"
+            args += "-Djavax.net.ssl.trustStorePassword=$MANAGED_TRUSTSTORE_PASSWORD"
+            args += "-Djavax.net.ssl.trustStoreType=JKS"
+        }
         return args
+    }
+
+    private val MANAGED_TRUSTSTORE_PASSWORD = "changeit"
+    private val managedTrustStoreFile: java.io.File by lazy {
+        val dir = java.io.File(System.getProperty("user.home"), ".aibench")
+        dir.mkdirs()
+        java.io.File(dir, "truststore.jks")
+    }
+
+    /**
+     * Materialize a merged JKS truststore (JDK cacerts ∪ OS keychain)
+     * at <code>~/.aibench/truststore.jks</code> and return the path.
+     * Used by banking-app + AppMap gradle subprocesses (via
+     * <code>gradleSystemProps()</code> and the matching
+     * <code>~/.gradle/gradle.properties</code> entries written from
+     * <code>writeGradleProxyProperties</code>) so subprocess TLS trust
+     * lines up with the WebUI's HttpClient.
+     *
+     * Cached: builds once and reuses the file thereafter. To force a
+     * rebuild (e.g. after a corp CA rotation), the operator can delete
+     * the file -- the next call notices it missing and regenerates.
+     */
+    fun managedTrustStorePath(): String? {
+        if (managedTrustStoreFile.exists() && managedTrustStoreFile.length() > 0) {
+            return managedTrustStoreFile.absolutePath
+        }
+        return runCatching {
+            val osName = System.getProperty("os.name", "").lowercase()
+            val osType = when {
+                osName.contains("mac") || osName.contains("darwin") -> "KeychainStore"
+                osName.contains("win")                              -> "Windows-ROOT"
+                else                                                 -> return@runCatching null  // Linux: cacerts already pulls OS roots
+            }
+            val osKs = KeyStore.getInstance(osType).also { it.load(null, null) }
+            val merged = KeyStore.getInstance("JKS").also { it.load(null, MANAGED_TRUSTSTORE_PASSWORD.toCharArray()) }
+            // Base layer: JDK cacerts. Skip silently if the file is missing
+            // or the default password ("changeit") was rotated -- the OS
+            // layer alone is still usable.
+            runCatching {
+                val cacertsPath = java.io.File(System.getProperty("java.home"), "lib/security/cacerts")
+                if (cacertsPath.exists()) {
+                    val cacerts = KeyStore.getInstance("JKS")
+                    cacertsPath.inputStream().use { cacerts.load(it, "changeit".toCharArray()) }
+                    cacerts.aliases().toList().forEach { alias ->
+                        cacerts.getCertificate(alias)?.let { merged.setCertificateEntry("jdk-$alias", it) }
+                    }
+                }
+            }
+            osKs.aliases().toList().forEach { alias ->
+                osKs.getCertificate(alias)?.let { merged.setCertificateEntry("os-$alias", it) }
+            }
+            managedTrustStoreFile.outputStream().use {
+                merged.store(it, MANAGED_TRUSTSTORE_PASSWORD.toCharArray())
+            }
+            log.info("Built merged truststore at {} ({} entries).", managedTrustStoreFile, merged.size())
+            managedTrustStoreFile.absolutePath
+        }.getOrElse {
+            log.warn("Could not build merged truststore for gradle subprocesses. Cause: {}", it.message)
+            null
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1276,6 +1365,106 @@ class ConnectionSettings {
 
     /** Hostname verifier that accepts any CN/SAN when insecure mode is on. */
     fun insecureHostnameVerifier(): HostnameVerifier = HostnameVerifier { _: String, _: SSLSession -> true }
+
+    /**
+     * Build an SSLContext whose trust set is the *union* of the JVM's
+     * default cacerts AND the OS-native truststore (macOS Keychain or
+     * Windows-ROOT). This is the right default for enterprise: corp IT
+     * pushes the MITM root into the OS keychain, and we want the JVM
+     * to see the same world. Returns null on Linux (or when neither
+     * store loads cleanly), in which case the caller leaves the JDK
+     * default in place.
+     *
+     * Expensive enough that we cache the constructed context — trust
+     * material doesn't change between operator clicks, and rebuilding
+     * a TrustManagerFactory per probe was adding ~200ms per call.
+     */
+    @Volatile private var cachedOsAugmentedCtx: SSLContext? = null
+    @Volatile private var cachedOsAugmentedAttempted: Boolean = false
+    private fun osAugmentedSslContext(): SSLContext? {
+        if (cachedOsAugmentedAttempted) return cachedOsAugmentedCtx
+        cachedOsAugmentedAttempted = true
+        cachedOsAugmentedCtx = runCatching {
+            val osTms = loadOsTrustManagers() ?: return@runCatching null
+            val cacertsTmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            cacertsTmf.init(null as KeyStore?)
+            val combined = unionX509TrustManager(
+                osTms.filterIsInstance<X509TrustManager>() +
+                cacertsTmf.trustManagers.filterIsInstance<X509TrustManager>()
+            )
+            val ctx = SSLContext.getInstance("TLS")
+            ctx.init(null, arrayOf<TrustManager>(combined), SecureRandom())
+            log.info("SSL trust: layered {} OS root(s) on top of JVM cacerts.", combined.acceptedIssuers.size)
+            ctx
+        }.getOrElse {
+            log.warn("OS-augmented SSL trust setup failed; falling back to JVM cacerts. Cause: {}", it.message)
+            null
+        }
+        return cachedOsAugmentedCtx
+    }
+
+    private fun loadOsTrustManagers(): Array<TrustManager>? {
+        val osName = System.getProperty("os.name", "").lowercase()
+        val storeType = when {
+            osName.contains("mac") || osName.contains("darwin") -> "KeychainStore"
+            osName.contains("win")                              -> "Windows-ROOT"
+            else                                                 -> return null  // Linux — cacerts already pulls from OS
+        }
+        return runCatching {
+            val ks = KeyStore.getInstance(storeType)
+            ks.load(null, null)
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(ks)
+            tmf.trustManagers
+        }.getOrNull()
+    }
+
+    /**
+     * Combine multiple X509TrustManagers into one that accepts a chain
+     * if ANY underlying manager accepts it. Used to union the OS
+     * keychain with the JVM cacerts so neither half loses.
+     */
+    private fun unionX509TrustManager(parts: List<X509TrustManager>): X509TrustManager =
+        object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {
+                var lastErr: Exception? = null
+                for (p in parts) {
+                    try { p.checkClientTrusted(chain, authType); return } catch (e: Exception) { lastErr = e }
+                }
+                throw lastErr ?: java.security.cert.CertificateException("No trust managers configured")
+            }
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+                var lastErr: Exception? = null
+                for (p in parts) {
+                    try { p.checkServerTrusted(chain, authType); return } catch (e: Exception) { lastErr = e }
+                }
+                throw lastErr ?: java.security.cert.CertificateException("No trust managers configured")
+            }
+            override fun getAcceptedIssuers(): Array<X509Certificate> =
+                parts.flatMap { it.acceptedIssuers.asList() }.toTypedArray()
+        }
+
+    /**
+     * Unwrap the cause chain on a probe exception so the operator sees
+     * the actual root cause. SSLHandshakeException by itself reads as a
+     * generic "handshake failed"; the chain underneath spells out PKIX
+     * path failure / unknown CA / hostname mismatch / etc. — which is
+     * what the operator needs to fix the trust config.
+     */
+    fun formatProbeException(e: Throwable): String {
+        val parts = mutableListOf<String>()
+        var cur: Throwable? = e
+        var depth = 0
+        val seen = mutableSetOf<Throwable>()
+        while (cur != null && depth < 6 && seen.add(cur)) {
+            val name = cur::class.java.simpleName
+            val msg = cur.message?.trim().orEmpty()
+            parts += if (msg.isNotEmpty()) "$name: $msg" else name
+            cur = cur.cause
+            depth++
+        }
+        return parts.joinToString(" → ")
+    }
 
     private fun detectInitial(): Settings {
         val httpsProxy = System.getenv("HTTPS_PROXY") ?: System.getenv("https_proxy") ?: ""
@@ -1371,6 +1560,11 @@ class ConnectionSettings {
                 !line.startsWith("systemProp.https.proxyHost") &&
                 !line.startsWith("systemProp.https.proxyPort") &&
                 !line.startsWith("systemProp.http.nonProxyHosts") &&
+                // TLS-trust keys we manage so the gradle daemon picks
+                // up the same merged truststore (cacerts ∪ OS keychain)
+                // we hand the WebUI HttpClient. Wiped + re-emitted on
+                // every save so a rotated cert shows up cleanly.
+                !line.startsWith("systemProp.javax.net.ssl.trustStore") &&
                 // Mirror-auth keys consumed by the corp init script's
                 // providers.gradleProperty(...) calls. Wiped here on
                 // every save and re-emitted below if still applicable,
@@ -1398,6 +1592,11 @@ class ConnectionSettings {
         if (s.hasMirrorAuth) {
             newLines.add("orgInternalMavenUser=${s.mirrorAuthUser}")
             newLines.add("orgInternalMavenPassword=${s.mirrorAuthPassword}")
+        }
+        managedTrustStorePath()?.let { path ->
+            newLines.add("systemProp.javax.net.ssl.trustStore=$path")
+            newLines.add("systemProp.javax.net.ssl.trustStorePassword=$MANAGED_TRUSTSTORE_PASSWORD")
+            newLines.add("systemProp.javax.net.ssl.trustStoreType=JKS")
         }
         propsFile.writeText(newLines.joinToString("\n") + "\n")
     }
