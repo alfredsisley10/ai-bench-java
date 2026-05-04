@@ -298,8 +298,16 @@
                    style="width:32em; max-width:100%;
                           font-family:ui-monospace, Menlo, Consolas, monospace">
             <button type="button" class="btn-sm" onclick="testCustomUrl(this)">Test</button>
-            <span id="customTestStatus" class="help-text" style="margin-left:0.5em"></span>
         </div>
+        <!-- Verdict banner: full-width, color-coded, large enough to
+             read at a glance. Replaced the earlier inline help-text
+             span -- operators reported they couldn't tell pass/fail
+             because their eye went straight to the verbose log
+             details below the button and skipped the small gray
+             status text. -->
+        <div id="customTestVerdict" style="display:none; margin:0.5em 0;
+              padding:0.6em 0.8em; border-radius:4px; font-size:0.95em;
+              border:1px solid transparent"></div>
         <details id="customTestOutput" style="display:none; margin-top:0.4em">
             <summary>Probe log</summary>
             <pre style="margin:0.3em 0 0; padding:0.5em 0.7em; background:#0f1419; color:#d4d4d4;
@@ -309,36 +317,52 @@
             function testCustomUrl(btn) {
                 var url = (document.getElementById('customTestUrl').value || '').trim();
                 if (!url) {
-                    document.getElementById('customTestStatus').textContent = '(enter a URL)';
+                    renderVerdict('customTestVerdict', false, 'Enter a URL to test.');
                     return;
                 }
                 runProxyTest(btn, '/proxy/test-url?url=' + encodeURIComponent(url),
-                    'customTestStatus', 'customTestOutput');
+                    'customTestVerdict', 'customTestOutput');
             }
-            function runProxyTest(btn, url, statusId, detailsId) {
-                var status = document.getElementById(statusId);
+            function renderVerdict(verdictId, ok, text) {
+                var v = document.getElementById(verdictId);
+                v.style.display = '';
+                v.textContent = (ok ? '✓ ' : '✗ ') + text;
+                if (ok) {
+                    v.style.background   = '#dcfce7';
+                    v.style.color        = '#067647';
+                    v.style.borderColor  = '#86efac';
+                } else {
+                    v.style.background   = '#fee2e2';
+                    v.style.color        = '#b91c1c';
+                    v.style.borderColor  = '#fca5a5';
+                }
+            }
+            function runProxyTest(btn, url, verdictId, detailsId) {
+                var v = document.getElementById(verdictId);
                 var details = document.getElementById(detailsId);
                 var pre = details.querySelector('pre');
                 btn.disabled = true;
-                status.textContent = 'Probing…';
-                status.style.color = '';
+                v.style.display = '';
+                v.textContent = 'Probing…';
+                v.style.background = '#f4f6fa';
+                v.style.color = '#1f2937';
+                v.style.borderColor = '#cbd5e1';
                 details.style.display = '';
                 details.open = true;
                 pre.textContent = '';
                 fetch(url, {method:'POST'})
                     .then(function (r) { return r.json(); })
                     .then(function (data) {
-                        status.textContent = (data.ok ? '✓ ' : '✗ ') +
-                            (data.message || '') +
-                            (data.viaProxy ? ' (via proxy)' : '') +
+                        var text = (data.message || 'completed') +
+                            (data.viaProxy ? ' (via proxy)' : ' (direct)') +
                             (data.durationMs ? ' — ' + data.durationMs + 'ms' : '');
-                        status.style.color = data.ok ? '#067647' : '#b91c1c';
+                        renderVerdict(verdictId, !!data.ok, text);
                         pre.textContent = data.log || '(no log)';
                         btn.disabled = false;
                     })
                     .catch(function (e) {
-                        status.textContent = '✗ ' + ((e && e.message) || e);
-                        status.style.color = '#b91c1c';
+                        renderVerdict(verdictId, false,
+                            'Request failed: ' + ((e && e.message) || e));
                         btn.disabled = false;
                     });
             }

@@ -280,11 +280,16 @@ class ConnectionSettings {
     fun probeProxyConnectivity(): List<ProbeResult> {
         val results = mutableListOf<ProbeResult>()
         val helper = probeConnectivity()  // reuse the full sweep, then filter
-        // Diagnostic top row (proxy parsed/unparsed) + the
-        // "Direct internet sanity check" entry.
+        // Just the functional reachability probe. The synthetic
+        // "Proxy configuration" row used to surface here as a
+        // top-of-table diagnostic, but its target IS the proxy
+        // endpoint itself -- which read as "we're testing the
+        // proxy" even though the row isn't a probe. Operators
+        // didn't want a row that looks like a self-test of the
+        // proxy endpoint cluttering the panel; the parsed proxy
+        // state is already visible on the form above.
         for (r in helper) {
-            if (r.purpose == "Proxy configuration" ||
-                r.purpose == "Direct internet sanity check") {
+            if (r.purpose == "Direct internet sanity check") {
                 results += r
             }
         }
