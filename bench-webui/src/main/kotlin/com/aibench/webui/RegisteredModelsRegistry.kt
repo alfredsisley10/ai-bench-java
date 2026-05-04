@@ -27,7 +27,8 @@ import org.springframework.stereotype.Component
 @Component
 class RegisteredModelsRegistry(
     private val priceCatalog: ModelPriceCatalog,
-    private val registeredModelsStore: RegisteredModelsStore
+    private val registeredModelsStore: RegisteredModelsStore,
+    private val priceResolver: PriceResolver
 ) {
 
     /**
@@ -48,11 +49,17 @@ class RegisteredModelsRegistry(
      */
     private fun LlmConfigController.ModelInfo.withCatalogPrice(): LlmConfigController.ModelInfo {
         if (costPer1kPrompt > 0.0 || costPer1kCompletion > 0.0) return this
-        val price = priceCatalog.catalog.firstOrNull { it.id == this.id }
-            ?: return this
+        // Centralized resolver: handles operator overrides, public
+        // catalog by vendor identifier (the fix for "Copilot models
+        // always show $0" -- the previous match-by-id compared
+        // `copilot-gpt-4-1` against `openai-gpt-4o` and never hit),
+        // pattern store, plus a fuzzy fallback that normalizes
+        // `_`/`.`/provider-prefix differences.
+        val price = priceResolver.priceFor(registryId = this.id, vendorId = this.modelIdentifier)
+        if (price.promptPer1k <= 0.0 && price.completionPer1k <= 0.0) return this
         return copy(
-            costPer1kPrompt = price.costPer1kPrompt,
-            costPer1kCompletion = price.costPer1kCompletion ?: 0.0
+            costPer1kPrompt = price.promptPer1k,
+            costPer1kCompletion = price.completionPer1k
         )
     }
 
