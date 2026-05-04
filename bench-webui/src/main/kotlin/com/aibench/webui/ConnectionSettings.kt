@@ -1111,7 +1111,18 @@ class ConnectionSettings {
      * uniformly.
      */
     fun httpClient(connectTimeout: Duration = Duration.ofSeconds(10)): HttpClient {
-        val builder = HttpClient.newBuilder().connectTimeout(connectTimeout)
+        val builder = HttpClient.newBuilder()
+            .connectTimeout(connectTimeout)
+            // Follow 3xx redirects so the verdict reflects the FINAL
+            // endpoint, not the first hop. services.gradle.org returns
+            // HTTP 307 to its CDN; under the JDK default
+            // Redirect.NEVER that surfaced as the literal redirect
+            // status, which read as "the gradle distribution server
+            // is failing" even though following the 307 reaches the
+            // real endpoint cleanly. NORMAL refuses HTTPS→HTTP
+            // downgrade so we can't be tricked into transmitting auth
+            // headers in cleartext on a hostile redirect chain.
+            .followRedirects(HttpClient.Redirect.NORMAL)
         currentProxySelector()?.let { builder.proxy(it) }
         if (current.insecureSsl) {
             builder.sslContext(trustAllSslContext())
