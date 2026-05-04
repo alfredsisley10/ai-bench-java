@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @Component
 class WorktreePool(
     private val bankingApp: BankingAppManager,
+    private val pauseGate: PauseGate,
     @Value("\${LOCAL_EXEC_CAP:2}") private val cap: Int
 ) {
     private val log = LoggerFactory.getLogger(WorktreePool::class.java)
@@ -103,6 +104,9 @@ class WorktreePool(
      */
     fun acquire(bug: BugCatalog.BugMetadata, timeoutSec: Long = 600): Lease {
         ensureInitialized()
+        // Honor system-wide PauseGate so the operator can drain the
+        // pool to a stable state without losing in-flight work.
+        pauseGate.awaitNotPaused()
         val dir = available.pollFirst(timeoutSec, TimeUnit.SECONDS)
             ?: throw IllegalStateException("WorktreePool acquire timed out after ${timeoutSec}s -- " +
                 "every worktree busy. Cap=$cap; consider raising LOCAL_EXEC_CAP if disk + RAM headroom allows.")

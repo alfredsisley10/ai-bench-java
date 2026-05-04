@@ -461,6 +461,22 @@ class BenchmarkRunService(
     }
 
     /**
+     * Bulk-cancel every RUNNING + QUEUED run. Returns the number of
+     * runs actually transitioned (already-terminal runs are skipped).
+     * The cancellation is "soft" -- the worker thread observes the
+     * status flip on its next checkpoint and returns; in-flight LLM
+     * calls may already be issued and will complete (no API to abort
+     * a Copilot bridge call mid-stream).
+     */
+    fun cancelAll(): Int = runs.values
+        .filter { it.status == Status.RUNNING || it.status == Status.QUEUED }
+        .map { it.id }
+        .count { cancel(it) }
+
+    /** Bulk-cancel a specific list of run ids. Returns count actually cancelled. */
+    fun cancelMany(ids: Collection<String>): Int = ids.count { cancel(it) }
+
+    /**
      * Bulk-delete completed runs from the in-memory store. Refuses to
      * touch any run that's still QUEUED or RUNNING — those need to be
      * cancelled first (or wait to finish), since deleting them would
