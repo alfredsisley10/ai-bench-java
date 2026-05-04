@@ -9,7 +9,7 @@
 // if the more-specific pattern doesn't run first. The current order
 // is intentional.
 //
-// Last cross-referenced: 2026-04-28
+// Last cross-referenced: 2026-05-04
 
 import * as vscode from 'vscode';
 
@@ -45,12 +45,36 @@ const DEFAULT_TABLE: ModelPrice[] = [
     { pattern: /^o1-preview/i, promptPer1k: 0.015, completionPer1k: 0.060, label: 'o1 preview' },
     { pattern: /^o1-mini/i, promptPer1k: 0.003, completionPer1k: 0.012, label: 'o1 mini' },
     { pattern: /^o1(\b|-)/i, promptPer1k: 0.015, completionPer1k: 0.060, label: 'o1' },
-    // Anthropic — newer Sonnet revisions first so they don't get caught
-    // by the older claude-3-sonnet pattern. Copilot exposes 4.x as
-    // claude-sonnet-4.5 / claude-sonnet-4.6 (no version-prefix-3 in
-    // the slug).
-    { pattern: /claude-sonnet-4\.6/i, promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.6' },
-    { pattern: /claude-sonnet-4\.5/i, promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.5' },
+    // Anthropic — newer revisions first so they don't get caught by
+    // older patterns. Copilot exposes 4.x model ids with EITHER
+    // dashes (claude-opus-4-7, claude-sonnet-4-6) OR dots
+    // (claude-opus-4.7) depending on the surface that booked them
+    // -- the `[.\-]` separator class catches both. The earlier
+    // `\.` -only patterns silently missed the dashed form, which
+    // is what made the cost column report $0 for Claude Opus runs.
+    //
+    // Opus 4.x: matches Anthropic's published Opus rate ($15/M in,
+    // $75/M out → $0.015 / $0.075 per 1K). Catch the specific
+    // 4.7 / 4.6 / 4.5 versions first, then a generic 4.x fallback
+    // so future Opus point releases don't fall through to the
+    // ancient claude-3-opus pattern (which has the same rate today
+    // but won't necessarily forever).
+    { pattern: /claude-opus-4[.\-]7/i,    promptPer1k: 0.015, completionPer1k: 0.075, label: 'Claude Opus 4.7' },
+    { pattern: /claude-opus-4[.\-]6/i,    promptPer1k: 0.015, completionPer1k: 0.075, label: 'Claude Opus 4.6' },
+    { pattern: /claude-opus-4[.\-]5/i,    promptPer1k: 0.015, completionPer1k: 0.075, label: 'Claude Opus 4.5' },
+    { pattern: /claude-opus-4/i,          promptPer1k: 0.015, completionPer1k: 0.075, label: 'Claude Opus 4.x' },
+    // Sonnet 4.x: $3/M in, $15/M out → $0.003 / $0.015 per 1K.
+    { pattern: /claude-sonnet-4[.\-]7/i,  promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.7' },
+    { pattern: /claude-sonnet-4[.\-]6/i,  promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.6' },
+    { pattern: /claude-sonnet-4[.\-]5/i,  promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.5' },
+    { pattern: /claude-sonnet-4/i,        promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude Sonnet 4.x' },
+    // Haiku 4.x: $0.80/M in, $4/M out → $0.0008 / $0.004 per 1K
+    // (matches Anthropic's published Haiku 4.5 rate; carried
+    // forward as the family default until a later release shifts).
+    { pattern: /claude-haiku-4[.\-]5/i,   promptPer1k: 0.0008, completionPer1k: 0.004,  label: 'Claude Haiku 4.5' },
+    { pattern: /claude-haiku-4/i,         promptPer1k: 0.0008, completionPer1k: 0.004,  label: 'Claude Haiku 4.x' },
+    // Anthropic 3.x family — kept for runs that still target the
+    // legacy slugs.
     { pattern: /claude-3-7-sonnet/i, promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude 3.7 Sonnet' },
     { pattern: /claude-3-5-sonnet/i, promptPer1k: 0.003, completionPer1k: 0.015, label: 'Claude 3.5 Sonnet' },
     { pattern: /claude-3-5-haiku/i, promptPer1k: 0.0008, completionPer1k: 0.004, label: 'Claude 3.5 Haiku' },
@@ -84,7 +108,7 @@ const DEFAULT_TABLE: ModelPrice[] = [
  * reload. Reset to defaults via clearPricingOverride().
  */
 let TABLE: ModelPrice[] = DEFAULT_TABLE.slice();
-let lastUpdatedIso: string = '2026-04-28T00:00:00.000Z';
+let lastUpdatedIso: string = '2026-05-04T00:00:00.000Z';
 let isOverride: boolean = false;
 
 /** Initialize from VSCode globalState. Called once from extension.ts
@@ -148,7 +172,7 @@ export function setPricing(
  *  Useful when an experimental pricing push needs to be rolled back. */
 export function clearPricingOverride(context: vscode.ExtensionContext | null): void {
     TABLE = DEFAULT_TABLE.slice();
-    lastUpdatedIso = '2026-04-28T00:00:00.000Z';
+    lastUpdatedIso = '2026-05-04T00:00:00.000Z';
     isOverride = false;
     if (context != null) context.globalState.update(STATE_KEY, undefined);
 }
