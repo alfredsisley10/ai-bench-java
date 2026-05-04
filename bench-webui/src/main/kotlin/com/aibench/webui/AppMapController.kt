@@ -230,29 +230,31 @@ class AppMapController(
         @PathVariable id: String,
         @RequestParam(defaultValue = "copilot-default") modelId: String,
         session: HttpSession
-    ): Map<String, Any?> = try {
-        val recording = appmaps.recording(id)
-            ?: return@diagnoseRecording mapOf(
+    ): Map<String, Any?> {
+        // Wrap in try/catch to surface a structured error instead of
+        // letting Spring render its default 500 HTML page. catch on
+        // Throwable (not Exception) so OutOfMemoryError from a huge
+        // log tail and other Errors are also surfaced -- previously
+        // an OOM in tailLog() escaped the Exception filter and the JS
+        // verdict turned into "✗ HTTP 500 from /diagnose Internal
+        // Server Error" with no actionable detail.
+        return try {
+            val recording = appmaps.recording(id)
+                ?: return mapOf(
+                    "ok" to false,
+                    "reason" to "Unknown recording id: $id (was the WebUI restarted? " +
+                        "Server-side recording state is in-memory only and clears on restart.)"
+                )
+            diagnoseRecordingInternal(recording, modelId, session)
+        } catch (t: Throwable) {
+            log.error("AppMap diagnose endpoint threw for recording id={}", id, t)
+            mapOf(
                 "ok" to false,
-                "reason" to "Unknown recording id: $id (was the WebUI restarted? " +
-                    "Server-side recording state is in-memory only and clears on restart.)"
+                "reason" to "Diagnose endpoint failed: ${t.javaClass.simpleName}: " +
+                    (t.message ?: "(no detail)") +
+                    ". Check bench-webui logs for the stack trace."
             )
-        diagnoseRecordingInternal(recording, modelId, session)
-    } catch (e: Exception) {
-        // Defensive guard: previously any throw inside this handler
-        // produced a Spring 5xx page and the JS .catch / verdict
-        // displayed "✗ unknown failure" -- the empty-reason path on
-        // a 200-but-malformed-body. Now any unexpected failure
-        // surfaces with a class+message so the operator can report
-        // it without server-log access.
-        connectionSettings // touch to keep import live
-        log.error("AppMap diagnose endpoint threw for recording id={}", id, e)
-        mapOf(
-            "ok" to false,
-            "reason" to "Diagnose endpoint failed: ${e.javaClass.simpleName}: " +
-                (e.message ?: "(no detail)") +
-                ". Check bench-webui logs for the stack trace."
-        )
+        }
     }
 
     private fun diagnoseRecordingInternal(

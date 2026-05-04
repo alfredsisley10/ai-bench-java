@@ -420,8 +420,25 @@ class AppMapService(
     fun tailLog(recording: Recording, lines: Int = 80): String {
         val f = recording.logPath.toFile()
         if (!f.exists()) return "(log file not yet created)"
-        val all = f.readLines()
-        return all.takeLast(lines).joinToString("\n")
+        // Memory-bounded tail: never load more than ~2 MB regardless
+        // of the file size, then split into lines and keep the last
+        // N. The previous f.readLines() loaded the whole file -- on
+        // a multi-GB gradle log (which happens when AppMap recording
+        // turns on -Pappmap_enabled and Spring + Hibernate flood
+        // stdout) it OOM'd, slipping past the diagnose endpoint's
+        // catch (e: Exception) and rendering as 'HTTP 500 from
+        // /diagnose Internal Server Error'.
+        val maxTailBytes = 2L * 1024 * 1024
+        val len = f.length()
+        val readFrom = (len - maxTailBytes).coerceAtLeast(0L)
+        val text = f.inputStream().use { stream ->
+            if (readFrom > 0) stream.skip(readFrom)
+            stream.readBytes().toString(Charsets.UTF_8)
+        }
+        // If we mid-truncated the first line, drop it so we don't
+        // emit a half-line at the top of the tail.
+        val cleaned = if (readFrom > 0) text.substringAfter('\n', text) else text
+        return cleaned.lines().takeLast(lines).joinToString("\n")
     }
 
     /**
