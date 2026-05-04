@@ -190,6 +190,20 @@
             <button type="button" class="btn-sm" onclick="scanLocalProfile(this)">
                 🔎 Scan local profile
             </button>
+            <!-- Seed from the values the operator has ALREADY saved
+                 in the mirror config form below (mirrorUrl +
+                 mavenExternalVirtualUrl). Lets the discovery probe
+                 cover the union of: typed-in candidates, on-disk
+                 candidates (Scan local profile), and the operator's
+                 currently-saved configuration. The Discover engine
+                 itself is unchanged -- it just probes whatever's in
+                 the textarea. -->
+            <button type="button" class="btn-sm"
+                    th:attr="data-mirror-url=${settings.mirrorUrl},
+                             data-external-virtual-url=${settings.mavenExternalVirtualUrl}"
+                    onclick="seedFromSavedSettings(this)">
+                📋 Seed from saved settings
+            </button>
             <span id="discoverStatus" class="help-text" style="margin-left:0.5em"></span>
         </div>
         <div id="scanLocalOutput" style="display:none; margin-top:0.4em;
@@ -331,6 +345,48 @@
                 d.appendChild(document.createTextNode(String(s == null ? '' : s)));
                 return d.innerHTML;
             }
+            // Seed the Discover textarea with the values the operator
+            // has saved (mirrorUrl + mavenExternalVirtualUrl) PLUS
+            // whatever they've currently typed in the mirror-config
+            // form below (which may differ from the saved values if
+            // they're mid-edit). All sources are unioned + deduped
+            // against any URLs already in the textarea so this can
+            // be combined with "🔎 Scan local profile" to build the
+            // full discovery target set.
+            function seedFromSavedSettings(btn) {
+                var status = document.getElementById('discoverStatus');
+                var ta = document.getElementById('discoverCandidates');
+                // Saved values (Thymeleaf-rendered onto the button).
+                var saved = [
+                    btn.dataset.mirrorUrl || '',
+                    btn.dataset.externalVirtualUrl || ''
+                ];
+                // Live form values (operator may be mid-edit).
+                var liveMirror = (document.querySelector('input[name=mirrorUrl]') || {}).value || '';
+                var liveExternal = (document.querySelector('input[name=mavenExternalVirtualUrl]') || {}).value || '';
+                var live = [liveMirror, liveExternal];
+                // Existing textarea contents (typed-in candidates +
+                // anything from a prior scan).
+                var existing = (ta.value || '').split(/\r?\n/)
+                    .map(function (s) { return s.trim(); })
+                    .filter(function (s) { return s.length > 0; });
+                var seen = new Set(existing);
+                var addedCount = 0;
+                saved.concat(live).forEach(function (u) {
+                    var trimmed = (u || '').trim();
+                    if (!trimmed) return;
+                    if (seen.has(trimmed)) return;
+                    seen.add(trimmed);
+                    existing.push(trimmed);
+                    addedCount++;
+                });
+                ta.value = existing.join('\n');
+                status.textContent = addedCount > 0
+                    ? '✓ Added ' + addedCount + ' URL(s) from saved/live settings.'
+                    : 'No new URLs to add — saved + live settings are already in the textarea (or are blank).';
+                status.style.color = addedCount > 0 ? '#067647' : '';
+            }
+
             function scanLocalProfile(btn) {
                 var status = document.getElementById('discoverStatus');
                 var out = document.getElementById('scanLocalOutput');
