@@ -429,6 +429,38 @@ class BenchmarkRunService(
     }
 
     /**
+     * Recompute `estimatedCostUsd` on every persisted run that used
+     * the given modelId, using the supplied per-1K rates × the run's
+     * stored token counts. Persists each updated run so the dashboard
+     * + leaderboard + exports + PDF all see the new cost on next read.
+     *
+     * Called by the LLM admin page when the operator overrides a
+     * model's per-token price -- the existing runs would otherwise
+     * keep their stale `$0` (or stale-rate) cost values forever.
+     *
+     * Returns the count of runs actually updated.
+     */
+    fun recomputeCostForModel(
+        modelId: String,
+        promptPer1k: Double,
+        completionPer1k: Double
+    ): Int {
+        var n = 0
+        for (run in runs.values) {
+            if (run.modelId != modelId) continue
+            val newCost =
+                (run.stats.totalPromptTokens / 1000.0) * promptPer1k +
+                (run.stats.totalCompletionTokens / 1000.0) * completionPer1k
+            run.stats = run.stats.copy(estimatedCostUsd = newCost)
+            persist(run)
+            n++
+        }
+        if (n > 0) log.info("recomputeCostForModel({}): updated {} run(s) at " +
+            "promptPer1k={}, completionPer1k={}", modelId, n, promptPer1k, completionPer1k)
+        return n
+    }
+
+    /**
      * Bulk-delete completed runs from the in-memory store. Refuses to
      * touch any run that's still QUEUED or RUNNING — those need to be
      * cancelled first (or wait to finish), since deleting them would

@@ -194,19 +194,41 @@ class RegisteredModelsRegistry(
         // "llmModels", which was wiped on every JVM bounce.
         val storedModels = registeredModelsStore.all()
 
-        // Auto-derived defaults take precedence by id; store entries
-        // with the same id are shadowed (rare, but possible if the
-        // operator manually registers `copilot-default`).
-        val seenIds = builtins.map { it.id }.toMutableSet()
-        val merged = builtins.toMutableList()
-        for (m in storedModels) {
-            if (seenIds.add(m.id)) merged += m
+        // Stored entries take precedence over auto-derived for the
+        // same id -- this is the operator-override path: when the
+        // operator edits pricing on an auto-discovered model, we
+        // upsert it into the store; subsequent loads use that
+        // override. The auto-derived entry's displayName/provider/
+        // modelIdentifier/status carry forward for any field the
+        // operator didn't change because LlmConfigController's
+        // updateModel only mutates displayName + costs.
+        val storedById = storedModels.associateBy { it.id }
+        val merged = mutableListOf<LlmConfigController.ModelInfo>()
+        val seenIds = mutableSetOf<String>()
+        for (b in builtins) {
+            val override = storedById[b.id]
+            // When override exists, keep auto-derived status/provider/
+            // modelIdentifier (those reflect live discovery state)
+            // and graft on the operator's displayName + prices.
+            val finalEntry = if (override != null) {
+                b.copy(
+                    displayName = override.displayName,
+                    costPer1kPrompt = override.costPer1kPrompt,
+                    costPer1kCompletion = override.costPer1kCompletion,
+                    editable = true   // operator owns this row now
+                )
+            } else b
+            merged += finalEntry
+            seenIds += b.id
         }
+        // Stored entries that don't shadow an auto-discovered id
+        // (operator-added models) flow through as-is.
+        for (s in storedModels) if (seenIds.add(s.id)) merged += s
         // Last pass: fill in per-1K pricing from the public catalog for
         // any entry that's still at $0 / $0 (Copilot auto-discovery
         // never carries pricing). withCatalogPrice() is a no-op when
-        // the entry already has prices set (manual registration via
-        // the Add Model form).
+        // the entry already has prices set (manual registration OR
+        // operator override via the LLM page edit form).
         return merged.map { it.withCatalogPrice() }
     }
 
