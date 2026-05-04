@@ -234,14 +234,19 @@ class ProxyConfigController(
     @PostMapping("/proxy/verify")
     @ResponseBody
     fun verify(): Map<String, Any> {
-        val results = connectionSettings.probeConnectivity()
+        // Proxy page only owns proxy + sanity-check targets. The
+        // gradle-ecosystem targets (services.gradle.org, Maven Central,
+        // Foojay, configured mirror) moved to /mirror per operator
+        // feedback that the two domains are independent and bundling
+        // them confused the verdict.
+        val results = connectionSettings.probeProxyConnectivity()
         val ok = results.all { it.ok }
         return mapOf(
             "ok" to ok,
             "summary" to (if (ok)
-                "All ${results.size} probes passed."
+                "All ${results.size} proxy probes passed."
             else
-                "${results.count { !it.ok }} of ${results.size} probes failed."),
+                "${results.count { !it.ok }} of ${results.size} proxy probes failed."),
             "results" to results.map {
                 mapOf(
                     "target" to it.target, "purpose" to it.purpose,
