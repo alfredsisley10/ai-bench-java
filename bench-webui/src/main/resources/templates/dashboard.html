@@ -462,11 +462,16 @@
                     th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
                     <!-- Drill-down chevron: click toggles the per-bug
                          sibling row below this one. JS at the bottom
-                         of the leaderboard section handles the click. -->
+                         of the leaderboard section handles the click.
+                         vertical-align:middle keeps the triangle
+                         centered on the model-id text rather than
+                         drifting to baseline + offsetting the row. -->
                     <button type="button" class="lb-drill" th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
                             th:attr="data-target='lb-drill-' + ${iter.index}"
                             style="border:none; background:none; cursor:pointer;
-                                   padding:0 0.2em; font-size:0.85em; color:#6b7280">▶</button>
+                                   padding:0 0.3em; font-size:0.85em; color:#6b7280;
+                                   vertical-align:middle; line-height:1;
+                                   width:1.4em; text-align:center">▶</button>
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
@@ -499,15 +504,12 @@
                 <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
                     th:title="'Fastest pass on ' + ${lb.fastest.bugId} + ' (' + ${lb.fastest.difficulty} + ' / ' + ${lb.fastest.category} + ') · ' + ${lb.fastest.durationMs} + ' ms wall clock'"
                     th:with="d=${lb.fastest.durationMs},
-                             ms=${d % 1000},
                              sTotal=${d / 1000},
                              s=${sTotal % 60},
                              m=${sTotal / 60}"
                     th:text="${m > 0
-                               ? #numbers.formatInteger(m, 1, 'COMMA') + 'm ' + s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
-                               : (sTotal > 0
-                                  ? s + 's ' + #numbers.formatInteger(ms, 1, 'COMMA') + 'ms'
-                                  : #numbers.formatInteger(ms, 1, 'COMMA') + 'ms')}"></td>
+                               ? m + 'm ' + s + 's'
+                               : (sTotal > 0 ? s + 's' : '<1s')}"></td>
                 <td class="num" th:unless="${lb.fastest != null}" title="No passing run for this configuration yet">—</td>
                 <td class="num" style="white-space:nowrap" th:if="${lb.cheapest != null}"
                     th:title="'Cheapest pass on ' + ${lb.cheapest.bugId} + ' (' + ${lb.cheapest.difficulty} + ' / ' + ${lb.cheapest.category} + ') · $' + ${lb.cheapest.costUsd}"
@@ -561,6 +563,7 @@
                  row deep-links to the most recent run's audit page. -->
             <tr th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
                 th:id="'lb-drill-' + ${iter.index}"
+                class="lb-drill-row"
                 style="display:none; background:#f9fafb">
                 <td colspan="12" style="padding:0.4em 1em">
                     <table style="width:auto; font-size:0.85em">
@@ -624,11 +627,30 @@
             var pageSize = parseInt(pageSizeSelect.value, 10) || 10;
             var page = 1;
 
-            function allRows() { return Array.prototype.slice.call(tbody.querySelectorAll('tr')); }
+            // Pagination operates on PRIMARY rows only. Drilldown
+            // rows (`.lb-drill-row`) are siblings managed by chevron
+            // clicks; including them in the pagination loop would
+            // (a) miscount visible rows and (b) un-hide drilldowns
+            // when their parent row paginated into view -- the
+            // "often displays expanded" bug.
+            function allRows() {
+                return Array.prototype.slice.call(tbody.querySelectorAll('tr:not(.lb-drill-row)'));
+            }
             function visibleRows() {
                 return allRows().filter(function (r) {
                     return !r.classList.contains('filtered-out');
                 });
+            }
+            // Hide the drilldown that follows a primary row (and only
+            // that drilldown) when its parent goes off-page. Avoids
+            // an orphan drilldown sticking around when its row scrolls
+            // into a different page slice. Also resets the chevron.
+            function hidePartnerDrill(primaryRow) {
+                var btn = primaryRow.querySelector('.lb-drill');
+                if (!btn) return;
+                var t = document.getElementById(btn.getAttribute('data-target'));
+                if (t) t.style.display = 'none';
+                btn.textContent = '▶';
             }
             function repaint() {
                 var all = allRows();
@@ -636,7 +658,13 @@
                 var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
                 if (page > totalPages) page = totalPages;
                 var from = (page - 1) * pageSize;
-                all.forEach(function (r) { r.style.display = 'none'; });
+                // Hide every primary row + reset its drilldown.
+                all.forEach(function (r) {
+                    r.style.display = 'none';
+                    hidePartnerDrill(r);
+                });
+                // Show only the paginated primary rows. Their drilldowns
+                // stay hidden until the operator clicks the chevron.
                 visible.slice(from, from + pageSize).forEach(function (r) {
                     r.style.display = '';
                 });
@@ -696,6 +724,157 @@
             repaint();
         })();
         </script>
+    </section>
+
+    <!-- Per-bug leaders: who solved each bug fastest, plus the bugs
+         only ONE configuration ever cracked. Surfaces complementary
+         info to the per-config leaderboard above (which collapses
+         the bug dimension entirely). Hidden when no passing runs. -->
+    <section th:unless="${#lists.isEmpty(perBugLeaders)}">
+        <h2>Per-bug leaders
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — fastest passing configuration per bug
+                <span th:if="${uniquelySolvedCount > 0}"
+                      style="color:#7c2d12; font-weight:bold"
+                      th:text="'· ' + ${uniquelySolvedCount} + ' uniquely solved'"></span>
+            </span>
+        </h2>
+        <div class="table-scroll">
+        <table style="font-size:0.9em">
+            <thead>
+                <tr>
+                    <th>Bug</th>
+                    <th>Difficulty</th>
+                    <th>Category</th>
+                    <th class="num">Solvers</th>
+                    <th>Winner (model · ctx · appmap)</th>
+                    <th class="num">Time</th>
+                    <th class="num">Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="b : ${perBugLeaders}"
+                    th:style="${b.uniquelySolved
+                                ? 'background:#fef3c7; border-left:3px solid #d97706'
+                                : (b.solvers == 0 ? 'opacity:0.55' : '')}">
+                    <td>
+                        <a th:href="'/demo/' + ${b.bugId}">
+                            <code th:text="${b.bugId}">BUG-…</code>
+                        </a>
+                        <span th:if="${b.uniquelySolved}"
+                              style="margin-left:0.4em; padding:1px 5px;
+                                     background:#fbbf24; color:#7c2d12;
+                                     border-radius:3px; font-size:0.75em;
+                                     font-weight:bold"
+                              title="Only one configuration ever passed this bug">UNIQUE</span>
+                        <div style="font-size:0.85em; color:#555" th:text="${b.title}">…</div>
+                    </td>
+                    <td><span th:class="'badge ' + ${b.difficulty}" th:text="${b.difficulty}"></span></td>
+                    <td th:text="${b.category}">…</td>
+                    <td class="num"
+                        th:text="${b.solvers} + ' / ' + ${b.attempts}"
+                        th:title="${b.solvers} + ' distinct configurations passed of ' + ${b.attempts} + ' total attempts'"></td>
+                    <td>
+                        <span th:if="${b.winnerModel == null}" style="color:#888">— no solver —</span>
+                        <span th:unless="${b.winnerModel == null}">
+                            <code th:text="${b.winnerModel}">…</code>
+                            <span class="help-text"
+                                  th:text="' · ' + ${b.winnerCtx} + ' · ' + ${b.winnerAppmap}"></span>
+                        </span>
+                    </td>
+                    <td class="num"
+                        th:text="${b.winnerDurationMs == null ? '—' :
+                                   (b.winnerDurationMs / 1000 + 's')}">—</td>
+                    <td class="num"
+                        th:text="${b.winnerCostUsd == null ? '—' :
+                                   ('$' + #numbers.formatDecimal(b.winnerCostUsd, 1, 'COMMA', 4, 'POINT'))}">—</td>
+                </tr>
+            </tbody>
+        </table>
+        </div>
+    </section>
+
+    <!-- Bug-solving heat-map: rows = bugs (grouped by difficulty),
+         cols = configurations (model+ctx+appmap). Cell color encodes
+         status: green = PASSED, red = FAILED, grey = no attempt /
+         other. Click any cell label / column header to inspect.
+         Designed for at-a-glance "this solver dominates EASY but
+         fails HARD" pattern recognition that the per-config and
+         per-bug tables don't surface as effectively. -->
+    <section th:unless="${#lists.isEmpty(heatBugRows)}">
+        <h2>Bug-solving matrix
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — green = passed, red = failed, light grey = no attempt
+            </span>
+        </h2>
+        <div class="table-scroll" style="overflow-x:auto">
+        <table style="font-size:0.78em; border-collapse:separate; border-spacing:1px">
+            <thead>
+                <tr>
+                    <th style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6">Bug</th>
+                    <th style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6">Diff</th>
+                    <th th:each="c : ${heatColumns}"
+                        th:title="${c.tooltip}"
+                        style="padding:0.3em 0.4em; background:#f3f4f6;
+                               vertical-align:bottom; min-width:3.2em">
+                        <div style="writing-mode:vertical-rl; transform:rotate(180deg);
+                                    white-space:nowrap; font-family:monospace;
+                                    font-size:0.85em; max-height:14em">
+                            <span th:text="${c.modelShort}">…</span>
+                            <span style="color:#475569" th:text="' ' + ${c.ctxShort} + ${c.appmapShort}">…</span>
+                        </div>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="b : ${heatBugRows}"
+                    th:style="${b.uniquelySolved ? 'background:#fffbeb' : ''}">
+                    <td style="padding:0.25em 0.5em; white-space:nowrap"
+                        th:title="${b.title}">
+                        <a th:href="'/demo/' + ${b.bugId}"
+                           style="text-decoration:none; color:inherit">
+                            <code th:text="${b.bugId}">BUG-…</code>
+                        </a>
+                        <span th:if="${b.uniquelySolved}"
+                              style="margin-left:0.3em; color:#d97706"
+                              title="Only one configuration ever passed">★</span>
+                    </td>
+                    <td style="padding:0.25em 0.5em">
+                        <span th:class="'badge ' + ${b.difficulty}"
+                              th:text="${b.difficulty}"></span>
+                    </td>
+                    <td th:each="c : ${heatColumns}"
+                        th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
+                        th:style="${cell == null ? 'background:#f1f5f9' :
+                                    (cell.status == 'PASSED'
+                                       ? 'background:#16a34a; color:white'
+                                       : (cell.status == 'FAILED'
+                                          ? 'background:#dc2626; color:white'
+                                          : (cell.status == 'ERRORED'
+                                             ? 'background:#a16207; color:white'
+                                             : 'background:#cbd5e1')))}"
+                        th:title="${cell == null
+                                    ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
+                                    : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status + ' · ' + (cell.durationMs / 1000) + 's')}"
+                        style="text-align:center; padding:0.3em 0.4em;
+                               font-family:monospace; font-size:0.7em">
+                        <span th:if="${cell != null and cell.status == 'PASSED'}">✓</span>
+                        <span th:if="${cell != null and cell.status == 'FAILED'}">✗</span>
+                        <span th:if="${cell != null and cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
+                        <span th:if="${cell == null}">·</span>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        </div>
+        <p class="help-text" style="margin-top:0.6em; font-size:0.85em">
+            <strong>Reading the matrix:</strong> column headers compress to
+            <code>&lt;model&gt; &lt;ctx&gt;&lt;appmap&gt;</code> where ctx ∈
+            {<code>O</code>=oracle, <code>B</code>=bm25, <code>N</code>=appmap-navie,
+            <code>n</code>=none} and appmap is <code>+</code> when ON.
+            <span style="color:#d97706">★</span> marks bugs solved by exactly one configuration.
+            Hover any cell for the run's status and duration.
+        </p>
     </section>
 
     <!-- Merged results section. Was previously a separate /results page;

@@ -48,6 +48,56 @@ class DashboardController(
         val avgCostPctVsLeader: Int
     )
 
+    /** Per-bug winner: the configuration that solved this bug
+     *  fastest. Drives the "Per-bug leaders" view so operators can
+     *  see "for BUG-0001 the best solver is X (Yms, $Z)" at a glance.
+     *  When `solvers > 1` multiple configurations passed; the leader
+     *  is the fastest. When `uniquelySolved=true` only ONE configuration
+     *  ever passed -- a strong signal about that solver's edge. */
+    data class PerBugLeader(
+        val bugId: String,
+        val title: String,
+        val difficulty: String,
+        val category: String,
+        val attempts: Int,
+        val solvers: Int,
+        val uniquelySolved: Boolean,
+        val winnerModel: String?,
+        val winnerCtx: String?,
+        val winnerAppmap: String?,
+        val winnerDurationMs: Long?,
+        val winnerCostUsd: Double?
+    )
+
+    /** One cell in the bug-solving heat-map. Rendered in
+     *  template as a colored square; status drives the color. */
+    data class HeatCell(
+        val bugId: String,
+        val configKey: String,    // "model|ctx|appmap"
+        val status: String,        // PASSED / FAILED / ERRORED / CANCELED / "—" (no attempt)
+        val durationMs: Long
+    )
+
+    /** Configuration column header for the heat-map. */
+    data class HeatColumn(
+        val configKey: String,
+        val modelShort: String,    // model id with provider prefix stripped for compact display
+        val ctxShort: String,      // 1-letter ctx ("O", "B", "N", "n")
+        val appmapShort: String,   // "+" for ON, "" for OFF
+        val tooltip: String,
+        val totalSolves: Int
+    )
+
+    /** Bug row metadata for the heat-map. */
+    data class HeatBugRow(
+        val bugId: String,
+        val title: String,
+        val difficulty: String,
+        val category: String,
+        val solveCount: Int,
+        val uniquelySolved: Boolean
+    )
+
     /** Per-bug rollup for the leaderboard drilldown. Aggregates every
      *  run a (provider, model, ctx, mode) configuration made against
      *  this specific bug -- so the operator can see whether the
@@ -247,6 +297,133 @@ class DashboardController(
             )
         }
         model.addAttribute("leaderboardDeltas", deltas)
+
+        // ----- Per-bug leaders + heat-map -------------------------------
+        // Builds two derived views over the same passed-runs set:
+        //   1. PerBugLeader: which configuration won each bug (fastest
+        //      passing run), plus a "uniquelySolved" flag for bugs only
+        //      one configuration ever cracked.
+        //   2. HeatMap (rows=bugs grouped by difficulty, cols=configs):
+        //      cell color = run status, intensity = wall time. Surfaces
+        //      "this solver dominates EASY but fails HARD" patterns at
+        //      a glance.
+        // Oracle is excluded here too (matching leaderboard policy)
+        // so the views don't show oracle as the trivial leader for
+        // every bug it touched.
+        val nonOracleRuns = runs.filter { it.contextProvider.lowercase() != "oracle" }
+
+        // Per-bug aggregation
+        val byBugAllRuns = nonOracleRuns.groupBy { it.issueId }
+        val perBugLeaders: List<PerBugLeader> = bugCatalog.allBugs().map { bug ->
+            val attempts = byBugAllRuns[bug.id] ?: emptyList()
+            val passes = attempts.filter { it.status == BenchmarkRunService.Status.PASSED }
+            val distinctSolverConfigs = passes
+                .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+                .distinct()
+            val winner = passes.minByOrNull { it.durationMs }
+            PerBugLeader(
+                bugId = bug.id,
+                title = bug.title,
+                difficulty = bug.difficulty.ifBlank { "(unknown)" },
+                category = bug.category.ifBlank { "(unknown)" },
+                attempts = attempts.size,
+                solvers = distinctSolverConfigs.size,
+                uniquelySolved = distinctSolverConfigs.size == 1 && passes.isNotEmpty(),
+                winnerModel = winner?.let { "${it.provider}/${it.modelId}" },
+                winnerCtx = winner?.contextProvider,
+                winnerAppmap = winner?.appmapMode,
+                winnerDurationMs = winner?.durationMs,
+                winnerCostUsd = winner?.stats?.estimatedCostUsd
+            )
+        }.sortedWith(compareBy({ if (it.uniquelySolved) 0 else 1 },
+                               { -(it.attempts) },
+                               { it.bugId }))
+        model.addAttribute("perBugLeaders", perBugLeaders)
+        model.addAttribute("uniquelySolvedCount", perBugLeaders.count { it.uniquelySolved })
+
+        // Heat-map: configs × bugs grid.
+        // Cap configs to those with at least 1 attempt (drops empty
+        // columns) and to non-oracle. Bugs ordered by difficulty
+        // bucket (HARD/MEDIUM/EASY/TRIVIAL) then bugId for visual
+        // grouping; difficulty also exposed per row so the template
+        // can color the row label.
+        val configsWithAttempts: List<Triple<String, String, String>> = nonOracleRuns
+            .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+            .distinct()
+            .sortedBy { "${it.first}|${it.second}|${it.third}" }
+        val heatColumns: List<HeatColumn> = configsWithAttempts.map { (model, ctx, mode) ->
+            val k = "$model|$ctx|$mode"
+            val solves = nonOracleRuns.count {
+                it.modelId == model && it.contextProvider == ctx && it.appmapMode == mode &&
+                it.status == BenchmarkRunService.Status.PASSED
+            }
+            HeatColumn(
+                configKey = k,
+                // strip "copilot-" prefix for compactness; rest stays
+                modelShort = model.removePrefix("copilot-"),
+                ctxShort = when (ctx.lowercase()) {
+                    "none" -> "n"
+                    "bm25" -> "B"
+                    "appmap-navie" -> "N"
+                    "oracle" -> "O"
+                    else -> ctx.take(1).uppercase()
+                },
+                appmapShort = if (mode.uppercase() == "ON" ||
+                    mode.uppercase().startsWith("ON_")) "+" else "",
+                tooltip = "$model · ctx=$ctx · appmap=$mode — $solves passed",
+                totalSolves = solves
+            )
+        }
+        // Only carry bugs that had at least 1 attempt (matches the
+        // configs-with-attempts logic). Sort by uniquely-solved first
+        // so the most distinctive bugs surface near the top.
+        val difficultyOrder = mapOf("HARD" to 0, "MEDIUM" to 1, "EASY" to 2, "TRIVIAL" to 3)
+        val heatBugRows: List<HeatBugRow> = perBugLeaders
+            .filter { it.attempts > 0 }
+            .sortedWith(compareBy(
+                { difficultyOrder[it.difficulty.uppercase()] ?: 99 },
+                { it.bugId }
+            ))
+            .map {
+                HeatBugRow(
+                    bugId = it.bugId,
+                    title = it.title,
+                    difficulty = it.difficulty,
+                    category = it.category,
+                    solveCount = it.solvers,
+                    uniquelySolved = it.uniquelySolved
+                )
+            }
+        // Cells indexed by (bug, config) -> latest matching run's
+        // status. With seeds=1 there's typically 1 run per (bug,config);
+        // when more, we pick the run with the strongest result
+        // (PASSED > FAILED > ERRORED > nothing) so the matrix
+        // emphasizes "did ANY attempt succeed?".
+        val heatCells: Map<String, HeatCell> = run {
+            val out = mutableMapOf<String, HeatCell>()
+            for (run in nonOracleRuns) {
+                val key = "${run.issueId}|${run.modelId}|${run.contextProvider}|${run.appmapMode}"
+                val existing = out[key]
+                val rank = mapOf(
+                    "PASSED" to 4, "FAILED" to 3, "ERRORED" to 2,
+                    "CANCELED" to 1, "RUNNING" to 0, "QUEUED" to 0
+                )
+                val newRank = rank[run.status.name] ?: 0
+                val existingRank = existing?.let { rank[it.status] ?: 0 } ?: -1
+                if (newRank > existingRank) {
+                    out[key] = HeatCell(
+                        bugId = run.issueId,
+                        configKey = "${run.modelId}|${run.contextProvider}|${run.appmapMode}",
+                        status = run.status.name,
+                        durationMs = run.durationMs
+                    )
+                }
+            }
+            out
+        }
+        model.addAttribute("heatColumns", heatColumns)
+        model.addAttribute("heatBugRows", heatBugRows)
+        model.addAttribute("heatCells", heatCells)
         // When the leaderboard is empty BUT we DO have passing oracle
         // runs in the runs list, surface "Oracle is excluded from the
         // ranking — try a non-Oracle context" instead of just hiding
