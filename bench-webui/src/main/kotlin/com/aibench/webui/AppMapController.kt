@@ -13,7 +13,11 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestParam
 
 @Controller
-class AppMapController(private val appmaps: AppMapService) {
+class AppMapController(
+    private val appmaps: AppMapService,
+    private val llmDiagnostician: LlmDiagnostician,
+    private val connectionSettings: ConnectionSettings,
+) {
 
     @GetMapping("/demo/appmap")
     fun list(
@@ -204,6 +208,105 @@ class AppMapController(private val appmaps: AppMapService) {
     fun stop(@PathVariable id: String): String {
         appmaps.stopRecording(id)
         return "redirect:/demo/appmap?activeId=$id"
+    }
+
+    /**
+     * Run a Diagnose-with-LLM pass over the given recording. Pulls a
+     * larger log tail (200 lines vs the 40-line live view) so the LLM
+     * has enough context to spot stack traces or repeated errors,
+     * combines it with the recording's status + masked command +
+     * operator's connection settings, and asks the bridge for a
+     * two-section action plan: local resolutions + source-code
+     * project fixes.
+     *
+     * Same diagnostician + masking + two-section prompt shape used by
+     * /mirror/diagnose so the operator's experience is consistent
+     * across the gradle/banking-app and AppMap surfaces.
+     */
+    @PostMapping("/demo/appmap/recording/{id}/diagnose")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun diagnoseRecording(
+        @PathVariable id: String,
+        @RequestParam(defaultValue = "copilot-default") modelId: String,
+        session: HttpSession
+    ): Map<String, Any?> {
+        val recording = appmaps.recording(id)
+            ?: return mapOf(
+                "ok" to false,
+                "reason" to "Unknown recording id: $id (was the WebUI restarted?)"
+            )
+        val s = connectionSettings.settings
+        // Recording.command is already credential-masked at storage
+        // time (PR #27), so this joinToString is safe to embed in the
+        // prompt + log.
+        val cmd = recording.command.joinToString(" ")
+        val logTail = appmaps.tailLog(recording, 200)
+
+        val systemPrompt = """
+            You are a senior Gradle / Java test-engineering / AppMap
+            specialist triaging an AppMap recording. The operator
+            launched a `gradle :MODULE:test -Pappmap_enabled=true` run
+            via bench-webui to capture .appmap.json traces; your job
+            is to spot WHY the recording produced no useful output
+            (or failed outright) and recommend actionable fixes.
+
+            Respond in TWO clearly-delimited sections:
+
+            ## Local resolutions
+            Concrete steps the operator can take on THIS machine right
+            now. Examples: re-run with a different module / test
+            filter, fix a /proxy or /mirror config that's blocking
+            dep resolution, kill a stale gradle daemon, install a
+            JDK toolchain that matches banking-app's pin, ensure the
+            AppMap Java agent jar is on disk. Cite specific button
+            names or file paths.
+
+            ## Source-code project fixes
+            Changes to raise as PRs against the ai-bench-java repo so
+            this failure mode stops happening. Examples: bump or pin
+            an AppMap plugin version in banking-app/build.gradle.kts,
+            add a defensive check in AppMapService, document a JDK
+            requirement in README. Name the file path + the change
+            in 1-2 sentences each.
+
+            Be concrete and cite the specific failing line / stack
+            frame / coordinate when present. 2-5 bullets per section.
+            If no fix is needed in one section, say so in one line
+            instead of inventing recommendations.
+        """.trimIndent()
+
+        val userPrompt = """
+            AppMap recording id: ${recording.id}
+            Status: ${recording.status}
+            Exit code: ${recording.exitCode ?: "(still running)"}
+            Module: ${recording.module ?: "(none — recording all)"}
+            Test filter: ${recording.testFilter ?: "(none)"}
+            Elapsed: ${recording.elapsedSeconds}s
+            Traces before / after: ${recording.tracesBefore} / ${recording.tracesAfter ?: "(unknown)"}
+            New trace count: ${recording.newTraceCount ?: "(unknown)"}
+
+            Operator's bench-webui connection settings:
+            - HTTPS proxy: ${s.httpsProxy.ifBlank { "(none)" }}
+            - HTTP proxy: ${s.httpProxy.ifBlank { "(none)" }}
+            - Mirror URL: ${s.mirrorUrl.ifBlank { "(none)" }}
+            - Mirror auth: ${if (s.hasMirrorAuth) "configured (user '${s.mirrorAuthUser}')" else "(none)"}
+            - Bypass mirror: ${s.bypassMirror}
+            - Insecure SSL: ${s.insecureSsl}
+
+            Gradle command bench-webui spawned (credentials masked):
+            ```
+            $cmd
+            ```
+
+            Recent log tail (last 200 lines):
+            ```
+            ${logTail.take(8000)}
+            ```
+        """.trimIndent()
+
+        return llmDiagnostician
+            .diagnose(modelId, systemPrompt, userPrompt, session, timeoutSec = 60)
+            .toMap()
     }
 
     @PostMapping("/demo/appmap/start-with-agent")
