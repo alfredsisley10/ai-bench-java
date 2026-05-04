@@ -114,6 +114,13 @@
             <legend style="padding:0 0.4em">Verify mirror</legend>
             <div style="margin:0.3em 0">
                 <button type="button" class="btn-sm" onclick="testMirror(this)">1. Test reachability</button>
+                <button type="button" class="btn-sm"
+                        style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                        onclick="diagnoseFromPanel('Verify mirror — reachability',
+                                  document.getElementById('mirrorTestStatus').textContent + '\n' +
+                                  (document.querySelector('#mirrorTestOutput pre') || {textContent:''}).textContent)">
+                    🩺 Diagnose
+                </button>
                 <span class="help-text" style="margin-left:0.5em">
                     Single GET against the mirror root URL. 401 → token rejected (FAIL); 200 → URL reachable (does NOT prove plugins are served).
                 </span>
@@ -127,6 +134,13 @@
 
             <div style="margin:0.3em 0">
                 <button type="button" class="btn-sm" onclick="testMirrorResolve(this)">2. Test artifact resolution</button>
+                <button type="button" class="btn-sm"
+                        style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                        onclick="diagnoseFromPanel('Verify mirror — artifact resolution',
+                                  document.getElementById('mirrorResolveStatus').textContent + '\n' +
+                                  extractTableSummary('mirrorResolveTable'))">
+                    🩺 Diagnose
+                </button>
                 <span class="help-text" style="margin-left:0.5em">
                     Three known plugin POMs (Spring Boot, Kotlin, transitive gson).
                 </span>
@@ -142,6 +156,13 @@
 
             <div style="margin:0.3em 0">
                 <button type="button" class="btn-sm" onclick="testMirrorGradle(this)">3. Test via Gradle process</button>
+                <button type="button" class="btn-sm"
+                        style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                        onclick="diagnoseFromPanel('Verify mirror — via Gradle subprocess',
+                                  document.getElementById('mirrorGradleStatus').textContent + '\n' +
+                                  (document.querySelector('#mirrorGradleOutput pre') || {textContent:''}).textContent)">
+                    🩺 Diagnose
+                </button>
                 <span class="help-text" style="margin-left:0.5em">
                     Spawns a real <code>gradle</code> against a tmp project. Slowest (~30–90 s) but the most authoritative.
                 </span>
@@ -172,6 +193,13 @@
         </p>
         <button type="button" class="btn-sm" onclick="verifyGradleConnectivity(this)">
             Verify connectivity
+        </button>
+        <button type="button" class="btn-sm"
+                style="background:#fef3c7; border-color:#fcd34d; color:#92400e"
+                onclick="diagnoseFromPanel('Verify gradle ecosystem connectivity',
+                          (document.getElementById('gradle-verify-summary').textContent || '') + '\n' +
+                          extractTableSummary('gradle-verify-table'))">
+            🩺 Diagnose
         </button>
         <span class="help-text" style="margin-left:0.5em">~3–10 seconds.</span>
         <details id="gradle-verify-output" style="display:none; margin-top:0.5em">
@@ -412,6 +440,42 @@
                 });
         }
 
+        // ---- Cross-panel "Diagnose with LLM" plumbing ------------------
+        // Each Verify Mirror sub-panel + the Verify-gradle-connectivity
+        // panel has a "🩺 Diagnose" button. They all funnel into the
+        // existing diagnoseGradleSection (model picker + output) by
+        // stashing the panel-specific summary + log into a hidden
+        // staging area, revealing the section, scrolling to it, and
+        // firing the same /mirror/diagnose POST. Single output area
+        // means the operator never has to hunt for which panel's
+        // diagnose result is which.
+        var diagnoseStagedHint = '';
+        var diagnoseStagedLog  = '';
+        function extractTableSummary(tableId) {
+            var rows = document.querySelectorAll('#' + tableId + ' tbody tr');
+            var lines = [];
+            rows.forEach(function (tr) {
+                var cells = tr.querySelectorAll('td');
+                var parts = [];
+                cells.forEach(function (td) { parts.push((td.textContent || '').trim()); });
+                if (parts.length > 0 && parts.join('').length > 0) lines.push(parts.join(' | '));
+            });
+            return lines.join('\n');
+        }
+        function diagnoseFromPanel(panelLabel, panelLog) {
+            var section = document.getElementById('diagnoseGradleSection');
+            section.style.display = '';
+            diagnoseStagedHint = 'Operator clicked Diagnose on the "' + panelLabel +
+                '" panel. Focus your analysis on that probe\'s failure mode.';
+            diagnoseStagedLog  = (panelLog || '').toString().slice(0, 8000);
+            // Surface what we're about to diagnose so the operator
+            // sees the context before the LLM round-trip starts.
+            var status = document.getElementById('diagnoseGradleStatus');
+            status.textContent = 'Ready: ' + panelLabel + ' (click "Run diagnose")';
+            status.style.color = '';
+            section.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+
         // ---- AI diagnose gradle failure (PR-M) ------------------------
         var diagnoseGradleModelsLoaded = false;
         function ensureDiagnoseGradleModels() {
@@ -450,9 +514,13 @@
             var form = new URLSearchParams();
             form.append('modelId', modelId);
             form.append('depFailures', extractDepFailureSummary());
-            // Best-effort log tail pickup -- if the operator has the
-            // banking-app log open elsewhere, no-op here. Could fetch
-            // /demo/app/log but keep this lightweight.
+            // If the operator opened the diagnose section via a
+            // panel-specific 🩺 button (Verify Mirror reachability /
+            // artifact resolution / via-gradle / Verify gradle
+            // connectivity), send that panel's log as logTail and a
+            // pointer hint so the LLM focuses on the right probe.
+            if (diagnoseStagedLog)  form.append('logTail',      diagnoseStagedLog);
+            if (diagnoseStagedHint) form.append('freeFormHint', diagnoseStagedHint);
             fetch('/mirror/diagnose', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -874,6 +942,48 @@
             pre.textContent = data.log || '(no output yet)';
             if (atBottom) pre.scrollTop = pre.scrollHeight;
         }
+
+        // Auto-populate every "diagnose model" / "recommend model"
+        // picker on the page when it loads. Without this, the picker
+        // is left at the static "copilot-default (loading…)" placeholder
+        // until the user happens to click the action button -- which
+        // looks like the bridge is hung. This is a one-shot fetch
+        // shared across all pickers; if no models come back the picker
+        // shows the (no models — bridge offline?) hint instead of the
+        // misleading loading state.
+        document.addEventListener('DOMContentLoaded', function () {
+            var pickers = document.querySelectorAll('select.diag-model-select');
+            if (pickers.length === 0) return;
+            fetch('/api/diagnose-models')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var models = data.models || [];
+                    pickers.forEach(function (sel) {
+                        sel.innerHTML = '';
+                        if (models.length === 0) {
+                            sel.innerHTML = '<option value="copilot-default">(no models — bridge offline?)</option>';
+                            return;
+                        }
+                        models.forEach(function (m) {
+                            var opt = document.createElement('option');
+                            opt.value = m.id;
+                            opt.textContent = m.displayName + ' (' + m.modelIdentifier + ')';
+                            sel.appendChild(opt);
+                        });
+                    });
+                    // Mark the lazy ensure*Models() helpers as already
+                    // loaded so a click doesn't refire the same fetch.
+                    diagnoseGradleModelsLoaded = true;
+                    recommendModelsLoaded = true;
+                })
+                .catch(function () {
+                    pickers.forEach(function (sel) {
+                        sel.innerHTML = '<option value="copilot-default">copilot-default</option>';
+                    });
+                    diagnoseGradleModelsLoaded = true;
+                    recommendModelsLoaded = true;
+                });
+        });
     </script>
 </main>
 </body>
