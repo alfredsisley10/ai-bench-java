@@ -31,14 +31,127 @@
                           th:text="'auth as ' + ${settings.mirrorAuthUser}"></span>
                 </td>
             </tr>
+            <tr><th>Maven external virtual</th>
+                <td>
+                    <code th:if="${settings.hasMavenExternalVirtual}"
+                          th:text="${settings.mavenExternalVirtualUrl}"></code>
+                    <span th:unless="${settings.hasMavenExternalVirtual}" class="help-text">
+                        (none — Maven Central goes through the primary mirror or direct)
+                    </span>
+                </td>
+            </tr>
             <tr><th>Bypass for Gradle subprocesses</th>
                 <td>
                     <strong th:if="${settings.bypassMirror}" style="color:#7c2d12">YES</strong>
                     <span th:unless="${settings.bypassMirror}" class="help-text">no — mirror used</span>
                 </td>
             </tr>
+            <!-- Resolution mode badge: surfaces which of the four
+                 valid combinations of (hasMirror, bypassMirror,
+                 centralViaMirrorOnly) is active so the operator can
+                 see the routing at a glance instead of mentally
+                 combining the toggles. The 🪄 Recommend button
+                 below this section can flip toggles based on what
+                 the network actually allows. -->
+            <tr><th>Resolution mode</th>
+                <td>
+                    <span class="badge" style="background:#dbeafe; color:#1e3a8a;
+                          padding:0.2em 0.6em; border-radius:4px"
+                          th:text="${settings.resolutionMode}"></span>
+                </td>
+            </tr>
             </tbody>
         </table>
+        <!-- Recommend Configuration: probes mirror, direct Maven
+             Central, and mirror-served Maven Central, then proposes
+             the right toggles for the detected pattern. The classic
+             enterprise case is "mirror works + direct Central 403",
+             where the recommendation is to enable Central-via-mirror-
+             only so the verify panel + banking-app build skip the
+             blocked upstream. -->
+        <div style="margin-top:0.6em">
+            <button type="button" class="btn-sm" onclick="recommendConfig(this)">
+                🪄 Recommend configuration
+            </button>
+            <span class="help-text" style="margin-left:0.5em">
+                Detects which Maven-Central resolution mode your network actually allows.
+            </span>
+            <div id="recommendConfigOutput" style="display:none; margin-top:0.5em;
+                  padding:0.6em 0.8em; border-radius:4px; font-size:0.9em;
+                  border:1px solid transparent"></div>
+        </div>
+        <script>
+            function recommendConfig(btn) {
+                var out = document.getElementById('recommendConfigOutput');
+                out.style.display = '';
+                out.style.background = '#f4f6fa';
+                out.style.borderColor = '#cbd5e1';
+                out.style.color = '#1f2937';
+                out.textContent = 'Probing mirror + direct Maven Central… (~5-10s)';
+                btn.disabled = true;
+                fetch('/mirror/recommend-config', {method:'POST'})
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        var lines = [];
+                        lines.push('Current mode: ' + (data.currentMode || '(unknown)'));
+                        lines.push('• Mirror reachable: ' + (data.mirrorOk ? '✓' : '✗'));
+                        lines.push('• Direct Maven Central status: HTTP ' +
+                            (data.centralDirectStatus > 0 ? data.centralDirectStatus :
+                             '(connection failed)') +
+                            (data.centralBlockedDirect ? ' — corp proxy blocking' : ''));
+                        lines.push('• Mirror serves Central content: ' +
+                            (data.centralViaMirrorOk ? '✓' : '✗'));
+                        lines.push('');
+                        lines.push(data.recommendation || '');
+                        out.textContent = lines.join('\n');
+                        out.style.whiteSpace = 'pre-wrap';
+                        out.style.background = data.applyToggle ? '#fef3c7' : '#ecfdf5';
+                        out.style.borderColor = data.applyToggle ? '#fcd34d' : '#86efac';
+                        out.style.color = data.applyToggle ? '#78350f' : '#065f46';
+                        if (data.applyToggle) {
+                            var apply = document.createElement('button');
+                            apply.type = 'button';
+                            apply.className = 'btn-sm';
+                            apply.style.cssText = 'margin-top:0.5em; background:#fcd34d; ' +
+                                'border-color:#f59e0b; color:#78350f';
+                            apply.textContent = '✓ Apply: enable "' + data.applyToggle + '"';
+                            apply.onclick = function () {
+                                apply.disabled = true;
+                                apply.textContent = 'Applying…';
+                                var f = new URLSearchParams();
+                                f.append('toggle', data.applyToggle);
+                                fetch('/mirror/apply-recommendation', {
+                                    method:'POST',
+                                    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+                                    body: f
+                                })
+                                    .then(function (r) { return r.json(); })
+                                    .then(function (resp) {
+                                        if (resp.ok) {
+                                            apply.textContent = '✓ ' + (resp.message || 'Applied');
+                                            setTimeout(function () { window.location.reload(); }, 1200);
+                                        } else {
+                                            apply.textContent = '✗ ' + (resp.reason || 'failed');
+                                        }
+                                    })
+                                    .catch(function (e) {
+                                        apply.textContent = '✗ ' + ((e && e.message) || e);
+                                    });
+                            };
+                            out.appendChild(document.createElement('br'));
+                            out.appendChild(apply);
+                        }
+                        btn.disabled = false;
+                    })
+                    .catch(function (e) {
+                        out.textContent = '✗ ' + ((e && e.message) || e);
+                        out.style.background = '#fee2e2';
+                        out.style.borderColor = '#fca5a5';
+                        out.style.color = '#b91c1c';
+                        btn.disabled = false;
+                    });
+            }
+        </script>
     </section>
 
     <section>
@@ -86,6 +199,26 @@
                        th:placeholder="${settings.mirrorAuthPassword != '' ? '(unchanged — leave blank to keep)' : ''}"
                        autocomplete="new-password" style="width:280px">
             </label>
+            <!-- Optional second virtual on the same corp Artifactory:
+                 the maven-external-virtual / maven-central-virtual
+                 that proxies external Maven Central content. Distinct
+                 from the primary mirror URL above (which usually
+                 carries internal libs + plugins). When set, banking-
+                 app's build adds it as a separate repo source; the
+                 verify panel probes it as the canonical Central path
+                 when "Maven Central via mirror only" is on. Same
+                 corp Artifactory creds apply to both URLs. -->
+            <label>Maven external virtual URL (optional):
+                <input name="mavenExternalVirtualUrl" type="url"
+                       th:value="${settings.mavenExternalVirtualUrl}"
+                       placeholder="https://artifactory.corp.example.com/artifactory/maven-external-virtual"
+                       style="width:480px">
+                <span class="help-text" style="display:block; font-size:0.8em">
+                    The corp Artifactory virtual that proxies <strong>external</strong>
+                    Maven Central content. Sits alongside the mirror
+                    URL above; uses the same auth.
+                </span>
+            </label>
             <!-- artifactory_repoKey is the trailing repo segment (not
                  the full URL) that enterprise gradle scripts often
                  read via providers.gradleProperty("artifactory_repoKey")
@@ -118,6 +251,33 @@
                         invocations. banking-app's build will instead hit
                         <code>plugins.gradle.org</code> + <code>repo.maven.apache.org</code>
                         directly through the configured HTTP proxy.
+                    </span>
+                </label>
+            </div>
+
+            <!-- "Maven Central via mirror only" — flips the verify
+                 panel to probe the mirror's Central path instead of
+                 repo.maven.apache.org direct, AND tells banking-app's
+                 build.gradle.kts to drop its mavenCentral() last-
+                 ditch fallback (via -DcentralViaMirror=true). Use
+                 when corp policy returns 403 from the proxy on
+                 direct Maven Central egress. The 🪄 Recommend button
+                 in the Active Mirror section above will detect this
+                 pattern and propose enabling this toggle. -->
+            <div style="margin-top:0.5em; padding:0.5em 0.75em; background:#eff6ff;
+                        border:1px solid #93c5fd; border-radius:4px">
+                <label style="display:flex; align-items:flex-start; gap:0.5em; margin:0">
+                    <input type="checkbox" name="centralViaMirrorOnly" value="true"
+                           th:checked="${settings.centralViaMirrorOnly}"
+                           style="margin-top:0.25em">
+                    <span>
+                        <strong>Maven Central reaches via the mirror only</strong>
+                        — corp policy blocks direct egress to
+                        <code>repo.maven.apache.org</code>; route Central
+                        content through the mirror (or the
+                        maven-external-virtual when configured) instead.
+                        Verify panel skips the direct-Central probe;
+                        banking-app drops its <code>mavenCentral()</code> fallback.
                     </span>
                 </label>
             </div>
@@ -203,11 +363,17 @@
         <h3>Verify gradle ecosystem connectivity</h3>
         <p class="help-text" style="margin-top:0">
             Probes <code>services.gradle.org</code> (wrapper bootstrap),
-            <code>repo.maven.apache.org</code> (Maven Central),
+            Maven Central (direct OR via the mirror /
+            maven-external-virtual depending on your resolution mode),
             <code>api.foojay.io</code> (JDK toolchain auto-provisioning),
             and your configured Artifactory mirror — all through whatever
             proxy + auth you've saved on <a href="/proxy">/proxy</a>.
             Green sweep = the next gradle build will resolve cleanly.
+            <br>
+            <em>Direct <code>repo.maven.apache.org</code> is intentionally
+            skipped when "Maven Central via mirror only" is enabled —
+            that's expected on networks where corp policy blocks direct
+            upstream egress (typically a 403 from the corp proxy).</em>
         </p>
         <button type="button" class="btn-sm" onclick="verifyGradleConnectivity(this)">
             Verify connectivity

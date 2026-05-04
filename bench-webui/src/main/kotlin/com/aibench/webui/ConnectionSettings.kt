@@ -81,12 +81,45 @@ class ConnectionSettings {
         // Distinct from mirrorUrl: mirrorUrl is the FULL URL of the
         // virtual; repoKey is the trailing path segment scripts often
         // construct URLs from. The /mirror form lets the operator set it.
-        val artifactoryRepoKey: String = ""
+        val artifactoryRepoKey: String = "",
+        // Corp policy: Maven Central content reaches the build only
+        // via the Artifactory mirror; direct egress to
+        // repo.maven.apache.org is blocked at the corp proxy
+        // (typically 403 from the proxy itself, not the upstream).
+        // When this is on:
+        //   - The verify-gradle-connectivity panel skips the direct
+        //     maven.apache.org probe and probes a known Central
+        //     artifact AT THE MIRROR URL instead, so the panel's
+        //     verdict reflects what gradle actually does.
+        //   - banking-app/build.gradle.kts drops its mavenCentral()
+        //     last-ditch fallback (driven by -DcentralViaMirror=true
+        //     from gradleSystemProps()), so gradle never tries the
+        //     blocked upstream.
+        // Requires hasMirror to be meaningful; if no mirror is
+        // configured the toggle has no effect.
+        val centralViaMirrorOnly: Boolean = false,
+        // Optional second virtual repository URL for the corp
+        // Artifactory's external/Maven-Central proxy. Most enterprise
+        // Artifactory deployments split repos into:
+        //   - <corp>/artifactory/maven-virtual -- internal libs +
+        //     plugins, tracked here as `mirrorUrl`
+        //   - <corp>/artifactory/maven-external-virtual -- proxied
+        //     external content (Maven Central, plugin portal mirrors,
+        //     etc.), tracked here as this field.
+        // Same corp Artifactory instance, so the existing mirror
+        // auth (mirrorAuthUser/Password) applies to both. When set,
+        // banking-app's build.gradle.kts uses this URL as the
+        // Maven-Central source (via -DmavenExternalVirtual=...) and
+        // the verify panel probes it as the canonical Central path.
+        // Empty = single-mirror setup (the current legacy behaviour).
+        val mavenExternalVirtualUrl: String = ""
     ) {
         /** Convenience flag — true when proxy auth is fully configured. */
         val hasProxyAuth: Boolean get() = proxyAuthUser.isNotBlank() && proxyAuthPassword.isNotBlank()
         /** Convenience flag — true when a mirror URL is set. */
         val hasMirror: Boolean get() = mirrorUrl.isNotBlank()
+        /** Convenience flag — true when a separate maven-external-virtual is configured. */
+        val hasMavenExternalVirtual: Boolean get() = mavenExternalVirtualUrl.isNotBlank()
         /** Convenience flag — true when mirror auth is configured. */
         val hasMirrorAuth: Boolean get() = mirrorAuthUser.isNotBlank() && mirrorAuthPassword.isNotBlank()
         /**
@@ -97,6 +130,21 @@ class ConnectionSettings {
          * URL regardless of this flag.
          */
         val mirrorActiveForGradle: Boolean get() = hasMirror && !bypassMirror
+
+        /**
+         * Human-readable summary of how Maven Central + plugin/dep
+         * resolution is currently configured to flow. Surfaced as a
+         * badge on the /mirror Active settings table so the operator
+         * can see at a glance which of the four valid combinations is
+         * active without mentally combining bypassMirror +
+         * centralViaMirrorOnly + hasMirror.
+         */
+        val resolutionMode: String get() = when {
+            !hasMirror                                  -> "Maven Central direct (no mirror configured)"
+            bypassMirror                                -> "Mirror bypassed — Maven Central direct via proxy"
+            centralViaMirrorOnly                        -> "Mirror only (Maven Central proxied via mirror)"
+            else                                         -> "Mirror + Maven Central direct fallback"
+        }
     }
 
     /**
@@ -272,7 +320,47 @@ class ConnectionSettings {
 
         probe("https://www.google.com/generate_204", "Direct internet sanity check")
         probe("https://services.gradle.org/versions/current", "Gradle distribution server (gradlew bootstrap)")
-        probe("https://repo.maven.apache.org/maven2/", "Maven Central (default dependency repo)")
+        // Maven Central probe routing depends on operator's
+        // resolution mode. When centralViaMirrorOnly is set, corp
+        // policy blocks direct egress to repo.maven.apache.org and
+        // expects Central content to flow through the Artifactory
+        // mirror -- so the panel probes a known Central artifact AT
+        // THE MIRROR URL instead of the upstream. That mirrors what
+        // gradle actually does once the corp init script rewrites
+        // mavenCentral() → mirrorUrl, and stops the panel from
+        // surfacing the inevitable proxy-403 as a failure.
+        if (s.centralViaMirrorOnly && s.hasMirror) {
+            // Spring Core 6.1.13 is on banking-app's classpath via
+            // spring-boot-starter; if the corp Artifactory virtual
+            // claims to proxy Maven Central, this artifact must
+            // exist there or banking-app builds would already be
+            // broken. Prefer the dedicated maven-external-virtual
+            // URL (Artifactory's external-proxy convention) when set
+            // -- that's the URL the corp policy actually expects
+            // Central traffic to hit.
+            val centralBase = (if (s.hasMavenExternalVirtual)
+                s.mavenExternalVirtualUrl else s.mirrorUrl).trimEnd('/')
+            val centralProbeUrl = "$centralBase/org/springframework/" +
+                "spring-core/6.1.13/spring-core-6.1.13.pom"
+            val purposeLabel = if (s.hasMavenExternalVirtual)
+                "Maven Central via maven-external-virtual (corp policy blocks direct egress)"
+            else
+                "Maven Central via mirror (corp policy blocks direct egress)"
+            probe(centralProbeUrl, purposeLabel, useMirrorAuth = true)
+        } else {
+            probe("https://repo.maven.apache.org/maven2/",
+                "Maven Central (default dependency repo)")
+            // Even when not in centralViaMirrorOnly mode, surface a
+            // standalone health row for the maven-external-virtual
+            // when it's configured -- otherwise a typo in the URL
+            // would silently break Maven Central resolution as soon
+            // as the operator flips the toggle on.
+            if (s.hasMavenExternalVirtual) {
+                probe(s.mavenExternalVirtualUrl.trimEnd('/') + "/",
+                    "maven-external-virtual root reachability",
+                    useMirrorAuth = true)
+            }
+        }
         probe("https://api.foojay.io/disco/v3.0/distributions", "Foojay (JDK toolchain auto-provisioning)")
         if (s.hasMirror) {
             probe(s.mirrorUrl, "Configured Artifactory mirror", useMirrorAuth = true)
@@ -1252,6 +1340,24 @@ class ConnectionSettings {
             if (current.hasMirrorAuth) {
                 args += "-DmirrorUsername=${current.mirrorAuthUser}"
                 args += "-DmirrorPassword=${current.mirrorAuthPassword}"
+            }
+            // When the operator has flagged that direct egress to
+            // repo.maven.apache.org is blocked at the corp proxy
+            // (so Maven Central content reaches the build only via
+            // the Artifactory mirror), banking-app/build.gradle.kts
+            // reads this sysprop and drops its mavenCentral()
+            // last-ditch fallback. Without this, gradle would still
+            // try the upstream and fail with 403 from the proxy.
+            if (current.centralViaMirrorOnly) {
+                args += "-DcentralViaMirror=true"
+            }
+            // Pipe the external/maven-virtual URL through too. When
+            // set, banking-app/build.gradle.kts adds it as a separate
+            // Maven repo source (the corp Artifactory's Central
+            // proxy lives at this URL, distinct from the internal
+            // virtual at -Denterprise.sim.mirror).
+            if (current.hasMavenExternalVirtual) {
+                args += "-DmavenExternalVirtual=${current.mavenExternalVirtualUrl}"
             }
         }
         if (current.insecureSsl) {
