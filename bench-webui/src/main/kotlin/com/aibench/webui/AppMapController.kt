@@ -176,14 +176,16 @@ class AppMapController(
         // every module.
         @RequestParam(required = false) modules: List<String>?,
         @RequestParam(required = false) module: String?,
-        @RequestParam(required = false) testFilter: String?
+        @RequestParam(required = false) testFilter: String?,
+        @RequestParam(required = false) verbosity: String?
     ): String {
         val combined = buildList<String> {
             modules?.let { addAll(it) }
             module?.let { add(it) }
         }.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val v = AppMapService.GradleVerbosity.parse(verbosity)
         runCatching {
-            val recording = appmaps.startRecordingFromTests(combined.takeIf { it.isNotEmpty() }, testFilter)
+            val recording = appmaps.startRecordingFromTests(combined.takeIf { it.isNotEmpty() }, testFilter, v)
             // Redirect straight to the live status panel so the user sees
             // progress immediately rather than a flash message.
             return "redirect:/demo/appmap?activeId=${recording.id}"

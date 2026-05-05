@@ -469,11 +469,48 @@ class AppMapService(
         }.getOrDefault(emptyList())
     }
 
+    /**
+     * Gradle output verbosity for AppMap recording / trace
+     * generation invocations. Controls which CLI flag (if any)
+     * is appended to the gradle command line:
+     *   QUIET     -> -q
+     *   LIFECYCLE -> (none; default gradle output)
+     *   INFO      -> --info  (per-task lifecycle + cause-of-failure summaries)
+     *   DEBUG     -> --debug (everything; ~10x log volume, useful for
+     *                resolving "Could not resolve all files for…" cases)
+     * Picked by the operator from the form on /demo/appmap and
+     * /admin/appmap-traces; defaults to LIFECYCLE for interactive
+     * recordings (small log) and QUIET for bulk trace generation
+     * (was -q before this option existed).
+     */
+    enum class GradleVerbosity(val gradleFlag: String?) {
+        QUIET("-q"),
+        LIFECYCLE(null),
+        INFO("--info"),
+        DEBUG("--debug");
+
+        companion object {
+            /** Lenient form-string parse; falls back to LIFECYCLE so a
+             *  malformed value never crashes the controller. */
+            fun parse(s: String?): GradleVerbosity = when (s?.lowercase()?.trim()) {
+                "quiet", "q"        -> QUIET
+                "info", "--info"    -> INFO
+                "debug", "--debug"  -> DEBUG
+                else                -> LIFECYCLE
+            }
+        }
+    }
+
     /** Backwards-compatible single-module entry — see the [List] overload. */
     fun startRecordingFromTests(module: String?, testFilter: String?): Recording =
-        startRecordingFromTests(module?.takeIf { it.isNotBlank() }?.let { listOf(it) }, testFilter)
+        startRecordingFromTests(module?.takeIf { it.isNotBlank() }?.let { listOf(it) },
+            testFilter, GradleVerbosity.LIFECYCLE)
 
-    fun startRecordingFromTests(modules: List<String>?, testFilter: String?): Recording {
+    fun startRecordingFromTests(
+        modules: List<String>?,
+        testFilter: String?,
+        verbosity: GradleVerbosity = GradleVerbosity.LIFECYCLE
+    ): Recording {
         val dir = bankingApp.bankingAppDir
         val cmd = mutableListOf<String>().apply { addAll(Platform.gradleWrapper(dir)) }
         // banking-app/build.gradle.kts attaches the AppMap Java agent
@@ -506,6 +543,11 @@ class AppMapService(
         cmd.add("--rerun-tasks")
         cmd.add("--no-configuration-cache")
         cmd.add("--console=plain")
+        // Operator-selected verbosity (default LIFECYCLE = no extra
+        // flag). --info / --debug surface gradle's per-task cause-of-
+        // failure detail when a recording fails on dep resolution
+        // or test compilation.
+        verbosity.gradleFlag?.let { cmd.add(it) }
         // Forward WebUI proxy + TLS preferences onto the Gradle daemon
         // so dependency downloads and any test-time outbound HTTP
         // inherit the same egress configuration.

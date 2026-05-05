@@ -32,8 +32,35 @@
         </span>
     </p>
 
+    <!-- Page-level gradle verbosity. Both the bulk "Generate all"
+         button below AND each row's per-module Generate button
+         attach the chosen value as a hidden form field on submit
+         via the JS handler at the bottom of the file. Default
+         QUIET preserves the prior behaviour (was hard-coded -q
+         in AppMapTraceManager). --info / --debug surface gradle's
+         per-task cause chain so failures like "Could not resolve
+         all files for ':shared-testing:compileClasspath'" don't
+         show as a bare exit-1 with no detail. -->
+    <div style="margin:1em 0; padding:0.5em 0.75em; background:#f4f6fa;
+                border:1px solid #cbd5e1; border-radius:4px;
+                display:flex; align-items:center; gap:0.5em; flex-wrap:wrap">
+        <label>
+            <strong>Gradle log verbosity:</strong>
+            <select id="appmapTraceVerbosity" style="margin-left:0.4em">
+                <option value="quiet" selected>Quiet -q (default)</option>
+                <option value="lifecycle">Lifecycle</option>
+                <option value="info">Info --info</option>
+                <option value="debug">Debug --debug</option>
+            </select>
+        </label>
+        <span class="help-text" style="font-size:0.85em">
+            Applied to the next Generate / Regenerate / Generate-all click.
+            Bump to <code>--info</code> when a build fails without a clear cause.
+        </span>
+    </div>
+
     <form th:action="@{/admin/appmap-traces/generate-all}" method="post"
-          style="margin:1em 0">
+          class="appmap-trace-gen-form" style="margin:1em 0">
         <button type="submit">Generate traces for all uncovered modules</button>
     </form>
 
@@ -71,7 +98,7 @@
                 th:text="${r.lastDurationMs != null ? r.lastDurationMs / 1000 + 's' : '—'}"></td>
             <td>
                 <form th:action="@{/admin/appmap-traces/generate}" method="post"
-                      style="display:inline">
+                      class="appmap-trace-gen-form" style="display:inline">
                     <input type="hidden" name="module" th:value="${r.module}"/>
                     <button type="submit" th:disabled="${r.running}"
                             th:text="${r.traceCount > 0 ? 'Regenerate' : 'Generate'}">Generate</button>
@@ -195,6 +222,26 @@
                     btn.disabled = false;
                 });
         }
+
+        // Inject the page-level verbosity selector value into every
+        // appmap-trace-gen-form on submit. The bulk Generate-all and
+        // per-module Generate buttons all carry the same hidden
+        // "verbosity" field this way -- one selector, many forms.
+        document.addEventListener('submit', function (ev) {
+            var form = ev.target;
+            if (!form || !form.classList || !form.classList.contains('appmap-trace-gen-form')) return;
+            var sel = document.getElementById('appmapTraceVerbosity');
+            if (!sel) return;
+            // Replace any previous hidden field so re-submits with a
+            // changed selector value don't carry stale entries.
+            var existing = form.querySelector('input[name="verbosity"]');
+            if (existing) existing.parentNode.removeChild(existing);
+            var hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'verbosity';
+            hidden.value = sel.value;
+            form.appendChild(hidden);
+        });
     </script>
 
     <p style="margin-top:2em; font-size:0.85em; color:#555">
