@@ -853,20 +853,25 @@
          only ONE configuration ever cracked. Surfaces complementary
          info to the per-config leaderboard above (which collapses
          the bug dimension entirely). Hidden when no passing runs. -->
+    <!-- Per-bug leaders split into two views: one ranked by
+         execution time, one by cost. Operators don't have a
+         standard $ <-> seconds conversion, so the harness
+         deliberately doesn't pick a winner across both metrics --
+         each table answers "best per metric" independently. -->
     <section th:unless="${#lists.isEmpty(perBugLeaders)}">
-        <h2>Per-bug leaders
+        <h2>Per-bug leaders &mdash; by execution time
             <span class="help-text" style="font-weight:normal; font-size:0.85em">
                 — fastest passing configuration per bug
                 <span th:if="${uniquelySolvedCount > 0}"
                       style="color:#7c2d12; font-weight:bold"
                       th:text="'· ' + ${uniquelySolvedCount} + ' uniquely solved'"></span>
             </span>
-            <button type="button" id="perbug-csv-btn" class="btn-sm" style="float:right">Export CSV</button>
+            <button type="button" id="perbug-time-csv-btn" class="btn-sm" style="float:right">Export CSV</button>
         </h2>
         <div class="table-scroll">
-        <table id="perBugLeadersTable" class="sortable-table"
-               data-csv-target="#perbug-csv-btn"
-               data-csv-filename="per-bug-leaders.csv"
+        <table id="perBugLeadersTimeTable" class="sortable-table"
+               data-csv-target="#perbug-time-csv-btn"
+               data-csv-filename="per-bug-leaders-time.csv"
                style="font-size:0.9em">
             <thead>
                 <tr class="sort-row">
@@ -875,13 +880,9 @@
                         data-sort-order="TRIVIAL,EASY,MEDIUM,HARD,(unknown)">Difficulty <span class="sort-indicator"></span></th>
                     <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
                     <th data-sort-key="solvers" data-sort-numeric="true" class="num">Solvers <span class="sort-indicator"></span></th>
-                    <th data-sort-key="winner">Winner (model · ctx · appmap) <span class="sort-indicator"></span></th>
+                    <th data-sort-key="winner">Fastest solver (model · ctx · appmap) <span class="sort-indicator"></span></th>
                     <th data-sort-key="time" data-sort-numeric="true" class="num">Time <span class="sort-indicator"></span></th>
-                    <th data-sort-key="cost" data-sort-numeric="true" class="num">Cost <span class="sort-indicator"></span></th>
-                    <!-- Sparkline columns are unsortable on purpose --
-                         no meaningful ordering (visual chart). -->
                     <th title="Bar per passing solver. Shorter = faster. Winner = green.">Time chart</th>
-                    <th title="Bar per passing solver. Shorter = cheaper. Winner = green.">Cost chart</th>
                 </tr>
             </thead>
             <tbody>
@@ -890,9 +891,8 @@
                              data-difficulty=${b.difficulty},
                              data-category=${b.category},
                              data-solvers=${b.solvers},
-                             data-winner=${b.winnerModel},
-                             data-time=${b.winnerDurationMs != null ? b.winnerDurationMs : 999999999},
-                             data-cost=${b.winnerCostUsd != null ? b.winnerCostUsd : 999999}"
+                             data-winner=${b.timeWinnerModel},
+                             data-time=${b.timeWinnerDurationMs != null ? b.timeWinnerDurationMs : 999999999}"
                     th:style="${b.uniquelySolved
                                 ? 'background:#fef3c7; border-left:3px solid #d97706'
                                 : (b.solvers == 0 ? 'opacity:0.55' : '')}">
@@ -914,23 +914,89 @@
                         th:text="${b.solvers} + ' / ' + ${b.attempts}"
                         th:title="${b.solvers} + ' distinct configurations passed of ' + ${b.attempts} + ' total attempts'"></td>
                     <td>
-                        <span th:if="${b.winnerModel == null}" style="color:#888">— no solver —</span>
-                        <span th:unless="${b.winnerModel == null}">
-                            <code th:text="${b.winnerModel}">…</code>
+                        <span th:if="${b.timeWinnerModel == null}" style="color:#888">— no solver —</span>
+                        <span th:unless="${b.timeWinnerModel == null}">
+                            <code th:text="${b.timeWinnerModel}">…</code>
                             <span class="help-text"
-                                  th:text="' · ' + ${b.winnerCtx} + ' · ' + ${b.winnerAppmap}"></span>
+                                  th:text="' · ' + ${b.timeWinnerCtx} + ' · ' + ${b.timeWinnerAppmap}"></span>
                         </span>
                     </td>
                     <td class="num"
-                        th:text="${b.winnerDurationMs == null ? '—' :
-                                   (b.winnerDurationMs / 1000 + 's')}">—</td>
-                    <td class="num"
-                        th:text="${b.winnerCostUsd == null ? '—' :
-                                   ('$' + #numbers.formatDecimal(b.winnerCostUsd, 1, 'COMMA', 4, 'POINT'))}">—</td>
+                        th:text="${b.timeWinnerDurationMs == null ? '—' :
+                                   (b.timeWinnerDurationMs / 1000 + 's')}">—</td>
                     <!-- Inline SVG sparkline injected via th:utext.
                          The renderer escapes every dynamic value
                          before stitching, so XSS surface is zero. -->
                     <td th:utext="${b.timeSparklineSvg}"></td>
+                </tr>
+            </tbody>
+        </table>
+        </div>
+    </section>
+
+    <section th:unless="${#lists.isEmpty(perBugLeaders)}">
+        <h2>Per-bug leaders &mdash; by cost
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — cheapest passing configuration per bug
+            </span>
+            <button type="button" id="perbug-cost-csv-btn" class="btn-sm" style="float:right">Export CSV</button>
+        </h2>
+        <div class="table-scroll">
+        <table id="perBugLeadersCostTable" class="sortable-table"
+               data-csv-target="#perbug-cost-csv-btn"
+               data-csv-filename="per-bug-leaders-cost.csv"
+               style="font-size:0.9em">
+            <thead>
+                <tr class="sort-row">
+                    <th data-sort-key="bug">Bug <span class="sort-indicator"></span></th>
+                    <th data-sort-key="difficulty"
+                        data-sort-order="TRIVIAL,EASY,MEDIUM,HARD,(unknown)">Difficulty <span class="sort-indicator"></span></th>
+                    <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solvers" data-sort-numeric="true" class="num">Solvers <span class="sort-indicator"></span></th>
+                    <th data-sort-key="winner">Cheapest solver (model · ctx · appmap) <span class="sort-indicator"></span></th>
+                    <th data-sort-key="cost" data-sort-numeric="true" class="num">Cost <span class="sort-indicator"></span></th>
+                    <th title="Bar per passing solver. Shorter = cheaper. Winner = green.">Cost chart</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr th:each="b : ${perBugLeaders}"
+                    th:attr="data-bug=${b.bugId},
+                             data-difficulty=${b.difficulty},
+                             data-category=${b.category},
+                             data-solvers=${b.solvers},
+                             data-winner=${b.costWinnerModel},
+                             data-cost=${b.costWinnerCostUsd != null ? b.costWinnerCostUsd : 999999}"
+                    th:style="${b.uniquelySolved
+                                ? 'background:#fef3c7; border-left:3px solid #d97706'
+                                : (b.solvers == 0 ? 'opacity:0.55' : '')}">
+                    <td>
+                        <a th:href="'/demo/' + ${b.bugId}">
+                            <code th:text="${b.bugId}">BUG-…</code>
+                        </a>
+                        <span th:if="${b.uniquelySolved}"
+                              style="margin-left:0.4em; padding:1px 5px;
+                                     background:#fbbf24; color:#7c2d12;
+                                     border-radius:3px; font-size:0.75em;
+                                     font-weight:bold"
+                              title="Only one configuration ever passed this bug">UNIQUE</span>
+                        <div style="font-size:0.85em; color:#555" th:text="${b.title}">…</div>
+                    </td>
+                    <td><span th:class="'badge ' + ${b.difficulty}" th:text="${b.difficulty}"></span></td>
+                    <td th:text="${b.category}">…</td>
+                    <td class="num"
+                        th:text="${b.solvers} + ' / ' + ${b.attempts}"
+                        th:title="${b.solvers} + ' distinct configurations passed of ' + ${b.attempts} + ' total attempts'"></td>
+                    <td>
+                        <span th:if="${b.costWinnerModel == null}" style="color:#888">— no solver —</span>
+                        <span th:unless="${b.costWinnerModel == null}">
+                            <code th:text="${b.costWinnerModel}">…</code>
+                            <span class="help-text"
+                                  th:text="' · ' + ${b.costWinnerCtx} + ' · ' + ${b.costWinnerAppmap}"></span>
+                        </span>
+                    </td>
+                    <td class="num"
+                        th:text="${b.costWinnerCostUsd == null ? '—' :
+                                   ('$' + #numbers.formatDecimal(b.costWinnerCostUsd, 1, 'COMMA', 4, 'POINT'))}">—</td>
                     <td th:utext="${b.costSparklineSvg}"></td>
                 </tr>
             </tbody>
