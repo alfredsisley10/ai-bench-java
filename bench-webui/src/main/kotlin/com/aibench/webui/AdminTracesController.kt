@@ -202,32 +202,41 @@ class AdminTracesController(
     }
 
     @PostMapping("/admin/appmap-traces/generate")
-    fun generateOne(@RequestParam module: String): String {
+    fun generateOne(
+        @RequestParam module: String,
+        @RequestParam(required = false) verbosity: String?
+    ): String {
         if (module !in targetModules()) {
             return "redirect:/admin/appmap-traces?err=unknown-module"
         }
-        kickJob(module)
+        kickJob(module, AppMapService.GradleVerbosity.parse(verbosity))
         return "redirect:/admin/appmap-traces?queued=$module"
     }
 
     @PostMapping("/admin/appmap-traces/generate-all")
-    fun generateAll(): String {
+    fun generateAll(
+        @RequestParam(required = false) verbosity: String?
+    ): String {
+        val v = AppMapService.GradleVerbosity.parse(verbosity)
         for (m in targetModules()) {
             // Skip modules that already have traces -- operator can
             // refresh via the per-module Generate button to force.
             val current = appmapTraces.realTraceCoverage(listOf(m))[m].orEmpty().size
             if (current > 0) continue
-            kickJob(m)
+            kickJob(m, v)
         }
         return "redirect:/admin/appmap-traces?queued=all"
     }
 
-    private fun kickJob(module: String) {
+    private fun kickJob(
+        module: String,
+        verbosity: AppMapService.GradleVerbosity = AppMapService.GradleVerbosity.QUIET
+    ) {
         val job = Job(module, Instant.now())
         activeJobs[module] = job
         executor.submit {
             try {
-                job.result = appmapTraces.generateRealTracesForModule(module) { p ->
+                job.result = appmapTraces.generateRealTracesForModule(module, verbosity) { p ->
                     job.process = p
                 }
                 if (job.result?.ok != true) {

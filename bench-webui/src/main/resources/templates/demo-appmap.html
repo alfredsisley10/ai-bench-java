@@ -400,6 +400,31 @@
                 </details>
             </div>
 
+            <!-- Gradle output verbosity. Default LIFECYCLE keeps the
+                 live log readable; --info / --debug surface the
+                 cause-of-failure detail when a recording fails on
+                 dep resolution, plugin marker miss, or test compile.
+                 Persists in the recording's Live log tail panel so
+                 the operator can scrape it for the diagnose flow. -->
+            <div style="margin-top:0.6em">
+                <label style="display:block">
+                    Gradle log verbosity:
+                    <select name="verbosity" style="margin-left:0.5em">
+                        <option value="lifecycle" selected>Lifecycle (default)</option>
+                        <option value="quiet">Quiet (-q)</option>
+                        <option value="info">Info (--info)</option>
+                        <option value="debug">Debug (--debug)</option>
+                    </select>
+                </label>
+                <p class="help-text" style="margin:0.2em 0 0 0; font-size:0.8em">
+                    Bump to <code>--info</code> or <code>--debug</code> when a
+                    recording fails to surface gradle's per-task cause chain
+                    (dep resolution errors, plugin-marker misses, test compile
+                    output). <code>--debug</code> is ~10x log volume; use
+                    sparingly.
+                </p>
+            </div>
+
             <button type="submit" class="btn-primary" style="margin-top:0.6em">Record AppMaps from tests</button>
         </form>
         <script>

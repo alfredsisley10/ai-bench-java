@@ -441,6 +441,7 @@ class AppMapTraceManager(
      *  module run takes 30s-5min depending on suite size. */
     fun generateRealTracesForModule(
         module: String,
+        verbosity: AppMapService.GradleVerbosity = AppMapService.GradleVerbosity.QUIET,
         onProcessStarted: (Process) -> Unit = {}
     ): GenerationResult {
         val repo = bankingApp.bankingAppDir
@@ -466,7 +467,13 @@ class AppMapTraceManager(
             add("--no-configuration-cache")
             add("--no-build-cache")
             add("--no-daemon")
-            add("-q")
+            // Operator-selected verbosity, default QUIET (was hard-
+            // coded as `-q` before). Operators picking --info / --debug
+            // get the gradle "Could not resolve all files for…" cause
+            // chain in the recording log instead of just "build failed
+            // with exit 1, no detail" — useful when corp-mirror dep
+            // resolution silently breaks.
+            verbosity.gradleFlag?.let { add(it) }
             addAll(connectionSettings.gradleSystemProps())
         }
         val pb = ProcessBuilder(cmd)
