@@ -136,14 +136,20 @@ class DashboardController(
     /** One cell in the bug-solving heat-map. Rendered in
      *  template as a colored square; status drives the color.
      *  durationMs + costUsd are surfaced as overlay text so the
-     *  matrix doubles as a cost/time heat chart -- operators can
-     *  compare not just "did it solve?" but "how fast / cheap". */
+     *  matrix doubles as a cost/time heat chart. `bgStyle` is the
+     *  pre-computed CSS background+text style: PASSED cells are
+     *  split half-and-half left=time-shade right=cost-shade where
+     *  darkest green = best on that metric for this bug; FAILED
+     *  cells are a very light red so they don't distract from
+     *  PASSED-cell intensity. Computed server-side because the
+     *  per-bug min/max it depends on is also computed there. */
     data class HeatCell(
         val bugId: String,
         val configKey: String,    // "model|ctx|appmap"
         val status: String,        // PASSED / FAILED / ERRORED / CANCELED / "—" (no attempt)
         val durationMs: Long,
-        val costUsd: Double
+        val costUsd: Double,
+        val bgStyle: String
     )
 
     /** Configuration column header for the heat-map. */
@@ -596,9 +602,16 @@ class DashboardController(
         // status. With seeds=1 there's typically 1 run per (bug,config);
         // when more, we pick the run with the strongest result
         // (PASSED > FAILED > ERRORED > nothing) so the matrix
-        // emphasizes "did ANY attempt succeed?".
-        val heatCells: Map<String, HeatCell> = run {
-            val out = mutableMapOf<String, HeatCell>()
+        // emphasizes "did ANY attempt succeed?". Cell colors are
+        // computed in a second pass once we know the per-bug min/max
+        // for time + cost across all PASSED cells -- the gradient on
+        // each PASSED cell is RELATIVE to that bug's spread, not a
+        // global scale, so a bug with one tight cluster of solvers
+        // is still readable next to a bug with a wide spread.
+        data class CellRaw(val bugId: String, val configKey: String,
+                           val status: String, val durationMs: Long, val costUsd: Double)
+        val rawCells: Map<String, CellRaw> = run {
+            val out = mutableMapOf<String, CellRaw>()
             for (run in nonOracleRuns) {
                 val key = "${run.issueId}|${run.modelId}|${run.contextProvider}|${run.appmapMode}"
                 val existing = out[key]
@@ -609,7 +622,7 @@ class DashboardController(
                 val newRank = rank[run.status.name] ?: 0
                 val existingRank = existing?.let { rank[it.status] ?: 0 } ?: -1
                 if (newRank > existingRank) {
-                    out[key] = HeatCell(
+                    out[key] = CellRaw(
                         bugId = run.issueId,
                         configKey = "${run.modelId}|${run.contextProvider}|${run.appmapMode}",
                         status = run.status.name,
@@ -619,6 +632,37 @@ class DashboardController(
                 }
             }
             out
+        }
+        val passedByBug: Map<String, List<CellRaw>> = rawCells.values
+            .filter { it.status == "PASSED" }
+            .groupBy { it.bugId }
+        val heatCells: Map<String, HeatCell> = rawCells.mapValues { (_, raw) ->
+            val bg = when (raw.status) {
+                "PASSED" -> {
+                    val passes = passedByBug[raw.bugId].orEmpty()
+                    val tMin = passes.minOf { it.durationMs }
+                    val tMax = passes.maxOf { it.durationMs }
+                    val cMin = passes.minOf { it.costUsd }
+                    val cMax = passes.maxOf { it.costUsd }
+                    val tRank = if (tMax > tMin)
+                        (raw.durationMs - tMin).toDouble() / (tMax - tMin) else 0.0
+                    val cRank = if (cMax > cMin)
+                        (raw.costUsd - cMin) / (cMax - cMin) else 0.0
+                    "background:linear-gradient(to right, ${greenShade(tRank)} 50%, " +
+                        "${greenShade(cRank)} 50%); color:#0f172a"
+                }
+                "FAILED" -> "background:#fef2f2; color:#9ca3af"
+                "ERRORED" -> "background:#fef3c7; color:#92400e"
+                else -> "background:#f1f5f9; color:#94a3b8"
+            }
+            HeatCell(
+                bugId = raw.bugId,
+                configKey = raw.configKey,
+                status = raw.status,
+                durationMs = raw.durationMs,
+                costUsd = raw.costUsd,
+                bgStyle = bg
+            )
         }
 
         // Group columns by ctx → appmap (banner header). Now that
@@ -1117,6 +1161,24 @@ class DashboardController(
         }
         sb.append("</svg>")
         return sb.toString()
+    }
+
+    /** Lerp between green-600 (#16a34a, "best on metric") and green-100
+     *  (#dcfce7, "worst pass on metric") based on a 0..1 rank. Used
+     *  per-half on the bug-solving matrix's PASSED cells: left half
+     *  shaded by time-rank, right half by cost-rank. Range stops at
+     *  green-100 (not white) so even the worst PASSED cell is
+     *  visibly greener than the very-light-red FAILED cells -- the
+     *  matrix's primary signal is "where did combinations pass
+     *  fast + cheap", not "did it pass at all". */
+    private fun greenShade(rank: Double): String {
+        val t = rank.coerceIn(0.0, 1.0)
+        val r0 = 0x16; val g0 = 0xa3; val b0 = 0x4a   // green-600 (best)
+        val r1 = 0xdc; val g1 = 0xfc; val b1 = 0xe7   // green-100 (worst pass)
+        val r = (r0 + (r1 - r0) * t).toInt()
+        val g = (g0 + (g1 - g0) * t).toInt()
+        val b = (b0 + (b1 - b0) * t).toInt()
+        return "#%02x%02x%02x".format(r, g, b)
     }
 
     /** Minimal XML attribute / text escape — covers every char that
