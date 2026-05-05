@@ -118,21 +118,32 @@ class DashboardController(
         // ranking metric. Each bar represents one (model, ctx,
         // appmap) configuration; height encodes the value relative
         // to the max in the row's set, the winner-on-this-metric
-        // bar is highlighted in green, others in slate. Operators
-        // read these visually for "how close were the runners-up
-        // to the winner" without needing to compare numeric
-        // columns. Empty string when no passing solvers.
+        // bar is highlighted in green, others in slate. The chart
+        // overlays the row's min value at the left corner and max
+        // at the right corner so the operator reads the spread
+        // without hovering. Empty string when no passing solvers.
         val timeSparklineSvg: String,
-        val costSparklineSvg: String
+        val costSparklineSvg: String,
+        // Range columns: pre-formatted "min — max · Nx" string and
+        // the raw ratio (max / min) for the sortable column. Null
+        // when only one solver passed (no spread to report).
+        val timeRangeLabel: String?,
+        val timeRangeRatio: Double?,
+        val costRangeLabel: String?,
+        val costRangeRatio: Double?
     )
 
     /** One cell in the bug-solving heat-map. Rendered in
-     *  template as a colored square; status drives the color. */
+     *  template as a colored square; status drives the color.
+     *  durationMs + costUsd are surfaced as overlay text so the
+     *  matrix doubles as a cost/time heat chart -- operators can
+     *  compare not just "did it solve?" but "how fast / cheap". */
     data class HeatCell(
         val bugId: String,
         val configKey: String,    // "model|ctx|appmap"
         val status: String,        // PASSED / FAILED / ERRORED / CANCELED / "—" (no attempt)
-        val durationMs: Long
+        val durationMs: Long,
+        val costUsd: Double
     )
 
     /** Configuration column header for the heat-map. */
@@ -510,7 +521,11 @@ class DashboardController(
                 costWinnerDurationMs = costWinner?.durationMs,
                 costWinnerCostUsd = costWinner?.stats?.estimatedCostUsd,
                 timeSparklineSvg = sparklineSvg(timeSolverPoints, ChartMode.TIME),
-                costSparklineSvg = sparklineSvg(costSolverPoints, ChartMode.COST)
+                costSparklineSvg = sparklineSvg(costSolverPoints, ChartMode.COST),
+                timeRangeLabel = rangeLabelTime(timeSolverPoints),
+                timeRangeRatio = rangeRatioTime(timeSolverPoints),
+                costRangeLabel = rangeLabelCost(costSolverPoints),
+                costRangeRatio = rangeRatioCost(costSolverPoints)
             )
         }.sortedWith(compareBy({ if (it.uniquelySolved) 0 else 1 },
                                { -(it.attempts) },
@@ -601,7 +616,8 @@ class DashboardController(
                         bugId = run.issueId,
                         configKey = "${run.modelId}|${run.contextProvider}|${run.appmapMode}",
                         status = run.status.name,
-                        durationMs = run.durationMs
+                        durationMs = run.durationMs,
+                        costUsd = run.stats.estimatedCostUsd
                     )
                 }
             }
@@ -974,18 +990,36 @@ class DashboardController(
      */
     private fun sparklineSvg(points: List<SolverPoint>, mode: ChartMode): String {
         if (points.isEmpty()) return ""
-        val w = 120  // total chart width (px)
-        val h = 22   // total chart height (px)
+        val w = 140  // total chart width (px)
+        // Reserve a 10px label band at the top for the min/max value
+        // text and 22px below for the bars themselves.
+        val labelBand = 10
+        val barArea = 22
+        val h = labelBand + barArea
         val gap = 1
         val barW = ((w - gap * (points.size + 1)) / points.size).coerceAtLeast(2)
         val maxVal: Double = when (mode) {
             ChartMode.TIME -> points.maxOf { it.durationMs }.coerceAtLeast(1L).toDouble()
             ChartMode.COST -> points.maxOf { it.costUsd }.coerceAtLeast(0.000001)
         }
+        // Precompute min/max formatted labels for the corner overlay.
+        // Sorted points means first = min on the active metric, last
+        // = max -- holds for both TIME (sortedBy durationMs) and COST
+        // (sortedBy costUsd) sets passed in by the caller.
+        val minLabel = formatPoint(points.first(), mode)
+        val maxLabel = formatPoint(points.last(), mode)
         val sb = StringBuilder()
         sb.append("""<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" """)
             .append("""viewBox="0 0 $w $h" style="vertical-align:middle">""")
-        // Baseline track so 1-bar charts still read as a chart.
+        // Min value at top-left, max at top-right. Small font so the
+        // overall row height stays compact.
+        sb.append("""<text x="0" y="8" font-size="9" fill="#475569" """)
+            .append("""font-family="ui-monospace,Menlo,monospace">""")
+            .append(escapeXml(minLabel)).append("</text>")
+        sb.append("""<text x="$w" y="8" font-size="9" fill="#475569" text-anchor="end" """)
+            .append("""font-family="ui-monospace,Menlo,monospace">""")
+            .append(escapeXml(maxLabel)).append("</text>")
+        // Baseline track at the bottom of the bar area.
         sb.append("""<rect x="0" y="${h - 1}" width="$w" height="1" fill="#e5e7eb"/>""")
         var x = gap
         for (p in points) {
@@ -993,15 +1027,11 @@ class DashboardController(
                 ChartMode.TIME -> p.durationMs.toDouble()
                 ChartMode.COST -> p.costUsd
             }
-            val barH = ((v / maxVal) * (h - 2)).toInt().coerceAtLeast(1)
+            val barH = ((v / maxVal) * (barArea - 2)).toInt().coerceAtLeast(1)
             val y = h - 1 - barH
             val fill = if (p.isWinner) "#16a34a" else "#94a3b8"
             val durationLabel = "${p.durationMs / 1000}s"
             val costLabel = "$" + String.format("%.4f", p.costUsd)
-            // <title> child = the SVG-native tooltip; works without
-            // any JS, browser-rendered. Includes both metrics so the
-            // operator can read either chart's tooltip and see both
-            // numbers.
             val tip = escapeXml("${p.label}: $durationLabel, $costLabel" +
                 if (p.isWinner) " (winner)" else "")
             sb.append("""<rect x="$x" y="$y" width="$barW" height="$barH" """)
@@ -1012,6 +1042,46 @@ class DashboardController(
         }
         sb.append("</svg>")
         return sb.toString()
+    }
+
+    /** Format a single SolverPoint's value on the active metric for
+     *  the sparkline corner labels: "5s" for time, "$0.0123" for cost. */
+    private fun formatPoint(p: SolverPoint, mode: ChartMode): String = when (mode) {
+        ChartMode.TIME -> {
+            val s = p.durationMs / 1000
+            if (s < 1) "<1s" else "${s}s"
+        }
+        ChartMode.COST -> "$" + String.format("%.4f", p.costUsd)
+    }
+
+    /** Range-column helpers. Return null when the bug had ≤ 1 passing
+     *  solver -- there's no spread to report and the column should
+     *  render "—". `rangeRatio*` returns max / min for the sortable
+     *  raw value; `rangeLabel*` returns the pre-formatted "min — max
+     *  · Nx" string for display. */
+    private fun rangeRatioTime(points: List<SolverPoint>): Double? {
+        if (points.size < 2) return null
+        val mn = points.first().durationMs.toDouble().coerceAtLeast(1.0)
+        val mx = points.last().durationMs.toDouble()
+        return mx / mn
+    }
+    private fun rangeLabelTime(points: List<SolverPoint>): String? {
+        val ratio = rangeRatioTime(points) ?: return null
+        return "${formatPoint(points.first(), ChartMode.TIME)} — " +
+               "${formatPoint(points.last(), ChartMode.TIME)} · " +
+               "${String.format("%.1f", ratio)}×"
+    }
+    private fun rangeRatioCost(points: List<SolverPoint>): Double? {
+        if (points.size < 2) return null
+        val mn = points.first().costUsd.coerceAtLeast(0.000001)
+        val mx = points.last().costUsd
+        return mx / mn
+    }
+    private fun rangeLabelCost(points: List<SolverPoint>): String? {
+        val ratio = rangeRatioCost(points) ?: return null
+        return "${formatPoint(points.first(), ChartMode.COST)} — " +
+               "${formatPoint(points.last(), ChartMode.COST)} · " +
+               "${String.format("%.1f", ratio)}×"
     }
 
     /** One-bar-per-bug status strip for the leaderboard's "Bugs"
