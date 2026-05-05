@@ -543,11 +543,31 @@ class AppMapService(
         cmd.add("--rerun-tasks")
         cmd.add("--no-configuration-cache")
         cmd.add("--console=plain")
+        // --no-daemon: a pre-existing gradle daemon launched with a
+        // DIFFERENT JAVA_HOME (e.g. the operator's first session ran
+        // before they pinned a default on /demo) silently ignores the
+        // env var bench-webui sets here -- gradle reuses the running
+        // daemon and the test fork inherits THAT daemon's JVM. This
+        // is the canonical "Java 8 in the recording log even though I
+        // picked Java 25" failure mode on Windows. Forcing
+        // --no-daemon means each recording boots a fresh JVM that
+        // honors the JAVA_HOME below.
+        cmd.add("--no-daemon")
         // Operator-selected verbosity (default LIFECYCLE = no extra
         // flag). --info / --debug surface gradle's per-task cause-of-
         // failure detail when a recording fails on dep resolution
         // or test compilation.
         verbosity.gradleFlag?.let { cmd.add(it) }
+        // Cross-platform JDK pick — JdkDiscovery walks env var, PATH,
+        // and platform-specific install roots; honors the saved
+        // default from /demo unconditionally (PR after #38).
+        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
+        // -Dorg.gradle.java.home as belt-and-suspenders so even if a
+        // stale gradle.properties has org.gradle.java.home pointing
+        // somewhere else, the CLI override wins for this invocation.
+        if (javaHome.isNotBlank()) {
+            cmd.add("-Dorg.gradle.java.home=$javaHome")
+        }
         // Forward WebUI proxy + TLS preferences onto the Gradle daemon
         // so dependency downloads and any test-time outbound HTTP
         // inherit the same egress configuration.
@@ -556,12 +576,26 @@ class AppMapService(
         val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
         pb.environment()["ORG_GRADLE_PROJECT_appmap_enabled"] = "true"
         pb.environment()["APPMAP_ENABLED"] = "true"
-        // Cross-platform JDK pick — JdkDiscovery walks env var, PATH,
-        // and platform-specific install roots. Replaces the old
-        // macOS-only Homebrew hardcode that silently broke on Windows.
-        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
-        pb.environment()["JAVA_HOME"] = javaHome
-        pb.environment()["PATH"] = "$javaHome/bin:" + System.getenv("PATH")
+        if (javaHome.isNotBlank()) {
+            pb.environment()["JAVA_HOME"] = javaHome
+            // File.pathSeparator + File.separator are required for
+            // cross-platform PATH munging -- the previous "$javaHome/bin:"
+            // string used POSIX-only ":" + "/" which silently no-op'd
+            // on Windows (where PATH uses ";" + "\"). That's part of why
+            // Windows sessions kept resolving Java 8 from the inherited
+            // PATH instead of the JAVA_HOME we just set.
+            pb.environment()["PATH"] =
+                "$javaHome${File.separator}bin${File.pathSeparator}" +
+                (System.getenv("PATH") ?: "")
+            log.info("appmap-record: JAVA_HOME={} (toolchain major={}, source={})",
+                javaHome, bankingApp.toolchainMajor() ?: "(none)",
+                if (JdkDiscovery.readSavedDefaultHome() == javaHome) "saved-default"
+                else "auto-pick")
+        } else {
+            log.warn("appmap-record: no JAVA_HOME resolved -- gradle subprocess will inherit " +
+                "whatever the parent process has set (was '${System.getenv("JAVA_HOME") ?: "(unset)"}'). " +
+                "Pick a JDK on /demo to pin it.")
+        }
 
         val recordingId = UUID.randomUUID().toString().substring(0, 8)
         val logFile = File(dir, "tmp/appmap-record-$recordingId.log")
@@ -727,12 +761,15 @@ class AppMapService(
         // jar) through the operator-configured proxy and honor the
         // insecure-SSL toggle if set.
         cmd.addAll(connectionSettings.gradleSystemProps())
+        // Cross-platform JDK pick — honors saved default unconditionally
+        // (PR after #38). Inject -Dorg.gradle.java.home as belt-and-
+        // suspenders against a stale gradle.properties.
+        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
+        if (javaHome.isNotBlank()) {
+            cmd.add("-Dorg.gradle.java.home=$javaHome")
+        }
         val pb = ProcessBuilder(cmd)
             .directory(dir).redirectErrorStream(true)
-        // Cross-platform JDK pick — JdkDiscovery walks env var, PATH,
-        // and platform-specific install roots. Replaces the old
-        // macOS-only Homebrew hardcode that silently broke on Windows.
-        val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
         if (javaHome.isNotBlank()) {
             pb.environment()["JAVA_HOME"] = javaHome
             pb.environment()["PATH"] =

@@ -490,12 +490,34 @@ class BankingAppManager(
             cmd.add("-PjvmArgs=" + connectionArgs.joinToString(" "))
         }
 
+        // -Dorg.gradle.java.home as a CLI override — belt-and-
+        // suspenders. Even when the env var is set correctly, a
+        // stale gradle.properties or a long-running daemon launched
+        // from a different shell session can pin the JVM to a
+        // different value; the CLI override wins.
+        if (javaHome.isNotBlank()) {
+            cmd.add("-Dorg.gradle.java.home=$javaHome")
+        }
+
         val pb = ProcessBuilder(cmd)
             .directory(dir)
             .redirectErrorStream(true)
 
-        pb.environment()["JAVA_HOME"] = javaHome
-        pb.environment()["PATH"] = "$javaHome/bin:" + System.getenv("PATH")
+        if (javaHome.isNotBlank()) {
+            pb.environment()["JAVA_HOME"] = javaHome
+            // Cross-platform PATH munging — File.separator + pathSeparator
+            // so Windows uses "\" + ";" (the literal "/" + ":" form
+            // silently no-op'd on Windows, leaving the parent's PATH
+            // with Java 8 first to win for any process that resolved
+            // `java` via PATH instead of JAVA_HOME).
+            pb.environment()["PATH"] =
+                "$javaHome${java.io.File.separator}bin${java.io.File.pathSeparator}" +
+                (System.getenv("PATH") ?: "")
+            log.info("Banking app launch: JAVA_HOME={} (toolchainMajor={}, source={})",
+                javaHome, pinnedMajor ?: "(none)",
+                if (JdkDiscovery.readSavedDefaultHome() == javaHome) "saved-default"
+                else "auto-pick")
+        }
 
         // Mint a fresh autologin token, hand it to the subprocess via
         // env var. Both sides keep it in memory only — never persisted.
