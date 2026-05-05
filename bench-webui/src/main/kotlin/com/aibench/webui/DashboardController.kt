@@ -527,9 +527,7 @@ class DashboardController(
                 costRangeLabel = rangeLabelCost(costSolverPoints),
                 costRangeRatio = rangeRatioCost(costSolverPoints)
             )
-        }.sortedWith(compareBy({ if (it.uniquelySolved) 0 else 1 },
-                               { -(it.attempts) },
-                               { it.bugId }))
+        }.sortedBy { it.bugId }
         model.addAttribute("perBugLeaders", perBugLeaders)
         model.addAttribute("uniquelySolvedCount", perBugLeaders.count { it.uniquelySolved })
 
@@ -576,15 +574,14 @@ class DashboardController(
             )
         }
         // Only carry bugs that had at least 1 attempt (matches the
-        // configs-with-attempts logic). Sort by uniquely-solved first
-        // so the most distinctive bugs surface near the top.
-        val difficultyOrder = mapOf("HARD" to 0, "MEDIUM" to 1, "EASY" to 2, "TRIVIAL" to 3)
+        // configs-with-attempts logic). Default sort is by bug id
+        // ascending (BUG-0001 first) -- matches the bug-numbered
+        // canonical order operators reason about, and matches every
+        // other bug-rowed table on the dashboard. The Diff column
+        // header is still click-sortable for difficulty grouping.
         val heatBugRows: List<HeatBugRow> = perBugLeaders
             .filter { it.attempts > 0 }
-            .sortedWith(compareBy(
-                { difficultyOrder[it.difficulty.uppercase()] ?: 99 },
-                { it.bugId }
-            ))
+            .sortedBy { it.bugId }
             .map {
                 HeatBugRow(
                     bugId = it.bugId,
