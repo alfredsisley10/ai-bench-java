@@ -1060,11 +1060,11 @@
                     </th>
                     <th th:each="g : ${heatCtxGroups}"
                         th:colspan="${g.colspan}"
-                        th:title="'context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
+                        th:title="'Context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
                         style="text-align:center; padding:0.25em 0.4em;
                                background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                font-weight:600; color:#312e81">
-                        ctx=<span th:text="${g.ctxLabel}">…</span>
+                        Context: <span th:text="${g.ctxLabel}">…</span>
                         <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
                               th:text="' · ' + ${g.passLabel}">…</span>
                     </th>
@@ -1072,38 +1072,40 @@
                 <tr>
                     <th th:each="ag : ${heatAppmapGroups}"
                         th:colspan="${ag.colspan}"
-                        th:title="'AppMap mode: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (ctx, appmap) pair'"
+                        th:title="'AppMap Traces: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (Context, AppMap Traces) pair'"
                         style="text-align:center; padding:0.2em 0.4em;
                                background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                font-size:0.85em; color:#475569">
-                        appmap=<span th:text="${ag.appmapLabel}">…</span>
+                        AppMap Traces: <span th:text="${ag.appmapLabel}">…</span>
                         <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
                 </tr>
                 <tr class="sort-row">
+                    <!-- Model labels rotated 45° rising from the
+                         bottom-left of each header cell to the upper
+                         right. The diagonal angle is easier to read
+                         than a fully-vertical label and -- with
+                         transform-origin at bottom-left -- each label
+                         visually anchors to its own column while
+                         extending into the row's vertical space
+                         instead of forcing extreme column widths. -->
                     <th th:each="c, iter : ${heatColumns}"
                         th:title="${c.tooltip}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
-                        style="padding:0.3em 0.4em; background:#f3f4f6;
-                               vertical-align:middle; text-align:center;
-                               min-width:3.2em; height:8em; cursor:pointer">
-                        <!-- Vertical-rl rotated text, centered both
-                             axes inside the th. Fixed-height th + the
-                             flex wrapper give every model label the
-                             same vertical baseline regardless of label
-                             length, so the matrix reads as a clean
-                             grid. -->
-                        <div style="display:flex; align-items:center;
-                                    justify-content:center; height:100%">
-                            <span style="writing-mode:vertical-rl;
-                                         transform:rotate(180deg);
-                                         white-space:nowrap;
-                                         font-family:monospace;
-                                         font-size:0.85em"
-                                  th:text="${c.modelShort}">…</span>
-                        </div>
+                        style="background:#f3f4f6;
+                               vertical-align:bottom; text-align:left;
+                               padding:0.4em 0.4em 0.5em 0.5em;
+                               min-width:3em; height:7em;
+                               cursor:pointer; overflow:visible">
+                        <span style="display:inline-block;
+                                     transform:rotate(-45deg);
+                                     transform-origin:bottom left;
+                                     white-space:nowrap;
+                                     font-family:monospace;
+                                     font-size:0.85em"
+                              th:text="${c.modelShort}">…</span>
                     </th>
                 </tr>
             </thead>
