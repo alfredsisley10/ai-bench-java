@@ -112,7 +112,23 @@ class ConnectionSettings {
         // Maven-Central source (via -DmavenExternalVirtual=...) and
         // the verify panel probes it as the canonical Central path.
         // Empty = single-mirror setup (the current legacy behaviour).
-        val mavenExternalVirtualUrl: String = ""
+        val mavenExternalVirtualUrl: String = "",
+        // When true, the mirror's hostname (and the maven-external-
+        // virtual's, when set) is auto-added to the effective
+        // nonProxyHosts list -- both for bench-webui's HttpClient
+        // and for gradle subprocesses. Default OFF preserves the
+        // legacy "everything goes through the proxy" behaviour.
+        // Turn ON when corp Artifactory is on the internal network
+        // and the corp proxy can't / shouldn't be the path to it
+        // (typical symptom: SSLHandshakeException on gradle TLS to
+        // the mirror even though /proxy verify-connectivity passes,
+        // because the proxy's MITM cert is the wrong shape for the
+        // mirror's internal-CA cert OR the proxy refuses CONNECT to
+        // an internal IP). The toggle does NOT modify the operator's
+        // saved noProxy field; the auto-bypass is computed at
+        // request time so toggling it off cleanly restores the
+        // through-proxy routing.
+        val mirrorBypassProxy: Boolean = false
     ) {
         /** Convenience flag — true when proxy auth is fully configured. */
         val hasProxyAuth: Boolean get() = proxyAuthUser.isNotBlank() && proxyAuthPassword.isNotBlank()
@@ -1532,12 +1548,42 @@ class ConnectionSettings {
     // Helpers
     // ------------------------------------------------------------------
 
+    /**
+     * Hostnames that should bypass the proxy in addition to the
+     * operator-typed `noProxy` field. Currently sources the mirror's
+     * hostname (and the maven-external-virtual's, when configured)
+     * when the `mirrorBypassProxy` toggle is on. Returns empty when
+     * the toggle is off so the legacy "everything goes through the
+     * proxy" behaviour is preserved.
+     *
+     * Internal corp Artifactory typically lives on a private subnet
+     * the corp proxy either can't reach or refuses to MITM cleanly;
+     * surfacing this as a single toggle is much friendlier than
+     * asking the operator to manually paste the hostname into the
+     * /proxy noProxy field every time the mirror URL changes.
+     */
+    fun effectiveBypassHosts(): List<String> {
+        if (!current.mirrorBypassProxy) return emptyList()
+        val hosts = mutableListOf<String>()
+        runCatching { java.net.URI.create(current.mirrorUrl).host }
+            .getOrNull()?.takeIf { it.isNotBlank() }?.let { hosts += it }
+        if (current.hasMavenExternalVirtual) {
+            runCatching { java.net.URI.create(current.mavenExternalVirtualUrl).host }
+                .getOrNull()?.takeIf { it.isNotBlank() }?.let { hosts += it }
+        }
+        return hosts
+    }
+
     private fun currentProxySelector(): ProxySelector? {
         val httpsHostPort = parseHostPort(current.httpsProxy)
         val httpHostPort = parseHostPort(current.httpProxy)
         if (httpsHostPort == null && httpHostPort == null) return null
 
-        val noProxyPatterns = current.noProxy.split(",")
+        // Operator-saved no_proxy list, plus the auto-bypass hosts
+        // contributed by mirrorBypassProxy. Computed each call so a
+        // fresh /mirror save takes effect without rebuilding the
+        // selector.
+        val noProxyPatterns = (current.noProxy.split(",") + effectiveBypassHosts())
             .map { it.trim().lowercase() }
             .filter { it.isNotEmpty() }
 
@@ -1889,9 +1935,17 @@ class ConnectionSettings {
             newLines.add("systemProp.https.proxyUser=${s.proxyAuthUser}")
             newLines.add("systemProp.https.proxyPassword=${s.proxyAuthPassword}")
         }
-        if (s.noProxy.isNotEmpty()) {
-            val gradleNoProxy = s.noProxy.split(",").joinToString("|") { it.trim() }
-            newLines.add("systemProp.http.nonProxyHosts=$gradleNoProxy")
+        // nonProxyHosts: union of operator-typed noProxy and the
+        // auto-bypass hosts contributed by the mirrorBypassProxy
+        // toggle (typically the corp Artifactory hostname). Joined
+        // with '|' which is gradle's separator. Empty list means
+        // we don't emit the line at all so an unconfigured proxy
+        // doesn't get a stray nonProxyHosts entry.
+        val combinedNoProxy = (
+            s.noProxy.split(",").map { it.trim() } + effectiveBypassHosts()
+        ).filter { it.isNotEmpty() }.distinct()
+        if (combinedNoProxy.isNotEmpty()) {
+            newLines.add("systemProp.http.nonProxyHosts=" + combinedNoProxy.joinToString("|"))
         }
         if (s.hasMirrorAuth) {
             // Legacy + standard names -- corp init script reads the
