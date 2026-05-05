@@ -62,12 +62,39 @@
     // -- much faster to filter "Status = PASSED OR FAILED" than typing
     // a regex into a text box. High-cardinality columns keep the
     // existing substring filter.
+    // Resolve the filter value for a given (row, colIdx). Prefers
+    // td.dataset.filterValue when set so cells with chevrons,
+    // badges, or other decorative children can declare a clean
+    // string for filtering / multi-select grouping. Falls back to
+    // textContent.trim() for unannotated cells.
+    function cellFilterValue(row, colIdx) {
+      const td = row.querySelectorAll('td')[colIdx];
+      if (!td) return '';
+      const explicit = td.dataset.filterValue;
+      return (explicit != null ? explicit : (td.textContent || '')).trim();
+    }
+
     function buildMultiSelect(input, idx) {
       const colIdx = parseInt(input.getAttribute('data-filter-col'), 10);
+      // Numeric-comparator columns (e.g. Pass, Solved) skip the
+      // multi-select popup -- the operator wants ">= N", not a
+      // checklist of every distinct value. Use the sort-row's
+      // nth th (by raw index, NOT sortHeaders which excludes
+      // un-keyed cells) so the lookup matches columns 1:1 even
+      // when some headers don't have data-sort-key.
+      const sortRowThs = table.querySelectorAll('.sort-row th');
+      const headerForCol = sortRowThs[colIdx];
+      if (headerForCol && headerForCol.dataset.filterNumeric === 'true') {
+        // Update placeholder if the template hasn't already; the
+        // operator should know what the box accepts.
+        if (!input.placeholder || input.placeholder.indexOf('=') === -1) {
+          input.placeholder = '≥N or =N';
+        }
+        return;
+      }
       const distinct = new Set();
       for (const row of rows) {
-        const cells = row.querySelectorAll('td');
-        const txt = (cells[colIdx]?.textContent || '').trim();
+        const txt = cellFilterValue(row, colIdx);
         if (txt) distinct.add(txt);
       }
       // Skip if cardinality is too high (free-text column) or trivial
@@ -183,31 +210,62 @@
       return (raw || '').toLowerCase();
     }
 
+    // Parse a numeric-comparator filter expression like ">=5", "=12",
+    // ">3", "<10", or a bare "5" (defaults to >=). Returns null when
+    // the input is empty or unparseable; returns a predicate fn
+    // otherwise. Tolerates Unicode "≥" / "≤" so the user can type
+    // either ASCII or the symbol.
+    function parseNumericFilter(raw) {
+      if (!raw) return null;
+      const s = raw.trim().replace(/≥/g, '>=').replace(/≤/g, '<=');
+      const m = s.match(/^(>=|<=|=|>|<)?\s*(-?\d+(?:\.\d+)?)$/);
+      if (!m) return null;
+      const op = m[1] || '>=';
+      const n = parseFloat(m[2]);
+      switch (op) {
+        case '=':  return (v) => v === n;
+        case '>':  return (v) => v > n;
+        case '<':  return (v) => v < n;
+        case '>=': return (v) => v >= n;
+        case '<=': return (v) => v <= n;
+      }
+      return null;
+    }
+
     function applyFilters() {
+      const sortRowThs = table.querySelectorAll('.sort-row th');
       // Snapshot per-filter values: text inputs read live from the
       // input.value; multi-select states are already in filterStates.
+      // Numeric columns parse the input as a comparator predicate.
       const snapshots = Array.from(filters).map((el, i) => {
         const st = filterStates[i];
         if (st.kind === 'multi') {
-          // Multi-select: 'el' has been replaced; column index is
-          // captured in filterStates[i].colIdx.
           return { kind: 'multi', sel: st.selected, colIdx: st.colIdx };
+        }
+        const colIdx = parseInt(el.getAttribute('data-filter-col'), 10);
+        const header = sortRowThs[colIdx];
+        if (header && header.dataset.filterNumeric === 'true') {
+          const pred = parseNumericFilter(el.value);
+          return { kind: 'numeric', pred, colIdx };
         }
         return {
           kind: 'text',
           term: el.value.trim().toLowerCase(),
-          colIdx: parseInt(el.getAttribute('data-filter-col'), 10)
+          colIdx
         };
       });
       let visible = 0;
       for (const row of rows) {
-        const cells = row.querySelectorAll('td');
         let match = true;
         for (const s of snapshots) {
-          const txt = (cells[s.colIdx]?.textContent || '').trim();
+          const txt = cellFilterValue(row, s.colIdx);
           if (s.kind === 'multi') {
-            if (s.sel.size === 0) continue;  // no selection = no filter
+            if (s.sel.size === 0) continue;
             if (!s.sel.has(txt)) { match = false; break; }
+          } else if (s.kind === 'numeric') {
+            if (!s.pred) continue;
+            const n = parseFloat(txt.replace(/[, %$]/g, ''));
+            if (!Number.isFinite(n) || !s.pred(n)) { match = false; break; }
           } else {
             if (!s.term) continue;
             if (!txt.toLowerCase().includes(s.term)) { match = false; break; }
@@ -280,26 +338,35 @@
     // wrap the existing per-column logic instead of duplicating it.
     const baseApplyFilters = applyFilters;
     applyFilters = function () {
+      const sortRowThs = table.querySelectorAll('.sort-row th');
       const snapshots = Array.from(filters).map((el, i) => {
         const st = filterStates[i];
         if (st.kind === 'multi') {
           return { kind: 'multi', sel: st.selected, colIdx: st.colIdx };
         }
+        const colIdx = parseInt(el.getAttribute('data-filter-col'), 10);
+        const header = sortRowThs[colIdx];
+        if (header && header.dataset.filterNumeric === 'true') {
+          return { kind: 'numeric', pred: parseNumericFilter(el.value), colIdx };
+        }
         return {
           kind: 'text',
           term: el.value.trim().toLowerCase(),
-          colIdx: parseInt(el.getAttribute('data-filter-col'), 10)
+          colIdx
         };
       });
       let visible = 0;
       for (const row of rows) {
-        const cells = row.querySelectorAll('td');
         let match = true;
         for (const s of snapshots) {
-          const txt = (cells[s.colIdx]?.textContent || '').trim();
+          const txt = cellFilterValue(row, s.colIdx);
           if (s.kind === 'multi') {
             if (s.sel.size === 0) continue;
             if (!s.sel.has(txt)) { match = false; break; }
+          } else if (s.kind === 'numeric') {
+            if (!s.pred) continue;
+            const n = parseFloat(txt.replace(/[, %$]/g, ''));
+            if (!Number.isFinite(n) || !s.pred(n)) { match = false; break; }
           } else {
             if (!s.term) continue;
             if (!txt.toLowerCase().includes(s.term)) { match = false; break; }

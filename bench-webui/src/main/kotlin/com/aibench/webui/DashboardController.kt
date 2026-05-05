@@ -153,15 +153,29 @@ class DashboardController(
     data class HeatCtxGroup(
         val ctxLabel: String,
         val colspan: Int,
-        val appmapGroups: List<HeatAppmapGroup>
+        val appmapGroups: List<HeatAppmapGroup>,
+        // Aggregate pass rate across every (model column, bug row)
+        // cell in this ctx group. Numerator = PASSED cells;
+        // denominator = ATTEMPTED cells (PASSED + FAILED + ERRORED
+        // + CANCELED). Cells with no run for the (config, bug) pair
+        // are excluded so the rate answers "when this group ran,
+        // how often did it pass?" rather than "what fraction of the
+        // grid is green?". `passLabel` is the pre-formatted string
+        // for the header (e.g. "67% (12/18)").
+        val passRate: Double,
+        val passLabel: String
     )
 
     /** Sub-banner of [HeatCtxGroup]: every model column sharing the
      *  same (ctx, appmap) combination. `colspan` = number of model
-     *  columns in this subgroup. */
+     *  columns in this subgroup. `passRate` / `passLabel` mirror
+     *  the ctx group's aggregate but scoped to this (ctx, appmap)
+     *  pair only. */
     data class HeatAppmapGroup(
         val appmapLabel: String,
-        val colspan: Int
+        val colspan: Int,
+        val passRate: Double,
+        val passLabel: String
     )
 
     /** Bug row metadata for the heat-map. */
@@ -546,30 +560,6 @@ class DashboardController(
                 totalSolves = solves
             )
         }
-        // Group by ctx → appmap so the template can render a banner
-        // header. configsWithAttempts is already sorted in the
-        // matching order, so groupingBy preserves group adjacency.
-        val heatCtxGroups: List<HeatCtxGroup> = configsWithAttempts
-            .groupBy { it.second }                               // ctx
-            .map { (ctx, ctxConfigs) ->
-                val appmapGroups = ctxConfigs.groupBy { it.third }
-                    .map { (mode, modeConfigs) ->
-                        HeatAppmapGroup(
-                            appmapLabel = if (mode.equals("OFF", true) || mode.isBlank()) "OFF"
-                                          else mode,
-                            colspan = modeConfigs.size
-                        )
-                    }
-                HeatCtxGroup(
-                    ctxLabel = ctx,
-                    colspan = ctxConfigs.size,
-                    appmapGroups = appmapGroups
-                )
-            }
-        // Flat appmap-subgroup list for the second header row, in
-        // column order. Avoids nested th:each in the template.
-        val heatAppmapGroups: List<HeatAppmapGroup> =
-            heatCtxGroups.flatMap { it.appmapGroups }
         // Only carry bugs that had at least 1 attempt (matches the
         // configs-with-attempts logic). Sort by uniquely-solved first
         // so the most distinctive bugs surface near the top.
@@ -617,6 +607,59 @@ class DashboardController(
             }
             out
         }
+
+        // Group columns by ctx → appmap (banner header). Now that
+        // heatCells exists we can also tag each group with its
+        // aggregate pass rate -- "of the bug × config cells in this
+        // group that were attempted, what fraction passed?". This
+        // surfaces "ctx=appmap-navie holds 67% solve rate vs ctx=none
+        // at 33%" right in the header, no eyeball-counting needed.
+        // configsWithAttempts is already in column order; groupBy
+        // preserves insertion order so headers match column layout.
+        fun groupPassStats(configs: List<Triple<String, String, String>>): Pair<Int, Int> {
+            var passed = 0
+            var attempted = 0
+            for ((m, c, mode) in configs) {
+                for (bug in heatBugRows) {
+                    val cell = heatCells["${bug.bugId}|$m|$c|$mode"]
+                    if (cell != null) {
+                        attempted++
+                        if (cell.status == "PASSED") passed++
+                    }
+                }
+            }
+            return passed to attempted
+        }
+        fun pctLabel(passed: Int, attempted: Int): String =
+            if (attempted == 0) "—"
+            else "${(passed * 100 + attempted / 2) / attempted}% ($passed/$attempted)"
+
+        val heatCtxGroups: List<HeatCtxGroup> = configsWithAttempts
+            .groupBy { it.second }
+            .map { (ctx, ctxConfigs) ->
+                val (ctxPassed, ctxAttempted) = groupPassStats(ctxConfigs)
+                val appmapGroups = ctxConfigs.groupBy { it.third }
+                    .map { (mode, modeConfigs) ->
+                        val (mPassed, mAttempted) = groupPassStats(modeConfigs)
+                        HeatAppmapGroup(
+                            appmapLabel = if (mode.equals("OFF", true) || mode.isBlank()) "OFF"
+                                          else mode,
+                            colspan = modeConfigs.size,
+                            passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
+                            passLabel = pctLabel(mPassed, mAttempted)
+                        )
+                    }
+                HeatCtxGroup(
+                    ctxLabel = ctx,
+                    colspan = ctxConfigs.size,
+                    appmapGroups = appmapGroups,
+                    passRate = if (ctxAttempted > 0) ctxPassed.toDouble() / ctxAttempted else 0.0,
+                    passLabel = pctLabel(ctxPassed, ctxAttempted)
+                )
+            }
+        val heatAppmapGroups: List<HeatAppmapGroup> =
+            heatCtxGroups.flatMap { it.appmapGroups }
+
         model.addAttribute("heatColumns", heatColumns)
         model.addAttribute("heatCtxGroups", heatCtxGroups)
         model.addAttribute("heatAppmapGroups", heatAppmapGroups)
