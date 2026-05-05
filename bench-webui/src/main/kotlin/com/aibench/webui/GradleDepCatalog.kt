@@ -183,7 +183,7 @@ class GradleDepCatalog {
             "Testcontainers JUnit 5 integration"),
         maven(Category.BANKING_TEST, "org.testcontainers:testcontainers-bom:1.20.6",
             "Testcontainers BOM"),
-        maven(Category.BANKING_TEST, "net.datafaker:datafaker:2.4.0",
+        maven(Category.BANKING_TEST, "net.datafaker:datafaker:2.5.0",
             "Datafaker for test fixture generation"),
 
         // --- Banking-app runtime deps ----------------------------------
