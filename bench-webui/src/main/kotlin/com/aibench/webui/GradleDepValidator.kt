@@ -36,9 +36,31 @@ class GradleDepValidator(
     private val connectionSettings: ConnectionSettings
 ) {
     private val log = LoggerFactory.getLogger(GradleDepValidator::class.java)
-    private val pool = Executors.newFixedThreadPool(8) { r ->
+    // Concurrency cap dropped from 8 -> 4 after operators reported
+    // a paradox: the bulk validate() consistently reported many
+    // coords as failing, yet the per-coord 🔬 Probe-versions button
+    // (which sweeps 16 versions of ONE coord at a time) succeeded
+    // for the same pinned version. The bulk run hits the corp
+    // mirror with ~50-60 simultaneous requests (every catalog entry
+    // × POM + JAR), and corp Artifactory typically rate-limits per
+    // source IP -- the 8-thread burst was tripping the limiter and
+    // surfacing as 429s, connection resets, or timeouts. 4 keeps
+    // the bulk wall-clock under ~10s for the catalog while staying
+    // well below typical Artifactory rate limits.
+    private val pool = Executors.newFixedThreadPool(4) { r ->
         Thread(r, "gradle-dep-validator").apply { isDaemon = true }
     }
+    // Default per-probe wall-clock. Bumped from 8s -> 12s so a slow
+    // mirror (corp Artifactory behind several proxy hops) doesn't
+    // false-positive a real artifact as missing just because the
+    // round-trip was 9s.
+    private val defaultProbeTimeout: Duration = Duration.ofSeconds(12)
+    // Retry attempts on TRANSIENT failure shapes (connect timeout,
+    // request timeout, 5xx, 429). 4xx is treated as authoritative
+    // and not retried -- a 404 or 401 is a real verdict, not noise.
+    // Total attempts = 1 + maxRetries.
+    private val maxRetries: Int = 1
+    private val retryBackoffMs: Long = 350
 
     /** Three-state verdict for the validator UI. WARN means the
      *  primary probe failed but a fallback path (e.g. the corp
@@ -826,37 +848,68 @@ class GradleDepValidator(
         }
     }
 
-    /** Single HEAD-then-fall-back-to-GET probe. Returns
-     *  (ok, statusCode). Extracted so probeOne can do both POM and
-     *  JAR through the same code path without duplicating the auth /
-     *  405-fallback logic. */
+    /** Single HEAD-then-fall-back-to-GET probe with bounded retries
+     *  on TRANSIENT failure shapes (timeout / 5xx / 429 / connection
+     *  reset). 4xx is treated as authoritative and not retried -- a
+     *  404 / 401 / 403 is a real verdict, not noise. Returns
+     *  (ok, statusCode). The retry-with-jitter halves the
+     *  false-failure rate on rate-limited corp Artifactory mirrors
+     *  where bursts of parallel requests intermittently get a
+     *  429 / connection reset / read timeout that resolves on
+     *  immediate retry. */
     private fun singleProbe(
         client: HttpClient, url: String, viaMirror: Boolean,
         s: ConnectionSettings.Settings
     ): Pair<Boolean, Int> {
-        val req = HttpRequest.newBuilder()
-            .uri(URI.create(url))
-            .timeout(Duration.ofSeconds(8))
-            .method("HEAD", HttpRequest.BodyPublishers.noBody())
-            .build()
-        val withAuth = if (viaMirror && s.hasMirrorAuth) {
-            HttpRequest.newBuilder(req, { _, _ -> true })
-                .header("Authorization", "Basic " +
-                    java.util.Base64.getEncoder().encodeToString(
-                        "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()
-                    ))
-                .build()
-        } else req
-        var resp = client.send(withAuth, HttpResponse.BodyHandlers.discarding())
-        // Some Artifactory configs return 405 Method Not Allowed for
-        // HEAD on .pom / .jar files; retry with GET.
-        if (resp.statusCode() == 405) {
-            val getReq = HttpRequest.newBuilder(withAuth, { _, _ -> true })
-                .GET().build()
-            resp = client.send(getReq, HttpResponse.BodyHandlers.discarding())
+        val authHeader: String? = if (viaMirror && s.hasMirrorAuth)
+            "Basic " + java.util.Base64.getEncoder().encodeToString(
+                "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray())
+            else null
+
+        fun buildReq(method: String): HttpRequest {
+            val b = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(defaultProbeTimeout)
+                .method(method, HttpRequest.BodyPublishers.noBody())
+            if (authHeader != null) b.header("Authorization", authHeader)
+            return b.build()
         }
-        val code = resp.statusCode()
-        return (code in 200..299) to code
+
+        var lastCode = -1
+        for (attempt in 0..maxRetries) {
+            val (ok, code) = runCatching {
+                var resp = client.send(buildReq("HEAD"), HttpResponse.BodyHandlers.discarding())
+                // Some Artifactory configs return 405 Method Not Allowed
+                // for HEAD on .pom / .jar files; retry with GET.
+                if (resp.statusCode() == 405) {
+                    resp = client.send(buildReq("GET"), HttpResponse.BodyHandlers.discarding())
+                }
+                val c = resp.statusCode()
+                (c in 200..299) to c
+            }.getOrElse { e ->
+                // Network-level failure (timeout, connection reset,
+                // SSL handshake). Treat as transient -- code = -1.
+                log.debug("validator probe attempt {}/{} for {} failed: {}",
+                    attempt + 1, maxRetries + 1, url,
+                    connectionSettings.formatProbeException(e))
+                false to -1
+            }
+            lastCode = code
+            // Authoritative outcome: success, or a 4xx that's NOT 408/429.
+            if (ok) return true to code
+            val transient = code == -1 ||
+                            code == 408 ||             // Request Timeout
+                            code == 429 ||             // Too Many Requests
+                            code in 500..599           // server-side noise
+            if (!transient) return false to code
+            if (attempt < maxRetries) {
+                // Small jittered backoff so a coordinated burst
+                // doesn't all retry on the exact same tick.
+                val jitter = (Math.random() * retryBackoffMs).toLong()
+                Thread.sleep(retryBackoffMs + jitter)
+            }
+        }
+        return false to lastCode
     }
 
     private fun pomMessage(code: Int, viaMirror: Boolean): String = when {
@@ -909,5 +962,5 @@ class GradleDepValidator(
      *  probes; the previous inline builder skipped both, which surfaced
      *  as SSLHandshakeException for hosts behind corp MITM proxies even
      *  with the operator's "ignore TLS errors" toggle on. */
-    private fun httpClient(): HttpClient = connectionSettings.httpClient(Duration.ofSeconds(4))
+    private fun httpClient(): HttpClient = connectionSettings.httpClient(Duration.ofSeconds(8))
 }
