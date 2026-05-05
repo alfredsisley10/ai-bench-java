@@ -26,7 +26,8 @@ class DashboardController(
     private val throttler: AdaptiveThrottler,
     private val bugLint: BugLintService,
     private val pauseGate: PauseGate,
-    private val worktreePool: WorktreePool
+    private val worktreePool: WorktreePool,
+    private val hiddenBugs: HiddenBugsService
 ) {
 
     /** Live in-progress snapshot. Same shape as
@@ -217,12 +218,47 @@ class DashboardController(
         // available run to choose from. 500 is plenty for a single
         // operator's lifetime; older runs roll off naturally as the
         // in-memory map fills.
-        val runs = benchmarkRuns.recentRuns(500)
+        val allRuns = benchmarkRuns.recentRuns(500)
+        // Operator-hidden bugs (e.g. flagged as contamination-impacted)
+        // are excluded from every downstream computation: leaderboard,
+        // per-bug-leaders, contamination warning, summary stats. The
+        // raw runs are still in the BenchmarkRunService -- this is a
+        // dashboard-presentation filter only. Surfaced separately as
+        // `hiddenBugIds` model attr so the template can render a
+        // "currently hidden" panel with unhide affordance.
+        val hidden = hiddenBugs.hiddenBugs()
+        val runs = allRuns.filter { it.issueId !in hidden }
+        model.addAttribute("hiddenBugIds", hidden.sorted())
         val total = runs.size
         val passed = runs.count { it.status.name == "PASSED" }
 
         model.addAttribute("totalRuns", total)
-        model.addAttribute("passRate", if (total > 0) passed.toDouble() / total else 0.0)
+        // Suite coverage stats: scope the pass-rate tile to "of all
+        // bugs in the catalog" rather than "of all RUNS executed",
+        // and break out per-bug status into PASSED / FAILED / NOT
+        // RUN so operators can see harness coverage at a glance.
+        // A bug is PASSED if any run against it passed; FAILED if
+        // it has runs but none passed; NOT RUN if it has zero
+        // benchmark runs to date.
+        val catalogBugs = bugCatalog.allBugs().map { it.id }.toSet()
+        val bugStatusByBug: Map<String, String> = catalogBugs.associateWith { bugId ->
+            val bugRuns = runs.filter { it.issueId == bugId }
+            when {
+                bugRuns.isEmpty() -> "NOT_RUN"
+                bugRuns.any { it.status.name == "PASSED" } -> "PASSED"
+                else -> "FAILED"
+            }
+        }
+        val suitePassed = bugStatusByBug.count { it.value == "PASSED" }
+        val suiteFailed = bugStatusByBug.count { it.value == "FAILED" }
+        val suiteNotRun = bugStatusByBug.count { it.value == "NOT_RUN" }
+        val suiteTotal = catalogBugs.size
+        model.addAttribute("passRate",
+            if (suiteTotal > 0) suitePassed.toDouble() / suiteTotal else 0.0)
+        model.addAttribute("suitePassed", suitePassed)
+        model.addAttribute("suiteFailed", suiteFailed)
+        model.addAttribute("suiteNotRun", suiteNotRun)
+        model.addAttribute("suiteTotal", suiteTotal)
         model.addAttribute("solvers", registeredModels.availableProviders(session))
         model.addAttribute("runs", runs)
         model.addAttribute("connectedRepos", 0)
@@ -731,6 +767,31 @@ class DashboardController(
      * Useful when the bridge is rate-limited and the operator
      * wants to stop wasting cycles on calls that won't succeed.
      */
+    /**
+     * Hide a single bug from dashboard reporting. The bug stays in
+     * BenchmarkRunService (raw runs are unaffected) but every
+     * downstream computation (leaderboard, per-bug-leaders,
+     * contamination warning, summary stats) excludes it. Used to
+     * suppress contamination-impacted bugs the operator has
+     * judged unrepresentative without losing the underlying data.
+     */
+    @PostMapping("/admin/dashboard/hide-bug")
+    fun hideBug(@RequestParam bugId: String, session: HttpSession): String {
+        hiddenBugs.hide(bugId.trim())
+        session.setAttribute("hideBugResult",
+            "Hidden $bugId from dashboard reporting. Unhide via the Hidden Bugs panel.")
+        return "redirect:/"
+    }
+
+    /** Unhide a single bug — reverses hideBug. */
+    @PostMapping("/admin/dashboard/unhide-bug")
+    fun unhideBug(@RequestParam bugId: String, session: HttpSession): String {
+        hiddenBugs.unhide(bugId.trim())
+        session.setAttribute("hideBugResult",
+            "Restored $bugId to dashboard reporting.")
+        return "redirect:/"
+    }
+
     @PostMapping("/runs/{runId}/cancel")
     fun cancelRun(
         @org.springframework.web.bind.annotation.PathVariable runId: String,

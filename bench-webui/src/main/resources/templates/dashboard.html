@@ -67,7 +67,20 @@
         <h2>Summary</h2>
         <div class="cards">
             <div class="card"><span class="label">Runs</span><span class="value" th:text="${totalRuns}">0</span></div>
-            <div class="card"><span class="label">Pass rate</span><span class="value" th:text="${#numbers.formatPercent(passRate, 1, 1)}">0%</span></div>
+            <!-- Pass rate is now scoped to "of the catalog" -- the
+                 fraction of bugs in the suite that have at least one
+                 PASSED run. The breakdown subline shows
+                 PASS / FAIL / NOT-RUN counts so operators see harness
+                 coverage at a glance. -->
+            <div class="card">
+                <span class="label">Pass rate (suite)</span>
+                <span class="value" th:text="${#numbers.formatPercent(passRate, 1, 1)}">0%</span>
+                <span class="help-text" style="display:block; font-size:0.75em; margin-top:2px"
+                      th:text="${suitePassed} + ' passed · ' +
+                               ${suiteFailed} + ' failed · ' +
+                               ${suiteNotRun} + ' not run · ' +
+                               ${suiteTotal} + ' total'"></span>
+            </div>
             <div class="card"><span class="label">Bugs</span><span class="value" th:text="${availableBugs}">0</span></div>
             <div class="card" th:if="${bugLintHighCount > 0}"
                  style="background:#fef3c7; border:1px solid #f59e0b">
@@ -256,18 +269,23 @@
                 outside the runs table
             </span>
         </h2>
-        <table style="width:auto; min-width:30em">
+        <table id="backgroundTasksTable" class="sortable-table"
+               style="width:auto; min-width:30em">
             <thead>
-            <tr>
-                <th>Kind</th>
-                <th>Target</th>
-                <th>Phase</th>
-                <th>Elapsed</th>
+            <tr class="sort-row">
+                <th data-sort-key="kind">Kind <span class="sort-indicator"></span></th>
+                <th data-sort-key="target">Target <span class="sort-indicator"></span></th>
+                <th data-sort-key="phase">Phase <span class="sort-indicator"></span></th>
+                <th data-sort-key="elapsed" data-sort-numeric="true">Elapsed <span class="sort-indicator"></span></th>
                 <th>Manage</th>
             </tr>
             </thead>
             <tbody>
-            <tr th:each="t : ${backgroundTasks}">
+            <tr th:each="t : ${backgroundTasks}"
+                th:attr="data-kind=${t.kind},
+                         data-target=${t.target},
+                         data-phase=${t.phase},
+                         data-elapsed=${t.elapsedSec}">
                 <td th:text="${t.kind}"></td>
                 <td><code th:text="${t.target}"></code></td>
                 <td th:text="${t.phase}" style="color:#b45309">⟳ <span th:text="${t.phase}"></span></td>
@@ -297,19 +315,68 @@
          section shows the prompt material inline so the operator can
          judge which one it is and decide whether to disqualify the
          model, rewrite the bug definition, or both. -->
-    <section th:unless="${#lists.isEmpty(contamination)}"
-             style="margin: 1em 0; padding: 0.8em 1em; border:1px solid #f59e0b;
-                    background:#fef3c7; border-radius:4px">
-        <h2 style="margin:0 0 0.3em; color:#92400e">⚠ Pre-training contamination warning
+    <!-- Hide-bug feedback flash (set by /admin/dashboard/hide-bug
+         + unhide-bug). Shown above the contamination section so the
+         operator sees the result of their last hide/unhide click. -->
+    <p th:if="${session.hideBugResult != null}"
+       style="padding:0.4em 0.8em; background:#dbeafe; border:1px solid #93c5fd;
+              border-radius:4px; color:#1e3a8a; margin:0.6em 0"
+       th:text="${session.hideBugResult}"></p>
+
+    <!-- Hidden Bugs panel -- only rendered when the operator has
+         actively hidden at least one bug. Lists each hidden bug
+         with an unhide button so the action is reversible without
+         editing ~/.aibench/hidden-bugs.json by hand. -->
+    <section th:unless="${#lists.isEmpty(hiddenBugIds)}"
+             style="margin:1em 0; padding:0.6em 0.9em; background:#eff6ff;
+                    border:1px solid #93c5fd; border-radius:4px">
+        <h3 style="margin:0 0 0.3em; color:#1e3a8a; font-size:1em">
+            🙈 Bugs hidden from dashboard reporting
+            <span class="help-text" style="font-weight:normal; font-size:0.85em">
+                — <span th:text="${#lists.size(hiddenBugIds)}"></span>
+                hidden; raw runs are still in the database, just suppressed
+                from leaderboard / per-bug-leaders / contamination /
+                summary stats.
+            </span>
+        </h3>
+        <ul style="margin:0.4em 0 0 1.2em; padding:0">
+            <li th:each="bid : ${hiddenBugIds}" style="margin:0.2em 0">
+                <code th:text="${bid}"></code>
+                <form method="post" action="/admin/dashboard/unhide-bug" style="display:inline">
+                    <input type="hidden" name="bugId" th:value="${bid}"/>
+                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:1px 6px">
+                        unhide
+                    </button>
+                </form>
+            </li>
+        </ul>
+    </section>
+
+    <!-- Contamination warning -- collapsible via <details> so it
+         doesn't dominate the dashboard once the operator has read
+         it. Default expanded so the FIRST visit makes the warning
+         obvious; the open/closed state is persistent across
+         reloads via sessionStorage (set by the JS at the bottom). -->
+    <details th:unless="${#lists.isEmpty(contamination)}"
+             id="contaminationDetails"
+             open
+             th:attr="style='margin: 1em 0; padding: 0.8em 1em; border:1px solid #f59e0b;
+                             background:#fef3c7; border-radius:4px'">
+        <summary style="cursor:pointer; outline:none">
+            <span style="color:#92400e; font-weight:bold; font-size:1.2em">
+                ⚠ Pre-training contamination warning
+            </span>
             <span class="help-text" style="font-weight:normal; font-size:0.85em">
                 — <span th:text="${#lists.size(contamination)}">0</span>
                 (model, bug) pair(s) passed with no context
+                · click to collapse
             </span>
-        </h2>
-        <p style="margin:0.3em 0 0.6em; font-size:0.92em">
-            These runs passed with <strong>contextProvider = none</strong> — no
-            source code, no traces, no oracle file list was supplied to the model.
-            A passing patch in this configuration means one of two things:
+        </summary>
+        <p style="margin:0.6em 0 0.6em; font-size:0.92em">
+            These runs passed with <strong>contextProvider = none</strong> AND
+            <strong>AppMap mode OFF</strong> — no source code, no traces, no
+            oracle file list was supplied to the model. A passing patch in
+            this configuration means one of two things:
         </p>
         <ol style="margin:0.3em 0 0.8em 1.2em; font-size:0.92em">
             <li><strong>Model contamination</strong> — the bug (or its real fix
@@ -439,6 +506,25 @@
                                 onclick="(function(b){var t=document.getElementById(b.getAttribute('data-target'));if(t){t.style.display=t.style.display==='none'?'':'none';}})(this)">
                             Show prompt material
                         </button>
+                        <!-- Hide-bug action — POSTs to
+                             /admin/dashboard/hide-bug. Adds the bugId
+                             to ~/.aibench/hidden-bugs.json so it's
+                             excluded from the leaderboard, per-bug-
+                             leaders, contamination warning, and
+                             summary stats on subsequent renders.
+                             Reversible via the Hidden Bugs panel
+                             above the contamination warning. -->
+                        ·
+                        <form method="post" action="/admin/dashboard/hide-bug" style="display:inline">
+                            <input type="hidden" name="bugId" th:value="${c.issueId}"/>
+                            <button type="submit" class="btn-sm"
+                                    style="background:#fef3c7; border:1px solid #fcd34d; color:#78350f"
+                                    th:attr="onclick='return confirm(\'Hide ' + ${c.issueId} +
+                                                       ' from dashboard reporting? Raw runs are kept;
+                                                        unhide via the Hidden Bugs panel.\');'">
+                                🙈 Hide bug from dashboard
+                            </button>
+                        </form>
                     </td>
                 </tr>
                 <tr th:id="${'contam-' + c.provider + '-' + c.modelId + '-' + c.issueId}"
@@ -474,7 +560,23 @@
             </tbody>
         </table>
         </form>
-    </section>
+    </details>
+    <script>
+      // Persist the contamination warning collapse state across
+      // dashboard reloads. Operators who have already triaged the
+      // warning don't want to re-collapse it on every refresh; new
+      // operators should still see it open by default on first visit.
+      (function () {
+        var d = document.getElementById('contaminationDetails');
+        if (!d) return;
+        var KEY = 'aibench.contamination.open';
+        var saved = sessionStorage.getItem(KEY);
+        if (saved === '0') d.removeAttribute('open');
+        d.addEventListener('toggle', function () {
+          sessionStorage.setItem(KEY, d.open ? '1' : '0');
+        });
+      })();
+    </script>
 
     <!-- Empty-leaderboard hint: shown when there ARE passing runs but
          all of them used the Oracle context provider (which is excluded
@@ -582,18 +684,17 @@
                          data-category=${#strings.listJoin(lb.solvedByCategory.keySet(), ',')}">
                 <td style="white-space:nowrap"
                     th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
-                    <!-- Drill-down chevron: click toggles the per-bug
-                         sibling row below this one. JS at the bottom
-                         of the leaderboard section handles the click.
-                         vertical-align:middle keeps the triangle
-                         centered on the model-id text rather than
-                         drifting to baseline + offsetting the row. -->
-                    <button type="button" class="lb-drill" th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
-                            th:attr="data-target='lb-drill-' + ${iter.index}"
-                            style="border:none; background:none; cursor:pointer;
-                                   padding:0 0.3em; font-size:0.85em; color:#6b7280;
-                                   vertical-align:middle; line-height:1;
-                                   width:1.4em; text-align:center">▶</button>
+                    <!-- Drilldown moved to a separate detail page so
+                         it doesn't share the tbody (which broke
+                         pagination + sort when the inline drill row
+                         was visible). The chevron is now a link to
+                         /admin/leaderboard/detail?... carrying the
+                         four ctx-key fields. -->
+                    <a th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
+                       th:href="@{/admin/leaderboard/detail(provider=${lb.provider},modelId=${lb.modelId},contextProvider=${lb.contextProvider},appmapMode=${lb.appmapMode})}"
+                       title="Open per-bug breakdown for this configuration in a separate page"
+                       style="color:#6b7280; text-decoration:none; padding:0 0.3em;
+                              font-size:0.85em; vertical-align:middle">▶</a>
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
@@ -679,54 +780,15 @@
                           th:text="${entry.key} + '×' + ${entry.value}"></span>
                 </td>
             </tr>
-            <!-- Drilldown row: hidden by default, toggled by the
-                 chevron in the Model cell above. Shows per-bug rollup
-                 for this exact (model, ctx, mode) configuration. Each
-                 row deep-links to the most recent run's audit page. -->
-            <tr th:if="${not #lists.isEmpty(lb.bugBreakdown)}"
-                th:id="'lb-drill-' + ${iter.index}"
-                class="lb-drill-row"
-                style="display:none; background:#f9fafb">
-                <td colspan="12" style="padding:0.4em 1em">
-                    <table style="width:auto; font-size:0.85em">
-                        <thead>
-                        <tr><th>Bug</th><th>Difficulty</th><th>Category</th>
-                            <th class="num">Pass</th>
-                            <th class="num">Avg time</th><th class="num">Avg cost</th>
-                            <th>Latest status</th><th>Audit</th></tr>
-                        </thead>
-                        <tbody>
-                        <tr th:each="b : ${lb.bugBreakdown}">
-                            <td><a th:href="'/demo/' + ${b.bugId}"><code th:text="${b.bugId}"></code></a></td>
-                            <td><span th:class="'badge ' + ${b.difficulty}" th:text="${b.difficulty}"></span></td>
-                            <td th:text="${b.category}"></td>
-                            <td class="num"
-                                th:text="${b.passedRuns} + '/' + ${b.totalRuns}"></td>
-                            <td class="num" th:text="${b.avgDurationMs / 1000} + 's'"></td>
-                            <td class="num" th:text="'$' + ${#numbers.formatDecimal(b.avgCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
-                            <td><span th:class="'badge ' + ${b.latestStatus}" th:text="${b.latestStatus}"></span></td>
-                            <td><a th:href="'/results/' + ${b.latestRunId}">→ open</a></td>
-                        </tr>
-                        </tbody>
-                    </table>
-                </td>
-            </tr>
+            <!-- Inline drilldown row removed -- the per-bug rollup
+                 was sharing the leaderboard tbody, which scrambled
+                 sort + pagination + filter (operators reported "10
+                 rows shown but only 1 visible"). The chevron in the
+                 Model cell now links to /admin/leaderboard/detail
+                 which renders the same data on its own page. -->
             </th:block>
             </tbody>
         </table>
-        <script>
-          // Chevron toggle for the leaderboard drilldown rows above.
-          // Each chevron has data-target pointing at the sibling tr id.
-          document.querySelectorAll('#leaderboardTable .lb-drill').forEach(function(btn){
-            btn.addEventListener('click', function(){
-              var t = document.getElementById(btn.getAttribute('data-target'));
-              if (!t) return;
-              var open = t.style.display !== 'none';
-              t.style.display = open ? 'none' : '';
-              btn.textContent = open ? '▶' : '▼';
-            });
-          });
-        </script>
         </div>
 
         <!-- Pagination controls — populated by the JS below. Hidden when
@@ -749,30 +811,13 @@
             var pageSize = parseInt(pageSizeSelect.value, 10) || 10;
             var page = 1;
 
-            // Pagination operates on PRIMARY rows only. Drilldown
-            // rows (`.lb-drill-row`) are siblings managed by chevron
-            // clicks; including them in the pagination loop would
-            // (a) miscount visible rows and (b) un-hide drilldowns
-            // when their parent row paginated into view -- the
-            // "often displays expanded" bug.
             function allRows() {
-                return Array.prototype.slice.call(tbody.querySelectorAll('tr:not(.lb-drill-row)'));
+                return Array.prototype.slice.call(tbody.querySelectorAll('tr'));
             }
             function visibleRows() {
                 return allRows().filter(function (r) {
                     return !r.classList.contains('filtered-out');
                 });
-            }
-            // Hide the drilldown that follows a primary row (and only
-            // that drilldown) when its parent goes off-page. Avoids
-            // an orphan drilldown sticking around when its row scrolls
-            // into a different page slice. Also resets the chevron.
-            function hidePartnerDrill(primaryRow) {
-                var btn = primaryRow.querySelector('.lb-drill');
-                if (!btn) return;
-                var t = document.getElementById(btn.getAttribute('data-target'));
-                if (t) t.style.display = 'none';
-                btn.textContent = '▶';
             }
             function repaint() {
                 var all = allRows();
@@ -780,13 +825,7 @@
                 var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
                 if (page > totalPages) page = totalPages;
                 var from = (page - 1) * pageSize;
-                // Hide every primary row + reset its drilldown.
-                all.forEach(function (r) {
-                    r.style.display = 'none';
-                    hidePartnerDrill(r);
-                });
-                // Show only the paginated primary rows. Their drilldowns
-                // stay hidden until the operator clicks the chevron.
+                all.forEach(function (r) { r.style.display = 'none'; });
                 visible.slice(from, from + pageSize).forEach(function (r) {
                     r.style.display = '';
                 });
@@ -860,30 +899,38 @@
                       style="color:#7c2d12; font-weight:bold"
                       th:text="'· ' + ${uniquelySolvedCount} + ' uniquely solved'"></span>
             </span>
+            <button type="button" id="perbug-csv-btn" class="btn-sm" style="float:right">Export CSV</button>
         </h2>
         <div class="table-scroll">
-        <table style="font-size:0.9em">
+        <table id="perBugLeadersTable" class="sortable-table"
+               data-csv-target="#perbug-csv-btn"
+               data-csv-filename="per-bug-leaders.csv"
+               style="font-size:0.9em">
             <thead>
-                <tr>
-                    <th>Bug</th>
-                    <th>Difficulty</th>
-                    <th>Category</th>
-                    <th class="num">Solvers</th>
-                    <th>Winner (model · ctx · appmap)</th>
-                    <th class="num">Time</th>
-                    <th class="num">Cost</th>
-                    <!-- Per-row sparkline columns: one bar per
-                         passing solver, height encodes time / cost
-                         relative to the row's max. Winner bar is
-                         green, runners-up are slate. Hover any bar
-                         for the model · ctx · appmap label + raw
-                         numbers. -->
+                <tr class="sort-row">
+                    <th data-sort-key="bug">Bug <span class="sort-indicator"></span></th>
+                    <th data-sort-key="difficulty"
+                        data-sort-order="TRIVIAL,EASY,MEDIUM,HARD,(unknown)">Difficulty <span class="sort-indicator"></span></th>
+                    <th data-sort-key="category">Category <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solvers" data-sort-numeric="true" class="num">Solvers <span class="sort-indicator"></span></th>
+                    <th data-sort-key="winner">Winner (model · ctx · appmap) <span class="sort-indicator"></span></th>
+                    <th data-sort-key="time" data-sort-numeric="true" class="num">Time <span class="sort-indicator"></span></th>
+                    <th data-sort-key="cost" data-sort-numeric="true" class="num">Cost <span class="sort-indicator"></span></th>
+                    <!-- Sparkline columns are unsortable on purpose --
+                         no meaningful ordering (visual chart). -->
                     <th title="Bar per passing solver. Shorter = faster. Winner = green.">Time chart</th>
                     <th title="Bar per passing solver. Shorter = cheaper. Winner = green.">Cost chart</th>
                 </tr>
             </thead>
             <tbody>
                 <tr th:each="b : ${perBugLeaders}"
+                    th:attr="data-bug=${b.bugId},
+                             data-difficulty=${b.difficulty},
+                             data-category=${b.category},
+                             data-solvers=${b.solvers},
+                             data-winner=${b.winnerModel},
+                             data-time=${b.winnerDurationMs != null ? b.winnerDurationMs : 999999999},
+                             data-cost=${b.winnerCostUsd != null ? b.winnerCostUsd : 999999}"
                     th:style="${b.uniquelySolved
                                 ? 'background:#fef3c7; border-left:3px solid #d97706'
                                 : (b.solvers == 0 ? 'opacity:0.55' : '')}">

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{fragments/layout :: page('Leaderboard detail', ~{::main})}">
+<body>
+<main>
+    <script defer th:src="@{/sortable-table.js}"></script>
+
+    <p><a th:href="@{/}">&larr; Back to dashboard</a></p>
+
+    <h1 style="margin:0.2em 0">Leaderboard detail</h1>
+    <div style="color:#6b7280; font-size:0.95em; margin-bottom:1em">
+        <strong th:text="${provider}">provider</strong> ·
+        <code th:text="${modelId}">modelId</code> ·
+        ctx=<span th:text="${contextProvider}">ctx</span> ·
+        appmap=<span th:text="${appmapMode}">mode</span>
+    </div>
+
+    <section style="display:flex; gap:1em; margin-bottom:1em">
+        <div class="card">
+            <span class="label">Total runs</span>
+            <span class="value" th:text="${totalRuns}">0</span>
+        </div>
+        <div class="card">
+            <span class="label">Passed runs</span>
+            <span class="value" th:text="${passedRuns}">0</span>
+        </div>
+        <div class="card">
+            <span class="label">Distinct bugs solved</span>
+            <span class="value" th:text="${solvedBugs}">0</span>
+        </div>
+    </section>
+
+    <section>
+        <h2 style="display:inline-block; margin-right:1em">Per-bug breakdown</h2>
+        <button th:if="${not #lists.isEmpty(rows)}"
+                id="detail-csv-btn" type="button" class="btn-sm">Export CSV</button>
+
+        <p th:if="${#lists.isEmpty(rows)}" style="color:#6b7280">
+            No runs found for this configuration.
+        </p>
+
+        <table th:if="${not #lists.isEmpty(rows)}"
+               class="sortable-table"
+               data-csv-target="#detail-csv-btn"
+               data-csv-filename="leaderboard-detail.csv"
+               style="width:100%">
+            <thead>
+            <tr class="sort-row">
+                <th data-sort-key="bug">Bug</th>
+                <th data-sort-key="difficulty">Difficulty</th>
+                <th data-sort-key="category">Category</th>
+                <th class="num" data-sort-key="pass" data-sort-numeric="true"
+                    data-sort-order="desc">Pass</th>
+                <th class="num" data-sort-key="time" data-sort-numeric="true">Avg time</th>
+                <th class="num" data-sort-key="cost" data-sort-numeric="true">Avg cost</th>
+                <th data-sort-key="status">Latest status</th>
+                <th>Audit</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr th:each="b : ${rows}"
+                th:attr="data-bug=${b.bugId},
+                         data-difficulty=${b.difficulty},
+                         data-category=${b.category},
+                         data-pass=${b.passedRuns},
+                         data-time=${b.avgDurationMs},
+                         data-cost=${b.avgCostUsd},
+                         data-status=${b.latestStatus}">
+                <td><a th:href="'/demo/' + ${b.bugId}"><code th:text="${b.bugId}"></code></a></td>
+                <td><span th:class="'badge ' + ${b.difficulty}" th:text="${b.difficulty}"></span></td>
+                <td th:text="${b.category}"></td>
+                <td class="num" th:text="${b.passedRuns} + '/' + ${b.totalRuns}"></td>
+                <td class="num" th:text="${b.avgDurationMs / 1000} + 's'"></td>
+                <td class="num"
+                    th:text="'$' + ${#numbers.formatDecimal(b.avgCostUsd, 1, 'COMMA', 6, 'POINT')}"></td>
+                <td><span th:class="'badge ' + ${b.latestStatus}" th:text="${b.latestStatus}"></span></td>
+                <td><a th:href="'/results/' + ${b.latestRunId}">&rarr; open</a></td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+</main>
+</body>
+</html>
