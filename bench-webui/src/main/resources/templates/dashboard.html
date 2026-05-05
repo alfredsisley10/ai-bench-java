@@ -647,8 +647,7 @@
                     <th data-sort-key="solved" data-sort-numeric="true" class="num" title="Distinct bugs solved by this configuration, out of the catalog total. Higher = covers more of the suite.">Solved <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgms" data-sort-numeric="true" class="num" title="Average wall-clock duration across all passing runs for this configuration">Avg time <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgcost" data-sort-numeric="true" class="num" title="Average USD cost across all passing runs (hover the cell for the raw decimal)">Avg cost <span class="sort-indicator"></span></th>
-                    <th data-sort-key="difficulty" title="Per-difficulty breakdown of bugs this configuration solved (TRIVIAL/EASY/MEDIUM/HARD from the bug catalog)">Difficulty <span class="sort-indicator"></span></th>
-                    <th data-sort-key="category" title="Per-category breakdown of bugs this configuration solved (NUMERIC, STATE_MACHINE, TIMING, etc. from the bug catalog)">Category <span class="sort-indicator"></span></th>
+                    <th title="One bar per catalog bug (left-to-right by bug id). Green = passed, red = ran but never passed, grey = not attempted by this configuration. Hover a bar for its bug id + status.">Bugs</th>
                 </tr>
                 <tr class="filter-row">
                     <th><input type="text" data-filter-col="0" placeholder="filter model"></th>
@@ -659,8 +658,7 @@
                     <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
                     <th><input type="text" data-filter-col="6" placeholder="filter avg"></th>
                     <th><input type="text" data-filter-col="7" placeholder="filter avg"></th>
-                    <th><input type="text" data-filter-col="8" placeholder="EASY,MEDIUM…"></th>
-                    <th><input type="text" data-filter-col="9" placeholder="TIMING,LOGIC…"></th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -673,9 +671,7 @@
                          data-passrate=${lb.passRate},
                          data-solved=${lb.solvedBugs},
                          data-avgms=${lb.avgPassMs},
-                         data-avgcost=${lb.avgPassCostUsd},
-                         data-difficulty=${#strings.listJoin(lb.solvedByDifficulty.keySet(), ',')},
-                         data-category=${#strings.listJoin(lb.solvedByCategory.keySet(), ',')}">
+                         data-avgcost=${lb.avgPassCostUsd}">
                 <td style="white-space:nowrap"
                     th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
                     <!-- Drilldown moved to a separate detail page so
@@ -743,22 +739,8 @@
                            th:text="${delta != null ? ((delta.avgCostPctVsLeader > 0 ? '+' : '') + delta.avgCostPctVsLeader + '% vs leader') : ''}"
                            style="display:block; font-size:0.8em"></small>
                 </td>
-                <td th:title="'Per-difficulty breakdown of bugs solved by this configuration (counts after × sign)'">
-                    <span th:each="entry : ${lb.solvedByDifficulty}"
-                          th:title="${entry.key} + ' difficulty bugs solved: ' + ${entry.value}"
-                          style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
-                                 border:1px solid #d1d5db; border-radius:3px; font-size:0.8em;
-                                 background:#f9fafb; white-space:nowrap"
-                          th:text="${entry.key} + '×' + ${entry.value}"></span>
-                </td>
-                <td th:title="'Per-category breakdown of bugs solved by this configuration (counts after × sign)'">
-                    <span th:each="entry : ${lb.solvedByCategory}"
-                          th:title="${entry.key} + ' category bugs solved: ' + ${entry.value}"
-                          style="display:inline-block; padding:0 0.35em; margin:0 0.2em 0.15em 0;
-                                 border:1px solid #c7d2fe; border-radius:3px; font-size:0.8em;
-                                 background:#eef2ff; white-space:nowrap"
-                          th:text="${entry.key} + '×' + ${entry.value}"></span>
-                </td>
+                <td style="white-space:nowrap"
+                    th:utext="${lb.bugStatusSparkSvg}"></td>
             </tr>
             <!-- Inline drilldown row removed -- the per-bug rollup
                  was sharing the leaderboard tbody, which scrambled
@@ -973,25 +955,45 @@
         <table id="heatMatrixTable" class="sortable-table"
                style="font-size:0.78em; border-collapse:separate; border-spacing:1px">
             <thead>
-                <!-- All matrix headers are clickable sorts. The two
-                     fixed columns (Bug, Diff) sort by row data-*
-                     attributes; the dynamic config columns use
-                     data-sort-cell + per-cell data-sort-value (rank
-                     0=PASSED, 1=FAILED, 2=ERRORED, 3=CANCELED,
-                     9=no attempt) so PASSED bubbles to the top of an
-                     ascending sort on any solver column -- the
-                     "which configurations dominate this column?"
-                     question. -->
-                <tr class="sort-row">
-                    <th data-sort-key="bug"
-                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6; cursor:pointer">
+                <!-- Three-row banner header. Top row groups columns
+                     by context provider; middle row sub-groups by
+                     AppMap mode; bottom row holds the model id label
+                     and the click-to-sort handlers. The two fixed
+                     left columns (Bug, Diff) carry rowspan=3 so their
+                     headers stay anchored at the bottom row where
+                     the sort handlers live. -->
+                <tr>
+                    <th rowspan="3" data-sort-key="bug"
+                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
+                               vertical-align:bottom; cursor:pointer">
                         Bug <span class="sort-indicator"></span>
                     </th>
-                    <th data-sort-key="difficulty"
+                    <th rowspan="3" data-sort-key="difficulty"
                         data-sort-order="EASY,MEDIUM,HARD"
-                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6; cursor:pointer">
+                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
+                               vertical-align:bottom; cursor:pointer">
                         Diff <span class="sort-indicator"></span>
                     </th>
+                    <th th:each="g : ${heatCtxGroups}"
+                        th:colspan="${g.colspan}"
+                        th:title="'context provider: ' + ${g.ctxLabel}"
+                        style="text-align:center; padding:0.25em 0.4em;
+                               background:#e0e7ff; border-bottom:1px solid #c7d2fe;
+                               font-weight:600; color:#312e81">
+                        ctx=<span th:text="${g.ctxLabel}">…</span>
+                    </th>
+                </tr>
+                <tr>
+                    <th th:each="ag : ${heatAppmapGroups}"
+                        th:colspan="${ag.colspan}"
+                        th:title="'AppMap mode: ' + ${ag.appmapLabel}"
+                        style="text-align:center; padding:0.2em 0.4em;
+                               background:#f1f5f9; border-bottom:1px solid #cbd5e1;
+                               font-size:0.85em; color:#475569">
+                        appmap=<span th:text="${ag.appmapLabel}">…</span>
+                    </th>
+                </tr>
+                <tr class="sort-row">
                     <th th:each="c, iter : ${heatColumns}"
                         th:title="${c.tooltip}"
                         th:attr="data-sort-key='c' + ${iter.index},
@@ -1003,7 +1005,6 @@
                                     white-space:nowrap; font-family:monospace;
                                     font-size:0.85em; max-height:14em">
                             <span th:text="${c.modelShort}">…</span>
-                            <span style="color:#475569" th:text="' ' + ${c.ctxShort} + ${c.appmapShort}">…</span>
                         </div>
                     </th>
                 </tr>
@@ -1031,12 +1032,12 @@
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
                         th:style="${cell == null ? 'background:#f1f5f9' :
                                     (cell.status == 'PASSED'
-                                       ? 'background:#16a34a; color:white'
+                                       ? 'background:#bbf7d0; color:#14532d'
                                        : (cell.status == 'FAILED'
-                                          ? 'background:#dc2626; color:white'
+                                          ? 'background:#fecaca; color:#7f1d1d'
                                           : (cell.status == 'ERRORED'
-                                             ? 'background:#a16207; color:white'
-                                             : 'background:#cbd5e1')))}"
+                                             ? 'background:#fde68a; color:#78350f'
+                                             : 'background:#e2e8f0; color:#334155')))}"
                         th:title="${cell == null
                                     ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
                                     : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status + ' · ' + (cell.durationMs / 1000) + 's')}"
@@ -1057,12 +1058,12 @@
         </table>
         </div>
         <p class="help-text" style="margin-top:0.6em; font-size:0.85em">
-            <strong>Reading the matrix:</strong> column headers compress to
-            <code>&lt;model&gt; &lt;ctx&gt;&lt;appmap&gt;</code> where ctx ∈
-            {<code>O</code>=oracle, <code>B</code>=bm25, <code>N</code>=appmap-navie,
-            <code>n</code>=none} and appmap is <code>+</code> when ON.
-            <span style="color:#d97706">★</span> marks bugs solved by exactly one configuration.
-            Hover any cell for the run's status and duration.
+            <strong>Reading the matrix:</strong> columns are grouped by
+            context provider (top banner) and AppMap mode (sub-banner),
+            so each model column is uniquely identified by its position
+            under the headers above. <span style="color:#d97706">★</span>
+            marks bugs solved by exactly one configuration. Hover any
+            cell for the run's status and duration.
         </p>
     </section>
 

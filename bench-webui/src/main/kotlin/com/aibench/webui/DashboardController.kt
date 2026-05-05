@@ -136,6 +136,25 @@ class DashboardController(
         val totalSolves: Int
     )
 
+    /** Top-row grouping of heat-map columns by context-provider.
+     *  Used to render a multi-row header where the operator sees
+     *  "ctx=appmap-navie" / "ctx=bm25" / "ctx=none" as a banner
+     *  spanning every column that uses that ctx. `colspan` is the
+     *  sum of every appmap subgroup's colspan inside this group. */
+    data class HeatCtxGroup(
+        val ctxLabel: String,
+        val colspan: Int,
+        val appmapGroups: List<HeatAppmapGroup>
+    )
+
+    /** Sub-banner of [HeatCtxGroup]: every model column sharing the
+     *  same (ctx, appmap) combination. `colspan` = number of model
+     *  columns in this subgroup. */
+    data class HeatAppmapGroup(
+        val appmapLabel: String,
+        val colspan: Int
+    )
+
     /** Bug row metadata for the heat-map. */
     data class HeatBugRow(
         val bugId: String,
@@ -206,8 +225,14 @@ class DashboardController(
          *  FAILED_TESTS in 31s, $0.022 / ...". Empty when this
          *  configuration has no runs at all. */
         val bugBreakdown: List<BugDrilldown>,
-        val solvedByDifficulty: Map<String, Int>,
-        val solvedByCategory: Map<String, Int>
+        /** Inline SVG strip with one bar per catalog bug (sorted by
+         *  bugId). Green = at least one run passed, red = ran but
+         *  never passed, grey = no run for this configuration.
+         *  Replaces the old Difficulty + Category text columns on
+         *  the leaderboard -- the operator can scan the strip
+         *  left-to-right and instantly see which bugs this
+         *  configuration has + hasn't solved. */
+        val bugStatusSparkSvg: String
     )
 
     @GetMapping("/")
@@ -349,10 +374,7 @@ class DashboardController(
                 avgPassMs = records.map { it.durationMs }.average().toLong(),
                 avgPassCostUsd = records.map { it.costUsd }.average(),
                 bugBreakdown = drilldown,
-                solvedByDifficulty = records.groupingBy { it.difficulty }.eachCount()
-                    .toList().sortedByDescending { it.second }.toMap(LinkedHashMap()),
-                solvedByCategory = records.groupingBy { it.category }.eachCount()
-                    .toList().sortedByDescending { it.second }.toMap(LinkedHashMap())
+                bugStatusSparkSvg = bugStatusSparkSvg(catalogBugs.sorted(), drilldown)
             )
         }
         // Disqualify Oracle context entries from the leaderboard. Oracle
@@ -458,10 +480,19 @@ class DashboardController(
         // bucket (HARD/MEDIUM/EASY/TRIVIAL) then bugId for visual
         // grouping; difficulty also exposed per row so the template
         // can color the row label.
+        // Sort columns by (ctx, appmap, model) so the multi-row
+        // header banner (ctx → appmap → model) groups visually.
+        // OFF first within each ctx so the operator reads the
+        // matrix as "no-context first, traces added later".
         val configsWithAttempts: List<Triple<String, String, String>> = nonOracleRuns
             .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
             .distinct()
-            .sortedBy { "${it.first}|${it.second}|${it.third}" }
+            .sortedWith(compareBy(
+                { it.second.lowercase() },                         // ctx
+                { if (it.third.equals("OFF", true) || it.third.isBlank()) 0 else 1 }, // OFF first
+                { it.third },                                      // then ON_* alphabetically
+                { it.first }                                       // then model
+            ))
         val heatColumns: List<HeatColumn> = configsWithAttempts.map { (model, ctx, mode) ->
             val k = "$model|$ctx|$mode"
             val solves = nonOracleRuns.count {
@@ -485,6 +516,30 @@ class DashboardController(
                 totalSolves = solves
             )
         }
+        // Group by ctx → appmap so the template can render a banner
+        // header. configsWithAttempts is already sorted in the
+        // matching order, so groupingBy preserves group adjacency.
+        val heatCtxGroups: List<HeatCtxGroup> = configsWithAttempts
+            .groupBy { it.second }                               // ctx
+            .map { (ctx, ctxConfigs) ->
+                val appmapGroups = ctxConfigs.groupBy { it.third }
+                    .map { (mode, modeConfigs) ->
+                        HeatAppmapGroup(
+                            appmapLabel = if (mode.equals("OFF", true) || mode.isBlank()) "OFF"
+                                          else mode,
+                            colspan = modeConfigs.size
+                        )
+                    }
+                HeatCtxGroup(
+                    ctxLabel = ctx,
+                    colspan = ctxConfigs.size,
+                    appmapGroups = appmapGroups
+                )
+            }
+        // Flat appmap-subgroup list for the second header row, in
+        // column order. Avoids nested th:each in the template.
+        val heatAppmapGroups: List<HeatAppmapGroup> =
+            heatCtxGroups.flatMap { it.appmapGroups }
         // Only carry bugs that had at least 1 attempt (matches the
         // configs-with-attempts logic). Sort by uniquely-solved first
         // so the most distinctive bugs surface near the top.
@@ -533,6 +588,8 @@ class DashboardController(
             out
         }
         model.addAttribute("heatColumns", heatColumns)
+        model.addAttribute("heatCtxGroups", heatCtxGroups)
+        model.addAttribute("heatAppmapGroups", heatAppmapGroups)
         model.addAttribute("heatBugRows", heatBugRows)
         model.addAttribute("heatCells", heatCells)
         // When the leaderboard is empty BUT we DO have passing oracle
@@ -878,6 +935,44 @@ class DashboardController(
                 .append("""fill="$fill" rx="1"><title>""")
                 .append(tip)
                 .append("""</title></rect>""")
+            x += barW + gap
+        }
+        sb.append("</svg>")
+        return sb.toString()
+    }
+
+    /** One-bar-per-bug status strip for the leaderboard's "Bugs"
+     *  column. Bars are full-height (height encodes nothing -- this
+     *  is a categorical chart, not a time/cost one); color encodes
+     *  status. Bugs are rendered in catalog-id order so an operator
+     *  can scan left-to-right and read it as "BUG-0001 ... BUG-N".
+     *  Each bar's <title> is the bug id + status -- browser-native
+     *  hover tooltip, no JS needed. */
+    private fun bugStatusSparkSvg(
+        sortedCatalogBugIds: List<String>,
+        breakdown: List<BugDrilldown>
+    ): String {
+        if (sortedCatalogBugIds.isEmpty()) return ""
+        val byBug = breakdown.associateBy { it.bugId }
+        val h = 18
+        val barW = 8
+        val gap = 1
+        val w = sortedCatalogBugIds.size * (barW + gap) + gap
+        val sb = StringBuilder()
+        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" """)
+            .append("""viewBox="0 0 $w $h" style="vertical-align:middle">""")
+        var x = gap
+        for (bugId in sortedCatalogBugIds) {
+            val drill = byBug[bugId]
+            val (fill, status) = when {
+                drill == null -> "#cbd5e1" to "not run"
+                drill.passedRuns > 0 -> "#16a34a" to "PASSED (${drill.passedRuns}/${drill.totalRuns})"
+                else -> "#dc2626" to "FAILED (0/${drill.totalRuns})"
+            }
+            val tip = escapeXml("$bugId — $status")
+            sb.append("""<rect x="$x" y="0" width="$barW" height="$h" fill="$fill" rx="1"><title>""")
+                .append(tip)
+                .append("</title></rect>")
             x += barW + gap
         }
         sb.append("</svg>")
