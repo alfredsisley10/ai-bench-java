@@ -35,7 +35,16 @@
     table.__sortableInit = true;
     const tbody = table.querySelector('tbody');
     if (!tbody) return;
-    const rows = Array.from(tbody.querySelectorAll('tr'));
+    // Rows tagged with data-skip-sort="true" are excluded from
+    // sort + filter + count. Used for drilldown / detail siblings
+    // that should stay attached to their preceding primary row
+    // (e.g. the contamination table's "Show prompt material"
+    // expansion or the leaderboard's `.lb-drill-row` per-bug
+    // breakdown). Without this filter, sorting reordered every
+    // <tr> in tbody and stranded drilldowns away from their
+    // parents.
+    const allRows = Array.from(tbody.querySelectorAll('tr'));
+    const rows = allRows.filter(r => r.getAttribute('data-skip-sort') !== 'true');
     const sortHeaders = table.querySelectorAll('.sort-row th[data-sort-key]');
     const filters = table.querySelectorAll('.filter-row input[data-filter-col]');
     const counterSel = table.dataset.countTarget;

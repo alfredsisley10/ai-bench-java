@@ -368,21 +368,25 @@
                 </span>
             </div>
 
-        <table style="width:100%; font-size:0.9em; background:#fff;
+        <table id="contaminationTable" class="sortable-table"
+               style="width:100%; font-size:0.9em; background:#fff;
                       border-collapse:collapse">
             <thead>
-                <tr>
+                <tr class="sort-row">
                     <th style="padding:4px 8px; border-bottom:1px solid #ddd"></th>
-                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Model</th>
-                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Bug</th>
-                    <th style="text-align:right; padding:4px 8px; border-bottom:1px solid #ddd">Passes / Total</th>
-                    <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Probe</th>
+                    <th data-sort-key="model" style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Model <span class="sort-indicator"></span></th>
+                    <th data-sort-key="bug" style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Bug <span class="sort-indicator"></span></th>
+                    <th data-sort-key="passes" data-sort-numeric="true" style="text-align:right; padding:4px 8px; border-bottom:1px solid #ddd">Passes / Total <span class="sort-indicator"></span></th>
+                    <th data-sort-key="probe" style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd">Probe <span class="sort-indicator"></span></th>
                     <th style="padding:4px 8px; border-bottom:1px solid #ddd"></th>
                 </tr>
             </thead>
             <tbody>
                 <th:block th:each="c : ${contamination}">
-                <tr>
+                <tr th:attr="data-model=${c.provider + '/' + c.modelId},
+                             data-bug=${c.issueId},
+                             data-passes=${c.passes},
+                             data-probe=${c.probeStatus}">
                     <td style="padding:4px 8px; border-bottom:1px solid #eee; text-align:center">
                         <input type="checkbox" name="pairs"
                                th:value="${c.provider + '|' + c.modelId + '|' + c.issueId}"
@@ -438,6 +442,7 @@
                     </td>
                 </tr>
                 <tr th:id="${'contam-' + c.provider + '-' + c.modelId + '-' + c.issueId}"
+                    data-skip-sort="true"
                     style="display:none">
                     <td colspan="6" style="padding:8px 12px; background:#fafaf5;
                                             border-bottom:1px solid #eee">
@@ -867,6 +872,14 @@
                     <th>Winner (model · ctx · appmap)</th>
                     <th class="num">Time</th>
                     <th class="num">Cost</th>
+                    <!-- Per-row sparkline columns: one bar per
+                         passing solver, height encodes time / cost
+                         relative to the row's max. Winner bar is
+                         green, runners-up are slate. Hover any bar
+                         for the model · ctx · appmap label + raw
+                         numbers. -->
+                    <th title="Bar per passing solver. Shorter = faster. Winner = green.">Time chart</th>
+                    <th title="Bar per passing solver. Shorter = cheaper. Winner = green.">Cost chart</th>
                 </tr>
             </thead>
             <tbody>
@@ -905,6 +918,11 @@
                     <td class="num"
                         th:text="${b.winnerCostUsd == null ? '—' :
                                    ('$' + #numbers.formatDecimal(b.winnerCostUsd, 1, 'COMMA', 4, 'POINT'))}">—</td>
+                    <!-- Inline SVG sparkline injected via th:utext.
+                         The renderer escapes every dynamic value
+                         before stitching, so XSS surface is zero. -->
+                    <td th:utext="${b.timeSparklineSvg}"></td>
+                    <td th:utext="${b.costSparklineSvg}"></td>
                 </tr>
             </tbody>
         </table>
