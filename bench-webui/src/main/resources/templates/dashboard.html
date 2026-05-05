@@ -643,8 +643,8 @@
                     <th data-sort-key="provider" title="LLM provider routing this model — copilot, corp-openai, etc.">LLM Provider <span class="sort-indicator"></span></th>
                     <th data-sort-key="ctx" title="Context provider used to choose which source files were shipped in the prompt. Oracle is excluded from the leaderboard since it requires the curated filesTouched (not realistic for an unseen codebase).">Context Provider <span class="sort-indicator"></span></th>
                     <th data-sort-key="appmap" title="AppMap recording mode — OFF, ON_RECOMMENDED (REC; bug's recommended tests only), ON_ALL (every test in the bug's module)">AppMap <span class="sort-indicator"></span></th>
-                    <th data-sort-key="passrate" data-sort-numeric="true" class="num" title="Pass rate for this exact (model, ctx, appmap) configuration: passed runs / total runs">Pass <span class="sort-indicator"></span></th>
-                    <th data-sort-key="solved" data-sort-numeric="true" class="num" title="Distinct bugs solved by this configuration, out of the catalog total. Higher = covers more of the suite.">Solved <span class="sort-indicator"></span></th>
+                    <th data-sort-key="passrate" data-sort-numeric="true" data-filter-numeric="true" class="num" title="Pass rate (%) for this configuration. Filter accepts ≥N or =N (numeric percent).">Pass <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solved" data-sort-numeric="true" data-filter-numeric="true" class="num" title="Distinct bugs solved out of the catalog. Filter accepts ≥N or =N.">Solved <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgms" data-sort-numeric="true" class="num" title="Average wall-clock duration across all passing runs for this configuration">Avg time <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgcost" data-sort-numeric="true" class="num" title="Average USD cost across all passing runs (hover the cell for the raw decimal)">Avg cost <span class="sort-indicator"></span></th>
                     <th title="One bar per catalog bug (left-to-right by bug id). Green = passed, red = ran but never passed, grey = not attempted by this configuration. Hover a bar for its bug id + status.">Bugs</th>
@@ -654,8 +654,8 @@
                     <th><input type="text" data-filter-col="1" placeholder="filter LLM provider"></th>
                     <th><input type="text" data-filter-col="2" placeholder="filter ctx"></th>
                     <th><input type="text" data-filter-col="3" placeholder="filter mode"></th>
-                    <th><input type="text" data-filter-col="4" placeholder="≥, ≤, ="></th>
-                    <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
+                    <th><input type="text" data-filter-col="4" placeholder="≥N or =N (%)"></th>
+                    <th><input type="text" data-filter-col="5" placeholder="≥N or =N"></th>
                     <th><input type="text" data-filter-col="6" placeholder="filter avg"></th>
                     <th><input type="text" data-filter-col="7" placeholder="filter avg"></th>
                     <th></th>
@@ -673,6 +673,7 @@
                          data-avgms=${lb.avgPassMs},
                          data-avgcost=${lb.avgPassCostUsd}">
                 <td style="white-space:nowrap"
+                    th:attr="data-filter-value=${lb.modelId}"
                     th:title="${lb.provider} + ' / ' + ${lb.modelId} + ' · ctx=' + ${lb.contextProvider} + ' · appmap=' + ${lb.appmapMode}">
                     <!-- Drilldown moved to a separate detail page so
                          it doesn't share the tbody (which broke
@@ -700,11 +701,13 @@
                     th:text="${lb.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
                               (lb.appmapMode == 'ON_ALL' ? 'ALL' : lb.appmapMode)}"></td>
                 <td class="num" style="white-space:nowrap"
+                    th:attr="data-filter-value=${lb.passRate * 100}"
                     th:title="${lb.passedRuns} + ' passed of ' + ${lb.totalRuns} + ' total runs at this configuration'"
                     th:text="${#numbers.formatPercent(lb.passRate, 1, 0)} + ' (' +
                              ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
                              ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
                 <td class="num"
+                    th:attr="data-filter-value=${lb.solvedBugs}"
                     th:title="${lb.solvedBugs} + ' distinct bug(s) solved out of ' + ${suiteTotal} + ' in the catalog'">
                     <span th:text="${lb.solvedBugs} + ' / ' + ${suiteTotal}"></span>
                     <small th:if="${delta != null and not iter.first and delta.solvedDelta != 0}"
@@ -1042,21 +1045,24 @@
                     </th>
                     <th th:each="g : ${heatCtxGroups}"
                         th:colspan="${g.colspan}"
-                        th:title="'context provider: ' + ${g.ctxLabel}"
+                        th:title="'context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
                         style="text-align:center; padding:0.25em 0.4em;
                                background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                font-weight:600; color:#312e81">
                         ctx=<span th:text="${g.ctxLabel}">…</span>
+                        <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
+                              th:text="' · ' + ${g.passLabel}">…</span>
                     </th>
                 </tr>
                 <tr>
                     <th th:each="ag : ${heatAppmapGroups}"
                         th:colspan="${ag.colspan}"
-                        th:title="'AppMap mode: ' + ${ag.appmapLabel}"
+                        th:title="'AppMap mode: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (ctx, appmap) pair'"
                         style="text-align:center; padding:0.2em 0.4em;
                                background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                font-size:0.85em; color:#475569">
                         appmap=<span th:text="${ag.appmapLabel}">…</span>
+                        <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
                 </tr>
                 <tr class="sort-row">
