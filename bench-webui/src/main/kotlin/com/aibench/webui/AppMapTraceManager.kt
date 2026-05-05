@@ -489,12 +489,28 @@ class AppMapTraceManager(
             JdkDiscovery.bestAvailableHome(matchMajor = pinnedMajor)
         }.getOrNull().orEmpty()
         if (javaHome.isNotBlank()) {
-            // -Dorg.gradle.java.home as a CLI override -- belt-and-
-            // suspenders. Even if a stale gradle.properties has
-            // org.gradle.java.home pointing somewhere else (and even
-            // though we already use --no-daemon), this CLI value wins
-            // for this invocation.
+            // -Dorg.gradle.java.home controls the gradle DAEMON's
+            // JVM. The TEST FORK that gradle launches for
+            // :module:test is picked by gradle's toolchain
+            // discovery machinery, which has its own resolution
+            // path (NOT the daemon's JAVA_HOME). On Windows the
+            // user reported "Starting process 'command
+            // c:\...jdk-1.8\bin\java.exe'" because the toolchain
+            // discoverer scanned PATH/install-roots and resolved
+            // JDK 8 (the closest match it found) for the test fork
+            // -- the daemon was correctly running JDK 25 thanks to
+            // -Dorg.gradle.java.home, but the test fork bypassed
+            // it entirely. -Dorg.gradle.java.installations.paths
+            // explicitly seeds the discovery list with the saved-
+            // default JDK so the toolchain pin
+            // (JavaLanguageVersion.of(25) in banking-app/build.gradle.kts)
+            // resolves to it. installations.auto-download=false
+            // disables foojay's auto-provisioning attempt for THIS
+            // invocation, which on corp networks frequently hangs
+            // or falls back to a mismatched local JDK.
             cmd.add("-Dorg.gradle.java.home=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.paths=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.auto-download=false")
         }
         val pb = ProcessBuilder(cmd)
             .directory(repo)
