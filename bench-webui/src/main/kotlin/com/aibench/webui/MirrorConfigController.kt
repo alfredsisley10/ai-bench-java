@@ -608,6 +608,7 @@ class MirrorConfigController(
         @RequestParam(required = false, defaultValue = "") artifactoryRepoKey: String,
         @RequestParam(required = false, defaultValue = "false") centralViaMirrorOnly: Boolean,
         @RequestParam(required = false, defaultValue = "") mavenExternalVirtualUrl: String,
+        @RequestParam(required = false, defaultValue = "false") mirrorBypassProxy: Boolean,
         session: HttpSession
     ): String {
         val existing = connectionSettings.settings
@@ -620,7 +621,8 @@ class MirrorConfigController(
                 bypassMirror = bypassMirror,
                 artifactoryRepoKey = artifactoryRepoKey.trim(),
                 centralViaMirrorOnly = centralViaMirrorOnly,
-                mavenExternalVirtualUrl = mavenExternalVirtualUrl.trim()
+                mavenExternalVirtualUrl = mavenExternalVirtualUrl.trim(),
+                mirrorBypassProxy = mirrorBypassProxy
             )
         )
         // Same daemon-stop pattern as ProxyConfigController so a

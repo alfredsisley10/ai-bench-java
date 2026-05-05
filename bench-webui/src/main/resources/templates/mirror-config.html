@@ -46,6 +46,12 @@
                     <span th:unless="${settings.bypassMirror}" class="help-text">no — mirror used</span>
                 </td>
             </tr>
+            <tr><th>Connect to mirror direct (bypass corp proxy)</th>
+                <td>
+                    <strong th:if="${settings.mirrorBypassProxy}" style="color:#065f46">YES</strong>
+                    <span th:unless="${settings.mirrorBypassProxy}" class="help-text">no — mirror reached via proxy</span>
+                </td>
+            </tr>
             <!-- Resolution mode badge: surfaces which of the four
                  valid combinations of (hasMirror, bypassMirror,
                  centralViaMirrorOnly) is active so the operator can
@@ -570,6 +576,40 @@
                         maven-external-virtual when configured) instead.
                         Verify panel skips the direct-Central probe;
                         banking-app drops its <code>mavenCentral()</code> fallback.
+                    </span>
+                </label>
+            </div>
+
+            <!-- Bypass the corp proxy when reaching the mirror.
+                 Internal Artifactory typically lives on a private
+                 subnet the corp proxy can't / shouldn't be the path
+                 to (proxy MITM cert is the wrong shape for the
+                 internal-CA cert, OR the proxy refuses CONNECT to an
+                 internal IP). Symptom is "SSLHandshakeException:
+                 Remote host terminated the handshake" on gradle TLS
+                 to the mirror even though /proxy verify-connectivity
+                 passes for direct-Internet probes. When this toggle
+                 is on, bench-webui auto-adds the mirror's hostname
+                 (and the maven-external-virtual's, when set) to the
+                 effective nonProxyHosts list -- both for its own
+                 HttpClient and for gradle subprocesses via
+                 systemProp.http.nonProxyHosts in gradle.properties. -->
+            <div style="margin-top:0.5em; padding:0.5em 0.75em; background:#ecfdf5;
+                        border:1px solid #86efac; border-radius:4px">
+                <label style="display:flex; align-items:flex-start; gap:0.5em; margin:0">
+                    <input type="checkbox" name="mirrorBypassProxy" value="true"
+                           th:checked="${settings.mirrorBypassProxy}"
+                           style="margin-top:0.25em">
+                    <span>
+                        <strong>Connect to mirror directly (bypass corp proxy)</strong>
+                        — when on, the mirror's hostname is auto-added
+                        to the effective <code>nonProxyHosts</code> list so
+                        bench-webui's HttpClient + gradle subprocesses
+                        reach the mirror direct, skipping the corp proxy.
+                        Use this when the mirror is on the internal
+                        network (typical symptom: gradle TLS fails with
+                        "Remote host terminated the handshake" while
+                        /proxy verify-connectivity passes).
                     </span>
                 </label>
             </div>
