@@ -1055,15 +1055,16 @@
                     <th rowspan="3" data-sort-key="difficulty"
                         data-sort-order="TRIVIAL,EASY,MEDIUM,HARD"
                         style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
-                               vertical-align:bottom; cursor:pointer">
+                               vertical-align:bottom; cursor:pointer;
+                               border-right:3px solid #475569">
                         Diff <span class="sort-indicator"></span>
                     </th>
                     <th th:each="g : ${heatCtxGroups}"
                         th:colspan="${g.colspan}"
                         th:title="'Context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
-                        style="text-align:center; padding:0.25em 0.4em;
-                               background:#e0e7ff; border-bottom:1px solid #c7d2fe;
-                               font-weight:600; color:#312e81">
+                        th:style="'text-align:center; padding:0.25em 0.4em;
+                                   background:#e0e7ff; border-bottom:1px solid #c7d2fe;
+                                   font-weight:600; color:#312e81;' + ${g.borderRight}">
                         Context: <span th:text="${g.ctxLabel}">…</span>
                         <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
                               th:text="' · ' + ${g.passLabel}">…</span>
@@ -1073,9 +1074,9 @@
                     <th th:each="ag : ${heatAppmapGroups}"
                         th:colspan="${ag.colspan}"
                         th:title="'AppMap Traces: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (Context, AppMap Traces) pair'"
-                        style="text-align:center; padding:0.2em 0.4em;
-                               background:#f1f5f9; border-bottom:1px solid #cbd5e1;
-                               font-size:0.85em; color:#475569">
+                        th:style="'text-align:center; padding:0.2em 0.4em;
+                                   background:#f1f5f9; border-bottom:1px solid #cbd5e1;
+                                   font-size:0.85em; color:#475569;' + ${ag.borderRight}">
                         AppMap Traces: <span th:text="${ag.appmapLabel}">…</span>
                         <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
@@ -1083,22 +1084,21 @@
                 <tr class="sort-row">
                     <!-- Model labels rotated 45° rising from the
                          bottom-left of each header cell to the upper
-                         right. The diagonal angle is easier to read
-                         than a fully-vertical label and -- with
-                         transform-origin at bottom-left -- each label
-                         visually anchors to its own column while
-                         extending into the row's vertical space
-                         instead of forcing extreme column widths. -->
+                         right. Per-column borderRight (computed in
+                         the controller) draws thick indigo dividers
+                         at ctx-group boundaries and medium slate
+                         dividers at appmap-subgroup boundaries so
+                         the operator can scan the grid by group
+                         without losing track of column ownership. -->
                     <th th:each="c, iter : ${heatColumns}"
                         th:title="${c.tooltip}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
-                        style="background:#f3f4f6;
-                               vertical-align:bottom; text-align:left;
-                               padding:0.4em 0.4em 0.5em 0.5em;
-                               min-width:3em; height:7em;
-                               cursor:pointer; overflow:visible">
+                        th:style="'background:#f3f4f6; vertical-align:bottom;
+                                   text-align:left; padding:0.4em 0.4em 0.5em 0.5em;
+                                   min-width:3em; height:7em; cursor:pointer;
+                                   overflow:visible;' + ${c.borderRight}">
                         <span style="display:inline-block;
                                      transform:rotate(-45deg);
                                      transform-origin:bottom left;
@@ -1124,7 +1124,8 @@
                               style="margin-left:0.3em; color:#d97706"
                               title="Only one configuration ever passed">★</span>
                     </td>
-                    <td style="padding:0.25em 0.5em">
+                    <td style="padding:0.25em 0.5em;
+                               border-right:3px solid #475569">
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
@@ -1138,8 +1139,8 @@
                          single dot. -->
                     <td th:each="c : ${heatColumns}"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
-                        th:style="${cell != null ? cell.bgStyle :
-                                    'background:#f8fafc; color:#cbd5e1'}"
+                        th:style="(${cell != null ? cell.bgStyle :
+                                    'background:#f8fafc; color:#cbd5e1'}) + ';' + ${c.borderRight}"
                         th:title="${cell == null
                                     ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
                                     : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status +
