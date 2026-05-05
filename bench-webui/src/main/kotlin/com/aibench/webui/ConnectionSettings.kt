@@ -97,7 +97,12 @@ class ConnectionSettings {
         //     blocked upstream.
         // Requires hasMirror to be meaningful; if no mirror is
         // configured the toggle has no effect.
-        val centralViaMirrorOnly: Boolean = false,
+        // Default true: every corp Artifactory deployment we've seen
+        // proxies Maven Central through the mirror, and direct egress
+        // to repo.maven.apache.org from inside the corp network is
+        // typically blocked at the proxy. Operators on a non-corp
+        // network can flip off if they actually have direct egress.
+        val centralViaMirrorOnly: Boolean = true,
         // Optional second virtual repository URL for the corp
         // Artifactory's external/Maven-Central proxy. Most enterprise
         // Artifactory deployments split repos into:
@@ -128,7 +133,12 @@ class ConnectionSettings {
         // saved noProxy field; the auto-bypass is computed at
         // request time so toggling it off cleanly restores the
         // through-proxy routing.
-        val mirrorBypassProxy: Boolean = false
+        // Default true: corp Artifactory typically lives on the
+        // internal network, and routing internal traffic through the
+        // corp proxy fails on TLS handshake (proxy can't MITM
+        // internal-CA certs cleanly, OR refuses CONNECT to internal
+        // IPs). Operators on a non-corp setup can flip off.
+        val mirrorBypassProxy: Boolean = true
     ) {
         /** Convenience flag — true when proxy auth is fully configured. */
         val hasProxyAuth: Boolean get() = proxyAuthUser.isNotBlank() && proxyAuthPassword.isNotBlank()
