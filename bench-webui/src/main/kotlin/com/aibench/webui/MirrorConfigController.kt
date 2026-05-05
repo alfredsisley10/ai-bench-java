@@ -384,6 +384,7 @@ class MirrorConfigController(
                     "statusCode" to r.statusCode,
                     "durationMs" to r.durationMs,
                     "ok" to r.ok,
+                    "severity" to r.severity.name,
                     "message" to r.message
                 )
             }
