@@ -61,40 +61,48 @@ object JdkDiscovery {
      */
     fun bestAvailableHome(matchMajor: Int? = null): String {
         val jdks = discover()
+        val saved = readSavedDefaultHome()
 
-        // matchMajor is a HARD compatibility requirement, not a
-        // preference: when a Gradle build's toolchain is pinned at
-        // JDK N, daemon-internal tasks that load compiled classes
-        // (Spring Boot's resolveMainClassName is the canonical example)
-        // fail with "Unsupported class file major version" if the daemon
-        // JVM is older than N. So if a match exists ANYWHERE in the
-        // discovery list, we MUST use it -- saved default and JAVA_HOME
-        // are checked only IF they happen to match the requested major.
+        // OPERATOR INTENT WINS. When the operator has pinned a default
+        // on /demo's "Save as default" button, honor it -- even when
+        // it doesn't match the requested matchMajor. The previous logic
+        // silently demoted the saved default whenever matchMajor was
+        // set, which caused operators to see Java 8 (or whatever
+        // happened to be first in PATH) in subprocess logs even though
+        // they had explicitly picked Java 25 on the demo page. The
+        // resulting toolchain mismatch (saved default newer or older
+        // than the build's toolchain) is now surfaced as a WARN log
+        // rather than silently overridden -- the gradle build will
+        // either succeed (matching) or fail loudly with "Unsupported
+        // class file major version" so the operator can adjust.
+        if (saved != null) {
+            if (matchMajor != null) {
+                val savedMajor = jdks.firstOrNull { it.home == saved }?.major
+                if (savedMajor != null && savedMajor != matchMajor) {
+                    log.warn("Saved default JDK ({}, major={}) does not match the build's " +
+                        "toolchain pin (major={}). Honoring operator's choice; if the gradle " +
+                        "subprocess fails with 'Unsupported class file major version', either " +
+                        "pick a matching JDK on /demo or align the toolchain.",
+                        saved, savedMajor, matchMajor)
+                }
+            }
+            return saved
+        }
+
+        // No saved default. matchMajor wins next when set.
         if (matchMajor != null && matchMajor > 0) {
-            // Prefer saved default / JAVA_HOME when they match the
-            // requested major, since the operator presumably pinned them
-            // for a reason. Both are in the discovered list already (via
-            // discover()'s JAVA_HOME and savedDefault sources), so this
-            // is just preference ordering inside the matching subset.
             val matching = jdks.filter { it.major == matchMajor }
             if (matching.isNotEmpty()) {
-                val saved = readSavedDefaultHome()
-                matching.firstOrNull { it.home == saved }?.let { return it.home }
                 val env = System.getenv("JAVA_HOME")
                 matching.firstOrNull { it.home == env }?.let { return it.home }
                 return matching.first().home
             }
-            // No JDK matching the requested major. Falling through to
-            // the no-match precedence below will return *some* JDK,
-            // which is wrong but better than returning empty -- the
-            // resulting daemon-vs-toolchain mismatch will surface as
-            // the same "Unsupported class file major version" error,
-            // and bench-webui's "Verify Java" panel flags the gap.
+            // No matching JDK; fall through to the env/first heuristic
+            // below. The build will surface the mismatch loudly.
         }
 
-        // No major requirement (or no matching install). Standard
-        // precedence: saved default > JAVA_HOME > first discovered.
-        readSavedDefaultHome()?.let { return it }
+        // No saved default, no matchMajor (or no matching install):
+        // JAVA_HOME env > first discovered > java.home of bench-webui.
         val env = System.getenv("JAVA_HOME")
         if (!env.isNullOrBlank() && File(env, "bin").isDirectory) return env
         jdks.firstOrNull()?.let { return it.home }

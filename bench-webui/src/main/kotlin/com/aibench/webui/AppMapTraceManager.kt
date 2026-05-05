@@ -476,31 +476,50 @@ class AppMapTraceManager(
             verbosity.gradleFlag?.let { add(it) }
             addAll(connectionSettings.gradleSystemProps())
         }
-        val pb = ProcessBuilder(cmd)
-            .directory(repo)
-            .redirectErrorStream(true)
         // Pin JAVA_HOME to a JDK matching banking-app's toolchain
         // (currently 25). Without this, `gradle test` on a host
         // whose default `java -version` is older than the toolchain
         // fails with "Unsupported class file major version 69" once
         // gradle's daemon-internal tasks try to load compiled
-        // bytecode. Same pattern AppMapService.kt uses for its other
-        // gradle launches.
+        // bytecode. JdkDiscovery.bestAvailableHome honors the
+        // operator's saved default from /demo unconditionally;
+        // matchMajor is a hint when no default is saved.
         val pinnedMajor = bankingApp.toolchainMajor()
-        if (pinnedMajor != null) {
-            val javaHome = runCatching {
-                JdkDiscovery.bestAvailableHome(matchMajor = pinnedMajor)
-            }.getOrNull()
-            if (javaHome != null) {
-                pb.environment()["JAVA_HOME"] = javaHome
-                log.info("appmap-gen[{}]: JAVA_HOME={} (toolchain major={})",
-                    module, javaHome, pinnedMajor)
-            } else {
-                log.warn("appmap-gen[{}]: no JDK {} found via JdkDiscovery; gradle daemon " +
-                    "will use the host's default java which is likely to fail with " +
-                    "'Unsupported class file major version' for banking-app's toolchain pin.",
-                    module, pinnedMajor)
-            }
+        val javaHome = runCatching {
+            JdkDiscovery.bestAvailableHome(matchMajor = pinnedMajor)
+        }.getOrNull().orEmpty()
+        if (javaHome.isNotBlank()) {
+            // -Dorg.gradle.java.home as a CLI override -- belt-and-
+            // suspenders. Even if a stale gradle.properties has
+            // org.gradle.java.home pointing somewhere else (and even
+            // though we already use --no-daemon), this CLI value wins
+            // for this invocation.
+            cmd.add("-Dorg.gradle.java.home=$javaHome")
+        }
+        val pb = ProcessBuilder(cmd)
+            .directory(repo)
+            .redirectErrorStream(true)
+        if (javaHome.isNotBlank()) {
+            pb.environment()["JAVA_HOME"] = javaHome
+            // Force PATH too — previously we set JAVA_HOME alone, and
+            // Windows test forks would inherit the parent's PATH (with
+            // an older Java first) and resolve `java.exe` from there
+            // instead of from JAVA_HOME/bin. That's the typical source
+            // of "Successfully started process .../jdk-1.8/bin/java.exe"
+            // showing up in the AppMap log even though the operator
+            // pinned a newer JDK on /demo.
+            pb.environment()["PATH"] =
+                "$javaHome${java.io.File.separator}bin${java.io.File.pathSeparator}" +
+                (System.getenv("PATH") ?: "")
+            log.info("appmap-gen[{}]: JAVA_HOME={} (toolchain major={}, source={})",
+                module, javaHome, pinnedMajor ?: "(none)",
+                if (JdkDiscovery.readSavedDefaultHome() == javaHome) "saved-default"
+                else "auto-pick")
+        } else {
+            log.warn("appmap-gen[{}]: no JDK resolved; gradle subprocess will inherit the " +
+                "parent's JAVA_HOME ('${System.getenv("JAVA_HOME") ?: "(unset)"}'), which on " +
+                "Windows often resolves Java 8 from PATH first. Pin a JDK on /demo to fix.",
+                module)
         }
         val proc = pb.start()
         // Hand the live Process back to the caller (AdminTracesController)
