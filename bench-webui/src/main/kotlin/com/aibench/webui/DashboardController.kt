@@ -74,6 +74,17 @@ class DashboardController(
      *  When `solvers > 1` multiple configurations passed; the leader
      *  is the fastest. When `uniquelySolved=true` only ONE configuration
      *  ever passed -- a strong signal about that solver's edge. */
+    /** One solver's best result for a bug. Drives the per-row
+     *  sparkline charts (time + cost) so the operator can SEE which
+     *  configurations were close to the winner vs lapped. Winner =
+     *  fastest. */
+    data class SolverPoint(
+        val label: String,        // "model · ctx · appmap" — tooltip text
+        val durationMs: Long,
+        val costUsd: Double,
+        val isWinner: Boolean
+    )
+
     data class PerBugLeader(
         val bugId: String,
         val title: String,
@@ -86,7 +97,23 @@ class DashboardController(
         val winnerCtx: String?,
         val winnerAppmap: String?,
         val winnerDurationMs: Long?,
-        val winnerCostUsd: Double?
+        val winnerCostUsd: Double?,
+        // One point per (model, ctx, appmap) configuration that
+        // passed this bug. Sparklines on the row use this to plot
+        // a bar per solver (height = ms or cost) so the operator
+        // sees how the field was distributed -- not just who won.
+        // Empty when no solver passed.
+        val solverPoints: List<SolverPoint>,
+        // Pre-rendered inline SVG sparkline strings — one for time,
+        // one for cost. Each bar represents one (model, ctx, appmap)
+        // configuration; height encodes the value relative to the
+        // max in the row's set, the winner bar is highlighted in
+        // green, others in slate. Operators read these visually
+        // for "how close were the runners-up to the winner" without
+        // needing to compare numeric columns. Empty string when no
+        // passing solvers.
+        val timeSparklineSvg: String,
+        val costSparklineSvg: String
     )
 
     /** One cell in the bug-solving heat-map. Rendered in
@@ -161,6 +188,13 @@ class DashboardController(
         val appmapMode: String,
         val totalRuns: Int,
         val passedRuns: Int,
+        // Distinct bugs for which AT LEAST ONE seed/run passed.
+        // Operator-facing "Solved" column on the leaderboard --
+        // previously showed passedRuns, which counted re-passes
+        // of the same bug across seeds and could exceed the total
+        // bug catalog count (operator reported "15 solved but only
+        // 12 bugs", because 3 bugs had multiple passing seeds).
+        val solvedBugs: Int,
         val passRate: Double,
         val fastest: PassRecord?,
         val cheapest: PassRecord?,
@@ -276,6 +310,7 @@ class DashboardController(
                 appmapMode = ctx.appmapMode,
                 totalRuns = totalForCtx,
                 passedRuns = records.size,
+                solvedBugs = records.map { it.bugId }.distinct().size,
                 passRate = records.size.toDouble() / totalForCtx,
                 fastest = records.minByOrNull { it.durationMs },
                 cheapest = records.minByOrNull { it.costUsd },
@@ -310,7 +345,9 @@ class DashboardController(
         else leaderboard.map { lb ->
             LeaderboardDelta(
                 rowKey = "${lb.modelId}|${lb.contextProvider}|${lb.appmapMode}",
-                solvedDelta = lb.passedRuns - leader.passedRuns,
+                // Compare distinct bugs solved (matches the "Solved"
+                // column semantic post-fix), not raw passing-run counts.
+                solvedDelta = lb.solvedBugs - leader.solvedBugs,
                 avgMsPctVsLeader = if (leader.avgPassMs > 0)
                     ((lb.avgPassMs - leader.avgPassMs) * 100.0 / leader.avgPassMs).toInt() else 0,
                 avgCostPctVsLeader = if (leader.avgPassCostUsd > 0)
@@ -342,6 +379,24 @@ class DashboardController(
                 .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
                 .distinct()
             val winner = passes.minByOrNull { it.durationMs }
+            // Per-config best run (fastest passing seed). Sparkline
+            // shows one point per distinct configuration; using the
+            // FASTEST seed avoids penalizing a config that happened
+            // to have one slow seed in the mix.
+            val solverPoints: List<SolverPoint> = passes
+                .groupBy { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+                .map { (_, runs) ->
+                    val fastest = runs.minBy { it.durationMs }
+                    SolverPoint(
+                        label = "${fastest.provider}/${fastest.modelId}" +
+                                " · ${fastest.contextProvider}" +
+                                " · ${fastest.appmapMode}",
+                        durationMs = fastest.durationMs,
+                        costUsd = fastest.stats.estimatedCostUsd,
+                        isWinner = winner != null && fastest.id == winner.id
+                    )
+                }
+                .sortedBy { it.durationMs }
             PerBugLeader(
                 bugId = bug.id,
                 title = bug.title,
@@ -354,7 +409,10 @@ class DashboardController(
                 winnerCtx = winner?.contextProvider,
                 winnerAppmap = winner?.appmapMode,
                 winnerDurationMs = winner?.durationMs,
-                winnerCostUsd = winner?.stats?.estimatedCostUsd
+                winnerCostUsd = winner?.stats?.estimatedCostUsd,
+                solverPoints = solverPoints,
+                timeSparklineSvg = sparklineSvg(solverPoints, ChartMode.TIME),
+                costSparklineSvg = sparklineSvg(solverPoints, ChartMode.COST)
             )
         }.sortedWith(compareBy({ if (it.uniquelySolved) 0 else 1 },
                                { -(it.attempts) },
@@ -457,17 +515,26 @@ class DashboardController(
             leaderboard.isEmpty() && hasOraclePass)
 
         // Pre-training contamination signal: a model that PASSES with
-        // contextProvider="none" is producing the fix from memory --
-        // there's no source code or trace in the prompt to reason
-        // about. Either the bug is from the model's training corpus
-        // (memorization) or the problem statement is leaky enough to
-        // give the answer away. Either way the benchmark can't fairly
-        // grade that model, so we surface every such (model, bug)
-        // pair on the dashboard to flag for the operator -- WITH the
-        // problem statement + hints inline so the operator can audit
-        // whether the prompt itself is leaky (which would be a fixable
-        // bug-definition issue) vs the model truly having memorized
-        // the fix (which is a fixable model-eligibility issue).
+        // contextProvider="none" AND AppMap mode OFF is producing
+        // the fix from memory -- there's no source code, no traces,
+        // nothing in the prompt to reason about. Either the bug is
+        // from the model's training corpus (memorization) or the
+        // problem statement is leaky enough to give the answer away.
+        // Either way the benchmark can't fairly grade that model, so
+        // we surface every such (model, bug) pair on the dashboard
+        // to flag for the operator -- WITH the problem statement +
+        // hints inline so the operator can audit whether the prompt
+        // itself is leaky (which would be a fixable bug-definition
+        // issue) vs the model truly having memorized the fix (which
+        // is a fixable model-eligibility issue).
+        //
+        // AppMap mode ON_RECOMMENDED / ON_ALL is NOT contamination
+        // even with contextProvider="none" -- the solver IS getting
+        // real context (recorded call traces of the failing test),
+        // just delivered by a separate pipeline than the source-
+        // file context provider. Filtering only "ctx=none AND
+        // appmap=OFF" matches the operator's mental model of "no
+        // context".
         data class ContaminationRow(
             val provider: String,
             val modelId: String,
@@ -486,9 +553,23 @@ class DashboardController(
             val probeModelLabel: String?,
             val probeRunId: String?
         )
-        // Pass 1: build the un-probed contamination list.
+        // Pass 1: build the un-probed contamination list. A run is
+        // "no context" only when contextProvider="none" AND AppMap
+        // mode is OFF -- when AppMap mode is ON_RECOMMENDED or
+        // ON_ALL the solver IS receiving real context (recorded
+        // call traces of the failing test or every test in the
+        // module), which is plenty for solving the bug without
+        // memorization. Operators reported the prior logic
+        // false-flagged AppMap-on PASSED runs as contamination,
+        // since contextProvider stays "none" while AppMap traces
+        // are bolted on by a separate pipeline. Filter both axes
+        // so only the truly-no-context PASSED runs surface.
         val draftContamination = runs
-            .filter { it.contextProvider.equals("none", ignoreCase = true) }
+            .filter {
+                it.contextProvider.equals("none", ignoreCase = true) &&
+                (it.appmapMode.equals("OFF", ignoreCase = true) ||
+                 it.appmapMode.isBlank())
+            }
             .groupBy { Triple(it.provider, it.modelId, it.issueId) }
             .mapNotNull { (k, group) ->
                 val passes = group.count { it.status.name == "PASSED" }
@@ -687,6 +768,80 @@ class DashboardController(
             append('.')
         })
         return "redirect:/"
+    }
+
+    /** Which axis the sparkline encodes — time (ms, lower=better) or
+     *  cost (USD, lower=better). Both visually use "shorter bar =
+     *  better" so the operator's reading is consistent across charts. */
+    private enum class ChartMode { TIME, COST }
+
+    /**
+     * Render a tiny inline SVG bar chart for the per-bug-leader row.
+     * One bar per solver point, height proportional to the value
+     * relative to the row's max, winner highlighted in green and
+     * runners-up in slate. Each bar gets a <title> child so hover
+     * surfaces "model · ctx · appmap: 24s, $0.018".
+     *
+     * Returns "" (empty) when no solver passed -- caller renders
+     * nothing in that cell.
+     */
+    private fun sparklineSvg(points: List<SolverPoint>, mode: ChartMode): String {
+        if (points.isEmpty()) return ""
+        val w = 120  // total chart width (px)
+        val h = 22   // total chart height (px)
+        val gap = 1
+        val barW = ((w - gap * (points.size + 1)) / points.size).coerceAtLeast(2)
+        val maxVal: Double = when (mode) {
+            ChartMode.TIME -> points.maxOf { it.durationMs }.coerceAtLeast(1L).toDouble()
+            ChartMode.COST -> points.maxOf { it.costUsd }.coerceAtLeast(0.000001)
+        }
+        val sb = StringBuilder()
+        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" """)
+            .append("""viewBox="0 0 $w $h" style="vertical-align:middle">""")
+        // Baseline track so 1-bar charts still read as a chart.
+        sb.append("""<rect x="0" y="${h - 1}" width="$w" height="1" fill="#e5e7eb"/>""")
+        var x = gap
+        for (p in points) {
+            val v = when (mode) {
+                ChartMode.TIME -> p.durationMs.toDouble()
+                ChartMode.COST -> p.costUsd
+            }
+            val barH = ((v / maxVal) * (h - 2)).toInt().coerceAtLeast(1)
+            val y = h - 1 - barH
+            val fill = if (p.isWinner) "#16a34a" else "#94a3b8"
+            val durationLabel = "${p.durationMs / 1000}s"
+            val costLabel = "$" + String.format("%.4f", p.costUsd)
+            // <title> child = the SVG-native tooltip; works without
+            // any JS, browser-rendered. Includes both metrics so the
+            // operator can read either chart's tooltip and see both
+            // numbers.
+            val tip = escapeXml("${p.label}: $durationLabel, $costLabel" +
+                if (p.isWinner) " (winner)" else "")
+            sb.append("""<rect x="$x" y="$y" width="$barW" height="$barH" """)
+                .append("""fill="$fill" rx="1"><title>""")
+                .append(tip)
+                .append("""</title></rect>""")
+            x += barW + gap
+        }
+        sb.append("</svg>")
+        return sb.toString()
+    }
+
+    /** Minimal XML attribute / text escape — covers every char that
+     *  could break the inline-SVG-as-string injection. */
+    private fun escapeXml(s: String): String {
+        val sb = StringBuilder(s.length + 8)
+        for (c in s) {
+            when (c) {
+                '&'  -> sb.append("&amp;")
+                '<'  -> sb.append("&lt;")
+                '>'  -> sb.append("&gt;")
+                '"'  -> sb.append("&quot;")
+                '\'' -> sb.append("&#39;")
+                else -> sb.append(c)
+            }
+        }
+        return sb.toString()
     }
 
 }
