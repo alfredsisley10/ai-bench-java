@@ -185,7 +185,7 @@ subprojects {
     extensions.configure<io.spring.gradle.dependencymanagement.dsl.DependencyManagementExtension> {
         imports {
             mavenBom("org.springframework.boot:spring-boot-dependencies:3.5.14")
-            mavenBom("org.testcontainers:testcontainers-bom:1.20.1")
+            mavenBom("org.testcontainers:testcontainers-bom:1.20.6")
         }
     }
 

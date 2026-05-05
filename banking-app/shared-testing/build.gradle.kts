@@ -4,5 +4,5 @@ dependencies {
     implementation("org.testcontainers:testcontainers")
     implementation("org.testcontainers:postgresql")
     implementation("org.testcontainers:junit-jupiter")
-    implementation("net.datafaker:datafaker:2.4.0")
+    implementation("net.datafaker:datafaker:2.5.0")
 }
