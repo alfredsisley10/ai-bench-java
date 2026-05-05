@@ -605,12 +605,17 @@ class MirrorConfigController(
         @RequestParam(required = false, defaultValue = "") mirrorAuthUser: String,
         @RequestParam(required = false, defaultValue = "") mirrorAuthPassword: String,
         @RequestParam(required = false, defaultValue = "false") bypassMirror: Boolean,
-        @RequestParam(required = false, defaultValue = "") artifactoryRepoKey: String,
         @RequestParam(required = false, defaultValue = "false") centralViaMirrorOnly: Boolean,
-        @RequestParam(required = false, defaultValue = "") mavenExternalVirtualUrl: String,
         @RequestParam(required = false, defaultValue = "false") mirrorBypassProxy: Boolean,
         session: HttpSession
     ): String {
+        // artifactoryRepoKey + mavenExternalVirtualUrl: form fields
+        // removed in the UI-simplify PR. Saved values are preserved
+        // by NOT pulling them from the form (the existing.copy()
+        // below leaves whatever's already in Settings untouched) so
+        // operators who had values pinned from an earlier session
+        // keep them for the corp init script + gradle subprocess
+        // injection.
         val existing = connectionSettings.settings
         val keepPw = mirrorAuthPassword.isBlank() && existing.mirrorAuthPassword.isNotBlank()
         connectionSettings.update(
@@ -619,9 +624,7 @@ class MirrorConfigController(
                 mirrorAuthUser = mirrorAuthUser.trim(),
                 mirrorAuthPassword = if (keepPw) existing.mirrorAuthPassword else mirrorAuthPassword,
                 bypassMirror = bypassMirror,
-                artifactoryRepoKey = artifactoryRepoKey.trim(),
                 centralViaMirrorOnly = centralViaMirrorOnly,
-                mavenExternalVirtualUrl = mavenExternalVirtualUrl.trim(),
                 mirrorBypassProxy = mirrorBypassProxy
             )
         )
