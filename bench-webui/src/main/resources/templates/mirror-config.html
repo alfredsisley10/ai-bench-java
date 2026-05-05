@@ -1258,9 +1258,21 @@
                         var statusBadge = row.statusCode > 0
                             ? '<span style="font-family:monospace">' + row.statusCode + '</span>'
                             : '<span style="color:#7f1d1d">err</span>';
-                        var verdict = row.ok
-                            ? '<span style="color:#067647">✓ ' + escapeHtml(row.message) + '</span>'
-                            : '<span style="color:#b91c1c">✗ ' + escapeHtml(row.message) + '</span>';
+                        // Three-state verdict so WARN (plugin marker
+                        // failed but corp init script rewrite-target
+                        // resolves -- real build will succeed) renders
+                        // amber instead of red. Falls back to the
+                        // ok/!ok logic when severity isn't supplied
+                        // (older JSON consumers / cached pages).
+                        var sev = row.severity || (row.ok ? 'OK' : 'FAIL');
+                        var verdict;
+                        if (sev === 'WARN') {
+                            verdict = '<span style="color:#b45309">⚠ ' + escapeHtml(row.message) + '</span>';
+                        } else if (row.ok) {
+                            verdict = '<span style="color:#067647">✓ ' + escapeHtml(row.message) + '</span>';
+                        } else {
+                            verdict = '<span style="color:#b91c1c">✗ ' + escapeHtml(row.message) + '</span>';
+                        }
                         tr.innerHTML =
                             '<td style="padding:4px 6px"><span style="font-size:0.75em; color:#475569">' +
                                 escapeHtml(row.categoryDisplay) + '</span></td>' +

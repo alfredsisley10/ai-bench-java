@@ -40,6 +40,14 @@ class GradleDepValidator(
         Thread(r, "gradle-dep-validator").apply { isDaemon = true }
     }
 
+    /** Three-state verdict for the validator UI. WARN means the
+     *  primary probe failed but a fallback path (e.g. the corp
+     *  init script's plugin-marker → maven-coord rewrite) resolves
+     *  -- so the real build will succeed even though the strict
+     *  probe shows the upstream as unavailable. The /mirror table
+     *  renders WARN as amber instead of green/red. */
+    enum class Severity { OK, WARN, FAIL }
+
     data class Result(
         val entry: GradleDepCatalog.Entry,
         val probeUrl: String,
@@ -48,7 +56,14 @@ class GradleDepValidator(
         val statusCode: Int,
         val durationMs: Long,
         val ok: Boolean,
-        val message: String
+        val message: String,
+        // Three-state verdict — replaces the binary `ok` for the UI
+        // color (still kept on `ok` for any external JSON consumers
+        // expecting a boolean). The WARN case is plugin-marker-
+        // failure-but-rewrite-target-resolves: corp init script's
+        // pluginIdToCoord substitution will rescue the build at
+        // gradle resolution time.
+        val severity: Severity = if (ok) Severity.OK else Severity.FAIL
     )
 
     /**
@@ -521,11 +536,43 @@ class GradleDepValidator(
             // circuit without a JAR probe.
             val pomResult = singleProbe(client, pomUrl, viaMirror, s)
             if (!pomResult.first) {
+                // Plugin marker failed via primary probe. Most corp
+                // Artifactory virtuals proxy Maven Central but NOT
+                // plugins.gradle.org, so plugin-marker URLs always
+                // 404 there even though the actual plugin jar (which
+                // the corp init script's pluginIdToCoord rewrite
+                // points at) lives happily on Maven Central via the
+                // same mirror. Probe the rewrite target before
+                // returning FAIL -- if it resolves, surface a WARN
+                // verdict explaining that gradle's real build will
+                // pass via the substitution. Stops the validator
+                // from reporting every plugin row red on networks
+                // where the build actually works.
+                if (entry.category == GradleDepCatalog.Category.GRADLE_PLUGIN) {
+                    val rewriteCoord = pluginMarkerRewrite(entry.coord)
+                    val rewritePath = rewriteCoord?.let { mavenPomPathFromCoord(it) }
+                    if (rewriteCoord != null && rewritePath != null) {
+                        val rewriteUrl = "${pomUrl.substringBefore(entry.pomPath)}$rewritePath"
+                        val rewriteResult = singleProbe(client, rewriteUrl, viaMirror, s)
+                        if (rewriteResult.first) {
+                            val ms = System.currentTimeMillis() - started
+                            return Result(entry, rewriteUrl,
+                                viaProxy = s.httpsProxy.isNotBlank(), viaMirror = viaMirror,
+                                statusCode = rewriteResult.second, durationMs = ms,
+                                ok = true,
+                                message = "⚠ Marker URL not in mirror (HTTP ${pomResult.second}), " +
+                                    "BUT corp init script rewrite-target ($rewriteCoord) resolves. " +
+                                    "Real gradle build will pass via the pluginIdToCoord substitution.",
+                                severity = Severity.WARN)
+                        }
+                    }
+                }
                 val ms = System.currentTimeMillis() - started
                 return Result(entry, pomUrl,
                     viaProxy = s.httpsProxy.isNotBlank(), viaMirror = viaMirror,
                     statusCode = pomResult.second, durationMs = ms, ok = false,
-                    message = pomMessage(pomResult.second, viaMirror))
+                    message = pomMessage(pomResult.second, viaMirror),
+                    severity = Severity.FAIL)
             }
 
             // Second: probe the companion JAR. Skipped when
