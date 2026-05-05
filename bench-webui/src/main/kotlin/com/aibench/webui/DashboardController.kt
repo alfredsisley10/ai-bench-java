@@ -152,14 +152,20 @@ class DashboardController(
         val bgStyle: String
     )
 
-    /** Configuration column header for the heat-map. */
+    /** Configuration column header for the heat-map. `borderRight`
+     *  is the CSS string applied to this column's th + every cell
+     *  in this column, used to render vertical group dividers:
+     *  thick indigo on the LAST column of a ctx group, medium slate
+     *  on the LAST column of an appmap sub-group, blank otherwise
+     *  (border-spacing handles the gap between same-group models). */
     data class HeatColumn(
         val configKey: String,
         val modelShort: String,    // model id with provider prefix stripped for compact display
         val ctxShort: String,      // 1-letter ctx ("O", "B", "N", "n")
         val appmapShort: String,   // "+" for ON, "" for OFF
         val tooltip: String,
-        val totalSolves: Int
+        val totalSolves: Int,
+        val borderRight: String
     )
 
     /** Top-row grouping of heat-map columns by context-provider.
@@ -171,6 +177,7 @@ class DashboardController(
         val ctxLabel: String,
         val colspan: Int,
         val appmapGroups: List<HeatAppmapGroup>,
+        val borderRight: String,
         // Aggregate pass rate across every (model column, bug row)
         // cell in this ctx group. Numerator = PASSED cells;
         // denominator = ATTEMPTED cells (PASSED + FAILED + ERRORED
@@ -192,7 +199,8 @@ class DashboardController(
         val appmapLabel: String,
         val colspan: Int,
         val passRate: Double,
-        val passLabel: String
+        val passLabel: String,
+        val borderRight: String
     )
 
     /** Bug row metadata for the heat-map. */
@@ -556,15 +564,39 @@ class DashboardController(
                 { it.third },                                      // then ON_* alphabetically
                 { it.first }                                       // then model
             ))
-        val heatColumns: List<HeatColumn> = configsWithAttempts.map { (model, ctx, mode) ->
+        // Pre-compute the LAST column index in each ctx group + each
+        // (ctx, appmap) sub-group so we can render thicker vertical
+        // dividers at those boundaries. The list is already sorted
+        // ctx → appmap → model so "last in group" is just "next item
+        // changes group key (or end of list)".
+        val lastInCtxIdx = configsWithAttempts.indices.filter { i ->
+            i == configsWithAttempts.lastIndex ||
+            configsWithAttempts[i].second != configsWithAttempts[i + 1].second
+        }.toSet()
+        val lastInAppmapIdx = configsWithAttempts.indices.filter { i ->
+            i == configsWithAttempts.lastIndex ||
+            configsWithAttempts[i].second != configsWithAttempts[i + 1].second ||
+            configsWithAttempts[i].third != configsWithAttempts[i + 1].third
+        }.toSet()
+        val heatColumns: List<HeatColumn> = configsWithAttempts.mapIndexed { idx, (model, ctx, mode) ->
             val k = "$model|$ctx|$mode"
             val solves = nonOracleRuns.count {
                 it.modelId == model && it.contextProvider == ctx && it.appmapMode == mode &&
                 it.status == BenchmarkRunService.Status.PASSED
             }
+            // Vertical divider: indigo (matches the ctx banner color)
+            // for ctx-group boundaries; slate (matches the appmap
+            // sub-banner) for appmap-subgroup boundaries; nothing
+            // between same-subgroup models (the table's 1px
+            // border-spacing already separates them visibly).
+            val border = when {
+                idx == configsWithAttempts.lastIndex -> ""        // last column overall
+                idx in lastInCtxIdx -> "border-right:3px solid #6366f1"
+                idx in lastInAppmapIdx -> "border-right:2px solid #94a3b8"
+                else -> ""
+            }
             HeatColumn(
                 configKey = k,
-                // strip "copilot-" prefix for compactness; rest stays
                 modelShort = model.removePrefix("copilot-"),
                 ctxShort = when (ctx.lowercase()) {
                     "none" -> "n"
@@ -576,7 +608,8 @@ class DashboardController(
                 appmapShort = if (mode.uppercase() == "ON" ||
                     mode.uppercase().startsWith("ON_")) "+" else "",
                 tooltip = "$model · ctx=$ctx · appmap=$mode — $solves passed",
-                totalSolves = solves
+                totalSolves = solves,
+                borderRight = border
             )
         }
         // Only carry bugs that had at least 1 attempt (matches the
@@ -691,38 +724,53 @@ class DashboardController(
             if (attempted == 0) "—"
             else "${(passed * 100 + attempted / 2) / attempted}% ($passed/$attempted)"
 
-        val heatCtxGroups: List<HeatCtxGroup> = configsWithAttempts
-            .groupBy { it.second }
-            .map { (ctx, ctxConfigs) ->
-                val (ctxPassed, ctxAttempted) = groupPassStats(ctxConfigs)
-                val appmapGroups = ctxConfigs.groupBy { it.third }
-                    .map { (mode, modeConfigs) ->
-                        val (mPassed, mAttempted) = groupPassStats(modeConfigs)
-                        HeatAppmapGroup(
-                            // Human-friendly label for the matrix
-                            // header banner. Operators read "AppMap
-                            // Traces: On (recommended)" much faster
-                            // than the raw enum "ON_RECOMMENDED".
-                            appmapLabel = when {
-                                mode.equals("OFF", true) || mode.isBlank() -> "Off"
-                                mode.equals("ON", true) -> "On"
-                                mode.equals("ON_RECOMMENDED", true) -> "On (recommended)"
-                                mode.equals("ON_ALL", true) -> "On (all tests)"
-                                else -> mode
-                            },
-                            colspan = modeConfigs.size,
-                            passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
-                            passLabel = pctLabel(mPassed, mAttempted)
-                        )
-                    }
-                HeatCtxGroup(
-                    ctxLabel = ctx,
-                    colspan = ctxConfigs.size,
-                    appmapGroups = appmapGroups,
-                    passRate = if (ctxAttempted > 0) ctxPassed.toDouble() / ctxAttempted else 0.0,
-                    passLabel = pctLabel(ctxPassed, ctxAttempted)
+        // Group ctx → appmap. Each banner cell carries a borderRight
+        // string so the indigo (ctx-boundary) and slate (appmap-
+        // subgroup boundary) dividers extend full-height through
+        // the whole header stack, matching the per-column dividers
+        // computed for the model row.
+        val ctxKeys = configsWithAttempts.map { it.second }.distinct()
+        val heatCtxGroups: List<HeatCtxGroup> = ctxKeys.mapIndexed { ctxIdx, ctx ->
+            val ctxConfigs = configsWithAttempts.filter { it.second == ctx }
+            val isLastCtx = ctxIdx == ctxKeys.lastIndex
+            val (ctxPassed, ctxAttempted) = groupPassStats(ctxConfigs)
+            val modeKeys = ctxConfigs.map { it.third }.distinct()
+            val appmapGroups = modeKeys.mapIndexed { aIdx, mode ->
+                val modeConfigs = ctxConfigs.filter { it.third == mode }
+                val isLastInCtx = aIdx == modeKeys.lastIndex
+                val appmapBorder = when {
+                    isLastInCtx && isLastCtx -> ""
+                    isLastInCtx -> "border-right:3px solid #6366f1"
+                    else -> "border-right:2px solid #94a3b8"
+                }
+                val (mPassed, mAttempted) = groupPassStats(modeConfigs)
+                HeatAppmapGroup(
+                    // Human-friendly label for the matrix header
+                    // banner. Operators read "AppMap Traces: On
+                    // (recommended)" much faster than the raw enum
+                    // "ON_RECOMMENDED".
+                    appmapLabel = when {
+                        mode.equals("OFF", true) || mode.isBlank() -> "Off"
+                        mode.equals("ON", true) -> "On"
+                        mode.equals("ON_RECOMMENDED", true) -> "On (recommended)"
+                        mode.equals("ON_ALL", true) -> "On (all tests)"
+                        else -> mode
+                    },
+                    colspan = modeConfigs.size,
+                    passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
+                    passLabel = pctLabel(mPassed, mAttempted),
+                    borderRight = appmapBorder
                 )
             }
+            HeatCtxGroup(
+                ctxLabel = ctx,
+                colspan = ctxConfigs.size,
+                appmapGroups = appmapGroups,
+                borderRight = if (isLastCtx) "" else "border-right:3px solid #6366f1",
+                passRate = if (ctxAttempted > 0) ctxPassed.toDouble() / ctxAttempted else 0.0,
+                passLabel = pctLabel(ctxPassed, ctxAttempted)
+            )
+        }
         val heatAppmapGroups: List<HeatAppmapGroup> =
             heatCtxGroups.flatMap { it.appmapGroups }
 
