@@ -103,21 +103,19 @@
                         bypassed for Gradle
                     </span>
                 </td></tr>
-            <tr><th>TLS verification (WebUI HTTP probes)</th>
+            <tr><th>TLS verification</th>
                 <td>
                     <span th:if="${settings.insecureSsl}" class="badge" style="background:#b91c1c; color:white">DISABLED (insecure)</span>
                     <span th:unless="${settings.insecureSsl}" class="badge available">Enabled (default)</span>
                     <div class="help-text" style="margin-top:0.3em; font-size:0.8em">
-                        Scopes ONLY to bench-webui's own outbound HTTP
-                        (probes, mirror tests, bridge / Navie calls).
-                        Gradle subprocesses always trust the merged
-                        truststore below (JDK <code>cacerts</code> ∪ OS
-                        keychain) regardless of this toggle, since
-                        that's what corp-MITM environments actually
-                        need. See the
-                        "Gradle subprocess args" section at the bottom
-                        of this page for the exact <code>-D</code>
-                        args bench-webui appends.
+                        When DISABLED: bench-webui's HttpClient AND every
+                        gradle invocation on this user account
+                        (via a generated init script at
+                        <code>~/.gradle/init.d/aibench-trust-all.gradle.kts</code>)
+                        bypass cert validation. When ENABLED: standard
+                        cert validation against the merged truststore
+                        (JDK <code>cacerts</code> ∪ OS keychain) at
+                        <code>~/.aibench/truststore-v2.jks</code>.
                     </div>
                 </td></tr>
         </table>
@@ -228,19 +226,25 @@
             <label style="margin-top:0.75em">
                 <input name="insecureSsl" type="checkbox" value="true"
                        th:checked="${settings.insecureSsl}">
-                <strong>Ignore SSL certificate errors (WebUI HTTP probes only)</strong>
+                <strong>Ignore SSL certificate errors (WebUI + ALL gradle invocations on this account)</strong>
                 <span class="help-text" style="display:block; margin-top:0.3em; font-size:0.85em">
-                    When on, bench-webui's own outbound HttpClient
-                    accepts any cert + skips hostname verification —
-                    useful when probing internal hosts behind a corp
-                    MITM proxy whose CA isn't in your OS keychain.
-                    <strong>Does NOT affect gradle subprocesses</strong>:
-                    those always validate against the merged truststore
-                    (JDK <code>cacerts</code> ∪ OS keychain, written
-                    every save), since that's what corp-MITM environments
-                    need to make builds work cleanly. If you need the
-                    corp CA trusted by gradle, add it to your OS keychain
-                    instead — bench-webui picks it up automatically.
+                    When on:
+                    <ul style="margin:0.3em 0 0 1.4em; padding:0">
+                        <li>bench-webui's own HttpClient accepts any cert + skips hostname verification.</li>
+                        <li>An init script is written to
+                            <code>~/.gradle/init.d/aibench-trust-all.gradle.kts</code>
+                            that installs a trust-all <code>SSLContext</code>
+                            as the JVM default at gradle startup. Affects
+                            EVERY gradle invocation on this user account
+                            (daemon, test forks, plugin HTTP) -- not just
+                            the ones bench-webui spawns -- so shell
+                            <code>./gradlew</code> calls behave the same
+                            way. Removed automatically when toggled off.</li>
+                    </ul>
+                    Use only when you cannot get the corp MITM CA into
+                    your OS keychain (where bench-webui would pick it up
+                    automatically via the merged truststore at
+                    <code>~/.aibench/truststore-v2.jks</code>).
                 </span>
             </label>
             <div class="button-row" style="margin-top:0.75em">
