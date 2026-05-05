@@ -155,7 +155,21 @@
 
     function sortValue(row, header) {
       const key = header.dataset.sortKey;
-      const raw = row.dataset[key] || '';
+      // Wide pivot tables (e.g. the bug-solving matrix) can't put one
+      // data-attribute per column on the <tr> -- the column count is
+      // dynamic and the keys would collide. As an alternative the
+      // header can declare `data-sort-cell="N"` to sort by the Nth
+      // <td>'s `data-sort-value` attribute (or its trimmed text
+      // content when the data-sort-value isn't set).
+      let raw;
+      const cellIdxAttr = header.dataset.sortCell;
+      if (cellIdxAttr != null) {
+        const td = row.children[parseInt(cellIdxAttr, 10)];
+        raw = td ? (td.dataset.sortValue != null
+          ? td.dataset.sortValue : td.textContent.trim()) : '';
+      } else {
+        raw = row.dataset[key] || '';
+      }
       if (header.dataset.sortNumeric === 'true') {
         const n = parseFloat(raw.replace(/[, ]/g, ''));
         return Number.isFinite(n) ? n : Number.MAX_VALUE;

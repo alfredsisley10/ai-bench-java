@@ -607,8 +607,8 @@
             <span class="help-text" id="leaderboard-count" style="font-weight:normal; font-size:0.85em"></span>
         </h2>
         <p class="subtitle">
-            Aggregates only <strong>PASSED</strong> runs.
-            Best = fastest / cheapest single solve.
+            Aggregates only <strong>PASSED</strong> runs. Solved =
+            distinct bugs solved out of the catalog (<span th:text="${suiteTotal}">N</span> total).
             Click headers to sort; filter inputs narrow each column.
         </p>
 
@@ -644,9 +644,7 @@
                     <th data-sort-key="ctx" title="Context provider used to choose which source files were shipped in the prompt. Oracle is excluded from the leaderboard since it requires the curated filesTouched (not realistic for an unseen codebase).">Context Provider <span class="sort-indicator"></span></th>
                     <th data-sort-key="appmap" title="AppMap recording mode — OFF, ON_RECOMMENDED (REC; bug's recommended tests only), ON_ALL (every test in the bug's module)">AppMap <span class="sort-indicator"></span></th>
                     <th data-sort-key="passrate" data-sort-numeric="true" class="num" title="Pass rate for this exact (model, ctx, appmap) configuration: passed runs / total runs">Pass <span class="sort-indicator"></span></th>
-                    <th data-sort-key="solved" data-sort-numeric="true" class="num" title="Total passed runs for this configuration (each row = one (model, ctx, appmap) combo)">Solved <span class="sort-indicator"></span></th>
-                    <th data-sort-key="fastest" data-sort-numeric="true" class="num" title="Wall-clock duration of the FASTEST passing run (hover the cell to see which bug)">Best time <span class="sort-indicator"></span></th>
-                    <th data-sort-key="cheapest" data-sort-numeric="true" class="num" title="USD cost of the CHEAPEST passing run, using the per-1K table at /admin/pricing (hover the cell to see which bug)">Best cost <span class="sort-indicator"></span></th>
+                    <th data-sort-key="solved" data-sort-numeric="true" class="num" title="Distinct bugs solved by this configuration, out of the catalog total. Higher = covers more of the suite.">Solved <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgms" data-sort-numeric="true" class="num" title="Average wall-clock duration across all passing runs for this configuration">Avg time <span class="sort-indicator"></span></th>
                     <th data-sort-key="avgcost" data-sort-numeric="true" class="num" title="Average USD cost across all passing runs (hover the cell for the raw decimal)">Avg cost <span class="sort-indicator"></span></th>
                     <th data-sort-key="difficulty" title="Per-difficulty breakdown of bugs this configuration solved (TRIVIAL/EASY/MEDIUM/HARD from the bug catalog)">Difficulty <span class="sort-indicator"></span></th>
@@ -659,12 +657,10 @@
                     <th><input type="text" data-filter-col="3" placeholder="filter mode"></th>
                     <th><input type="text" data-filter-col="4" placeholder="≥, ≤, ="></th>
                     <th><input type="text" data-filter-col="5" placeholder="≥, ≤, ="></th>
-                    <th><input type="text" data-filter-col="6" placeholder="filter time"></th>
-                    <th><input type="text" data-filter-col="7" placeholder="filter cost"></th>
-                    <th><input type="text" data-filter-col="8" placeholder="filter avg"></th>
-                    <th><input type="text" data-filter-col="9" placeholder="filter avg"></th>
-                    <th><input type="text" data-filter-col="10" placeholder="EASY,MEDIUM…"></th>
-                    <th><input type="text" data-filter-col="11" placeholder="TIMING,LOGIC…"></th>
+                    <th><input type="text" data-filter-col="6" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="7" placeholder="filter avg"></th>
+                    <th><input type="text" data-filter-col="8" placeholder="EASY,MEDIUM…"></th>
+                    <th><input type="text" data-filter-col="9" placeholder="TIMING,LOGIC…"></th>
                 </tr>
             </thead>
             <tbody>
@@ -675,9 +671,7 @@
                          data-ctx=${lb.contextProvider},
                          data-appmap=${lb.appmapMode},
                          data-passrate=${lb.passRate},
-                         data-solved=${lb.passedRuns},
-                         data-fastest=${lb.fastest != null ? lb.fastest.durationMs : 999999999},
-                         data-cheapest=${lb.cheapest != null ? lb.cheapest.costUsd : 999999},
+                         data-solved=${lb.solvedBugs},
                          data-avgms=${lb.avgPassMs},
                          data-avgcost=${lb.avgPassCostUsd},
                          data-difficulty=${#strings.listJoin(lb.solvedByDifficulty.keySet(), ',')},
@@ -715,8 +709,8 @@
                              ${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')} + '/' +
                              ${#numbers.formatInteger(lb.totalRuns, 1, 'COMMA')} + ')'"></td>
                 <td class="num"
-                    th:title="${lb.passedRuns} + ' passing run(s) for this configuration'">
-                    <span th:text="${#numbers.formatInteger(lb.passedRuns, 1, 'COMMA')}"></span>
+                    th:title="${lb.solvedBugs} + ' distinct bug(s) solved out of ' + ${suiteTotal} + ' in the catalog'">
+                    <span th:text="${lb.solvedBugs} + ' / ' + ${suiteTotal}"></span>
                     <small th:if="${delta != null and not iter.first and delta.solvedDelta != 0}"
                            th:style="${delta != null and delta.solvedDelta > 0 ? 'color:#16a34a' : 'color:#b91c1c'}"
                            th:text="${delta != null ? ((delta.solvedDelta > 0 ? '+' : '') + delta.solvedDelta) : ''}"
@@ -724,20 +718,6 @@
                     <small th:if="${iter.first}"
                            style="display:block; color:#16a34a; font-size:0.85em">leader</small>
                 </td>
-                <td class="num" style="white-space:nowrap" th:if="${lb.fastest != null}"
-                    th:title="'Fastest pass on ' + ${lb.fastest.bugId} + ' (' + ${lb.fastest.difficulty} + ' / ' + ${lb.fastest.category} + ') · ' + ${lb.fastest.durationMs} + ' ms wall clock'"
-                    th:with="d=${lb.fastest.durationMs},
-                             sTotal=${d / 1000},
-                             s=${sTotal % 60},
-                             m=${sTotal / 60}"
-                    th:text="${m > 0
-                               ? m + 'm ' + s + 's'
-                               : (sTotal > 0 ? s + 's' : '<1s')}"></td>
-                <td class="num" th:unless="${lb.fastest != null}" title="No passing run for this configuration yet">—</td>
-                <td class="num" style="white-space:nowrap" th:if="${lb.cheapest != null}"
-                    th:title="'Cheapest pass on ' + ${lb.cheapest.bugId} + ' (' + ${lb.cheapest.difficulty} + ' / ' + ${lb.cheapest.category} + ') · $' + ${lb.cheapest.costUsd}"
-                    th:text="'$' + ${#numbers.formatDecimal(lb.cheapest.costUsd, 1, 'COMMA', 6, 'POINT')}"></td>
-                <td class="num" th:unless="${lb.cheapest != null}" title="No passing run for this configuration yet">—</td>
                 <td class="num" style="white-space:nowrap"
                     th:title="${lb.avgPassMs} + ' ms avg across ' + ${lb.passedRuns} + ' passing run(s)'"
                     th:with="d=${lb.avgPassMs},
@@ -990,15 +970,35 @@
             </span>
         </h2>
         <div class="table-scroll" style="overflow-x:auto">
-        <table style="font-size:0.78em; border-collapse:separate; border-spacing:1px">
+        <table id="heatMatrixTable" class="sortable-table"
+               style="font-size:0.78em; border-collapse:separate; border-spacing:1px">
             <thead>
-                <tr>
-                    <th style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6">Bug</th>
-                    <th style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6">Diff</th>
-                    <th th:each="c : ${heatColumns}"
+                <!-- All matrix headers are clickable sorts. The two
+                     fixed columns (Bug, Diff) sort by row data-*
+                     attributes; the dynamic config columns use
+                     data-sort-cell + per-cell data-sort-value (rank
+                     0=PASSED, 1=FAILED, 2=ERRORED, 3=CANCELED,
+                     9=no attempt) so PASSED bubbles to the top of an
+                     ascending sort on any solver column -- the
+                     "which configurations dominate this column?"
+                     question. -->
+                <tr class="sort-row">
+                    <th data-sort-key="bug"
+                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6; cursor:pointer">
+                        Bug <span class="sort-indicator"></span>
+                    </th>
+                    <th data-sort-key="difficulty"
+                        data-sort-order="EASY,MEDIUM,HARD"
+                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6; cursor:pointer">
+                        Diff <span class="sort-indicator"></span>
+                    </th>
+                    <th th:each="c, iter : ${heatColumns}"
                         th:title="${c.tooltip}"
+                        th:attr="data-sort-key='c' + ${iter.index},
+                                 data-sort-cell=${iter.index + 2},
+                                 data-sort-numeric='true'"
                         style="padding:0.3em 0.4em; background:#f3f4f6;
-                               vertical-align:bottom; min-width:3.2em">
+                               vertical-align:bottom; min-width:3.2em; cursor:pointer">
                         <div style="writing-mode:vertical-rl; transform:rotate(180deg);
                                     white-space:nowrap; font-family:monospace;
                                     font-size:0.85em; max-height:14em">
@@ -1010,7 +1010,9 @@
             </thead>
             <tbody>
                 <tr th:each="b : ${heatBugRows}"
-                    th:style="${b.uniquelySolved ? 'background:#fffbeb' : ''}">
+                    th:style="${b.uniquelySolved ? 'background:#fffbeb' : ''}"
+                    th:attr="data-bug=${b.bugId},
+                             data-difficulty=${b.difficulty}">
                     <td style="padding:0.25em 0.5em; white-space:nowrap"
                         th:title="${b.title}">
                         <a th:href="'/demo/' + ${b.bugId}"
@@ -1038,6 +1040,11 @@
                         th:title="${cell == null
                                     ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
                                     : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status + ' · ' + (cell.durationMs / 1000) + 's')}"
+                        th:attr="data-sort-value=${cell == null ? 9 :
+                                    (cell.status == 'PASSED' ? 0 :
+                                    (cell.status == 'FAILED' ? 1 :
+                                    (cell.status == 'ERRORED' ? 2 :
+                                    (cell.status == 'CANCELED' ? 3 : 4))))}"
                         style="text-align:center; padding:0.3em 0.4em;
                                font-family:monospace; font-size:0.7em">
                         <span th:if="${cell != null and cell.status == 'PASSED'}">✓</span>

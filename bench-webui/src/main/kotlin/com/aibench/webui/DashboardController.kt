@@ -197,8 +197,6 @@ class DashboardController(
         // 12 bugs", because 3 bugs had multiple passing seeds).
         val solvedBugs: Int,
         val passRate: Double,
-        val fastest: PassRecord?,
-        val cheapest: PassRecord?,
         val avgPassMs: Long,
         val avgPassCostUsd: Double,
         /** Per-bug breakdown of every run that hit this exact
@@ -348,8 +346,6 @@ class DashboardController(
                 passedRuns = records.size,
                 solvedBugs = records.map { it.bugId }.distinct().size,
                 passRate = records.size.toDouble() / totalForCtx,
-                fastest = records.minByOrNull { it.durationMs },
-                cheapest = records.minByOrNull { it.costUsd },
                 avgPassMs = records.map { it.durationMs }.average().toLong(),
                 avgPassCostUsd = records.map { it.costUsd }.average(),
                 bugBreakdown = drilldown,
