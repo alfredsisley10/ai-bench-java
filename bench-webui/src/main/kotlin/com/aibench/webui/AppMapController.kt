@@ -202,9 +202,59 @@ class AppMapController(
     fun recordingPanel(@PathVariable id: String, model: Model): String {
         val recording = appmaps.recording(id) ?: return "fragments/appmap-recording :: empty"
         model.addAttribute("rec", recording)
-        model.addAttribute("logTail", appmaps.tailLog(recording, 40))
+        // Polled tail bumped from 40 -> 500 lines so the live panel
+        // shows enough scrollback that operators can spot earlier
+        // resolution / compile errors that scrolled off when set to
+        // 40. Still memory-bounded (tailLog caps at 2MB regardless).
+        // For the FULL history, the panel surfaces a "View full
+        // log" link to /log/full below.
+        model.addAttribute("logTail", appmaps.tailLog(recording, 500))
         model.addAttribute("currentTraceCount", appmaps.listTraces().size)
         return "fragments/appmap-recording :: panel"
+    }
+
+    /**
+     * Stream the full recording log file as text/plain so the
+     * operator can scroll the COMPLETE history (the live panel
+     * polled at /panel is bounded for browser-memory safety).
+     * Open in a new tab from the recording UI; gradle logs can
+     * be 10s of MB on a long bulk run, so the response is
+     * streamed (not loaded fully into JVM heap) using
+     * FileSystemResource.
+     */
+    @GetMapping("/demo/appmap/recording/{id}/log/full")
+    fun fullLog(@PathVariable id: String): ResponseEntity<FileSystemResource> {
+        val recording = appmaps.recording(id) ?: return ResponseEntity.notFound().build()
+        val file = recording.logPath.toFile()
+        if (!file.isFile) return ResponseEntity.notFound().build()
+        // text/plain; charset=utf-8 so the browser renders it inline
+        // rather than trying to download. Operators can still
+        // ⌘-S / right-click-save when they need a copy.
+        return ResponseEntity.ok()
+            .header(HttpHeaders.CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(HttpHeaders.CONTENT_LENGTH, file.length().toString())
+            .body(FileSystemResource(file))
+    }
+
+    /**
+     * Same content as /log/full but served with
+     * Content-Disposition: attachment so the browser downloads it
+     * instead of rendering inline. Useful for very large logs that
+     * would freeze the browser if displayed; pair with `less`/
+     * editor on disk.
+     */
+    @GetMapping("/demo/appmap/recording/{id}/log/download")
+    fun downloadLog(@PathVariable id: String): ResponseEntity<FileSystemResource> {
+        val recording = appmaps.recording(id) ?: return ResponseEntity.notFound().build()
+        val file = recording.logPath.toFile()
+        if (!file.isFile) return ResponseEntity.notFound().build()
+        val safeId = id.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return ResponseEntity.ok()
+            .header(HttpHeaders.CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(HttpHeaders.CONTENT_LENGTH, file.length().toString())
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                "attachment; filename=\"appmap-recording-$safeId.log\"")
+            .body(FileSystemResource(file))
     }
 
     @PostMapping("/demo/appmap/recording/{id}/stop")
