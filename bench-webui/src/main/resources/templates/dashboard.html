@@ -1053,18 +1053,18 @@
                         Bug <span class="sort-indicator"></span>
                     </th>
                     <th rowspan="3" data-sort-key="difficulty"
-                        data-sort-order="EASY,MEDIUM,HARD"
+                        data-sort-order="TRIVIAL,EASY,MEDIUM,HARD"
                         style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
                                vertical-align:bottom; cursor:pointer">
                         Diff <span class="sort-indicator"></span>
                     </th>
                     <th th:each="g : ${heatCtxGroups}"
                         th:colspan="${g.colspan}"
-                        th:title="'context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
+                        th:title="'Context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
                         style="text-align:center; padding:0.25em 0.4em;
                                background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                font-weight:600; color:#312e81">
-                        ctx=<span th:text="${g.ctxLabel}">…</span>
+                        Context: <span th:text="${g.ctxLabel}">…</span>
                         <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
                               th:text="' · ' + ${g.passLabel}">…</span>
                     </th>
@@ -1072,38 +1072,40 @@
                 <tr>
                     <th th:each="ag : ${heatAppmapGroups}"
                         th:colspan="${ag.colspan}"
-                        th:title="'AppMap mode: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (ctx, appmap) pair'"
+                        th:title="'AppMap Traces: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (Context, AppMap Traces) pair'"
                         style="text-align:center; padding:0.2em 0.4em;
                                background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                font-size:0.85em; color:#475569">
-                        appmap=<span th:text="${ag.appmapLabel}">…</span>
+                        AppMap Traces: <span th:text="${ag.appmapLabel}">…</span>
                         <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
                 </tr>
                 <tr class="sort-row">
+                    <!-- Model labels rotated 45° rising from the
+                         bottom-left of each header cell to the upper
+                         right. The diagonal angle is easier to read
+                         than a fully-vertical label and -- with
+                         transform-origin at bottom-left -- each label
+                         visually anchors to its own column while
+                         extending into the row's vertical space
+                         instead of forcing extreme column widths. -->
                     <th th:each="c, iter : ${heatColumns}"
                         th:title="${c.tooltip}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
-                        style="padding:0.3em 0.4em; background:#f3f4f6;
-                               vertical-align:middle; text-align:center;
-                               min-width:3.2em; height:8em; cursor:pointer">
-                        <!-- Vertical-rl rotated text, centered both
-                             axes inside the th. Fixed-height th + the
-                             flex wrapper give every model label the
-                             same vertical baseline regardless of label
-                             length, so the matrix reads as a clean
-                             grid. -->
-                        <div style="display:flex; align-items:center;
-                                    justify-content:center; height:100%">
-                            <span style="writing-mode:vertical-rl;
-                                         transform:rotate(180deg);
-                                         white-space:nowrap;
-                                         font-family:monospace;
-                                         font-size:0.85em"
-                                  th:text="${c.modelShort}">…</span>
-                        </div>
+                        style="background:#f3f4f6;
+                               vertical-align:bottom; text-align:left;
+                               padding:0.4em 0.4em 0.5em 0.5em;
+                               min-width:3em; height:7em;
+                               cursor:pointer; overflow:visible">
+                        <span style="display:inline-block;
+                                     transform:rotate(-45deg);
+                                     transform-origin:bottom left;
+                                     white-space:nowrap;
+                                     font-family:monospace;
+                                     font-size:0.85em"
+                              th:text="${c.modelShort}">…</span>
                     </th>
                 </tr>
             </thead>
@@ -1126,15 +1128,14 @@
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
-                    <!-- Each cell is a 3-line micro-card centered
-                         vertically + horizontally. PASSED cells use a
-                         50/50 left=time-shade right=cost-shade
-                         linear-gradient (computed server-side per
-                         bug's min/max so darkest green = best on that
-                         metric for THIS bug). FAILED cells use a very
-                         light red so they don't distract from the
-                         pass-intensity signal. No-attempt cells stay
-                         neutral grey with just a dot. -->
+                    <!-- Each cell is two side-by-side halves.
+                         LEFT: time, centered in the time-shaded
+                         (left) gradient half. RIGHT: cost, centered
+                         in the cost-shaded (right) gradient half.
+                         No status glyph -- color encodes pass/fail
+                         (vivid green = passed, soft red = failed).
+                         No-attempt cells stay neutral grey with a
+                         single dot. -->
                     <td th:each="c : ${heatColumns}"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
                         th:style="${cell != null ? cell.bgStyle :
@@ -1150,22 +1151,17 @@
                                     (cell.status == 'ERRORED' ? 2 :
                                     (cell.status == 'CANCELED' ? 3 : 4))))}"
                         style="text-align:center; vertical-align:middle;
-                               padding:0.25em 0.3em;
-                               font-family:ui-monospace,Menlo,monospace; font-size:0.7em;
-                               line-height:1.15; min-width:3.6em">
+                               padding:0; font-family:ui-monospace,Menlo,monospace;
+                               font-size:0.72em; min-width:5em; height:2.6em">
                         <div th:if="${cell != null}"
-                             style="display:flex; flex-direction:column;
-                                    align-items:center; justify-content:center;
-                                    line-height:1.2">
-                            <span style="font-weight:bold">
-                                <span th:if="${cell.status == 'PASSED'}">✓</span>
-                                <span th:if="${cell.status == 'FAILED'}">✗</span>
-                                <span th:if="${cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
-                            </span>
-                            <span th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}"
-                                  style="font-size:0.95em">…</span>
-                            <span th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}"
-                                  style="font-size:0.85em; opacity:0.85">…</span>
+                             style="display:flex; align-items:stretch;
+                                    height:100%; width:100%">
+                            <span style="flex:1 1 50%; display:flex;
+                                         align-items:center; justify-content:center"
+                                  th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}">…</span>
+                            <span style="flex:1 1 50%; display:flex;
+                                         align-items:center; justify-content:center"
+                                  th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}">…</span>
                         </div>
                         <span th:if="${cell == null}">·</span>
                     </td>

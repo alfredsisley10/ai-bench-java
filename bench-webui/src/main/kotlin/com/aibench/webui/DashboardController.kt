@@ -651,7 +651,7 @@ class DashboardController(
                     "background:linear-gradient(to right, ${greenShade(tRank)} 50%, " +
                         "${greenShade(cRank)} 50%); color:#0f172a"
                 }
-                "FAILED" -> "background:#fef2f2; color:#9ca3af"
+                "FAILED" -> "background:#fee2e2; color:#7f1d1d"
                 "ERRORED" -> "background:#fef3c7; color:#92400e"
                 else -> "background:#f1f5f9; color:#94a3b8"
             }
@@ -699,8 +699,17 @@ class DashboardController(
                     .map { (mode, modeConfigs) ->
                         val (mPassed, mAttempted) = groupPassStats(modeConfigs)
                         HeatAppmapGroup(
-                            appmapLabel = if (mode.equals("OFF", true) || mode.isBlank()) "OFF"
-                                          else mode,
+                            // Human-friendly label for the matrix
+                            // header banner. Operators read "AppMap
+                            // Traces: On (recommended)" much faster
+                            // than the raw enum "ON_RECOMMENDED".
+                            appmapLabel = when {
+                                mode.equals("OFF", true) || mode.isBlank() -> "Off"
+                                mode.equals("ON", true) -> "On"
+                                mode.equals("ON_RECOMMENDED", true) -> "On (recommended)"
+                                mode.equals("ON_ALL", true) -> "On (all tests)"
+                                else -> mode
+                            },
                             colspan = modeConfigs.size,
                             passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
                             passLabel = pctLabel(mPassed, mAttempted)
