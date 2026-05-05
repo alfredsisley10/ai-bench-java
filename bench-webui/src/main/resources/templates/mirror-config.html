@@ -1273,6 +1273,19 @@
                         } else {
                             verdict = '<span style="color:#b91c1c">✗ ' + escapeHtml(row.message) + '</span>';
                         }
+                        // 🔬 Probe versions: per-row button that sweeps
+                        // nearby versions of this coord and surfaces
+                        // the policy-allowed range. Useful when corp
+                        // security blocks a specific version (CVE
+                        // match) -- the operator can see at a glance
+                        // which adjacent versions DO resolve so they
+                        // know what to bump to.
+                        var probeBtn = '<button type="button" class="btn-sm" ' +
+                            'style="font-size:0.72em; padding:1px 6px; margin-left:0.4em" ' +
+                            'data-coord="' + escapeHtml(row.coord) + '" ' +
+                            'onclick="probeVersionRange(this)">🔬 Probe versions</button>';
+                        verdict = verdict + probeBtn +
+                            '<div class="version-range-output" style="display:none; margin-top:4px"></div>';
                         tr.innerHTML =
                             '<td style="padding:4px 6px"><span style="font-size:0.75em; color:#475569">' +
                                 escapeHtml(row.categoryDisplay) + '</span></td>' +
@@ -1300,6 +1313,67 @@
                         'Validate request failed.</td></tr>';
                 });
         }
+
+        // Per-row "🔬 Probe versions": sweep nearby versions of the
+        // clicked coord against the configured mirror. Surfaces the
+        // policy boundary -- which adjacent versions resolve, which
+        // don't -- so the operator can see the corp Artifactory's
+        // version blocklist directly. Inline panel below the verdict
+        // cell so the per-row context stays tied to the row that
+        // failed.
+        function probeVersionRange(btn) {
+            var coord = btn.dataset.coord;
+            var out = btn.parentNode.querySelector('.version-range-output');
+            if (!coord || !out) return;
+            btn.disabled = true;
+            btn.textContent = 'Probing…';
+            out.style.display = '';
+            out.style.padding = '0.4em 0.6em';
+            out.style.background = '#f4f6fa';
+            out.style.border = '1px solid #cbd5e1';
+            out.style.borderRadius = '4px';
+            out.style.fontSize = '0.78em';
+            out.textContent = 'Probing nearby versions of ' + coord + '… (~3-8 s)';
+            var form = new URLSearchParams();
+            form.append('coord', coord);
+            fetch('/mirror/validate-deps/version-range', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: form
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    btn.disabled = false;
+                    btn.textContent = '🔬 Probe versions';
+                    var probes = data.probes || [];
+                    var lines = [];
+                    lines.push('Coord: ' + (data.coord || coord));
+                    lines.push('Source: ' + (data.candidatesSource || '(unknown)'));
+                    lines.push('');
+                    probes.forEach(function (p) {
+                        var marker = p.ok ? '✓' : '✗';
+                        var color = p.ok ? '#067647' : '#b91c1c';
+                        var current = p.isCurrent ? ' ← current pin' : '';
+                        lines.push('  <span style="color:' + color + '">' + marker + ' ' +
+                            escapeHtml(p.version) + '</span>' +
+                            ' (HTTP ' + (p.statusCode > 0 ? p.statusCode : 'err') + ', ' +
+                            p.durationMs + 'ms)' + current);
+                    });
+                    if (data.recommendation) {
+                        lines.push('');
+                        lines.push('<strong>' + escapeHtml(data.recommendation) + '</strong>');
+                    }
+                    out.innerHTML = lines.join('\n').replace(/\n/g, '<br>');
+                    out.style.whiteSpace = 'normal';
+                })
+                .catch(function (e) {
+                    btn.disabled = false;
+                    btn.textContent = '🔬 Probe versions';
+                    out.textContent = '✗ ' + ((e && e.message) || e);
+                    out.style.color = '#b91c1c';
+                });
+        }
+
         // Self-contained mirror-verify JS. Identical helpers used to
         // live in proxy-config.html; duplicated here so the page works
         // standalone after the split.
