@@ -651,7 +651,7 @@ class DashboardController(
                     "background:linear-gradient(to right, ${greenShade(tRank)} 50%, " +
                         "${greenShade(cRank)} 50%); color:#0f172a"
                 }
-                "FAILED" -> "background:#fef2f2; color:#9ca3af"
+                "FAILED" -> "background:#fee2e2; color:#7f1d1d"
                 "ERRORED" -> "background:#fef3c7; color:#92400e"
                 else -> "background:#f1f5f9; color:#94a3b8"
             }

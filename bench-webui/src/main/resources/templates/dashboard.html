@@ -1053,7 +1053,7 @@
                         Bug <span class="sort-indicator"></span>
                     </th>
                     <th rowspan="3" data-sort-key="difficulty"
-                        data-sort-order="EASY,MEDIUM,HARD"
+                        data-sort-order="TRIVIAL,EASY,MEDIUM,HARD"
                         style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
                                vertical-align:bottom; cursor:pointer">
                         Diff <span class="sort-indicator"></span>
@@ -1126,15 +1126,14 @@
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
-                    <!-- Each cell is a 3-line micro-card centered
-                         vertically + horizontally. PASSED cells use a
-                         50/50 left=time-shade right=cost-shade
-                         linear-gradient (computed server-side per
-                         bug's min/max so darkest green = best on that
-                         metric for THIS bug). FAILED cells use a very
-                         light red so they don't distract from the
-                         pass-intensity signal. No-attempt cells stay
-                         neutral grey with just a dot. -->
+                    <!-- Each cell is two side-by-side halves.
+                         LEFT: time, centered in the time-shaded
+                         (left) gradient half. RIGHT: cost, centered
+                         in the cost-shaded (right) gradient half.
+                         No status glyph -- color encodes pass/fail
+                         (vivid green = passed, soft red = failed).
+                         No-attempt cells stay neutral grey with a
+                         single dot. -->
                     <td th:each="c : ${heatColumns}"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
                         th:style="${cell != null ? cell.bgStyle :
@@ -1150,22 +1149,17 @@
                                     (cell.status == 'ERRORED' ? 2 :
                                     (cell.status == 'CANCELED' ? 3 : 4))))}"
                         style="text-align:center; vertical-align:middle;
-                               padding:0.25em 0.3em;
-                               font-family:ui-monospace,Menlo,monospace; font-size:0.7em;
-                               line-height:1.15; min-width:3.6em">
+                               padding:0; font-family:ui-monospace,Menlo,monospace;
+                               font-size:0.72em; min-width:5em; height:2.6em">
                         <div th:if="${cell != null}"
-                             style="display:flex; flex-direction:column;
-                                    align-items:center; justify-content:center;
-                                    line-height:1.2">
-                            <span style="font-weight:bold">
-                                <span th:if="${cell.status == 'PASSED'}">✓</span>
-                                <span th:if="${cell.status == 'FAILED'}">✗</span>
-                                <span th:if="${cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
-                            </span>
-                            <span th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}"
-                                  style="font-size:0.95em">…</span>
-                            <span th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}"
-                                  style="font-size:0.85em; opacity:0.85">…</span>
+                             style="display:flex; align-items:stretch;
+                                    height:100%; width:100%">
+                            <span style="flex:1 1 50%; display:flex;
+                                         align-items:center; justify-content:center"
+                                  th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}">…</span>
+                            <span style="flex:1 1 50%; display:flex;
+                                         align-items:center; justify-content:center"
+                                  th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}">…</span>
                         </div>
                         <span th:if="${cell == null}">·</span>
                     </td>
