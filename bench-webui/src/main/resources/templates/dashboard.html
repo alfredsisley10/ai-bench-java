@@ -1087,11 +1087,22 @@
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
                         style="padding:0.3em 0.4em; background:#f3f4f6;
-                               vertical-align:bottom; min-width:3.2em; cursor:pointer">
-                        <div style="writing-mode:vertical-rl; transform:rotate(180deg);
-                                    white-space:nowrap; font-family:monospace;
-                                    font-size:0.85em; max-height:14em">
-                            <span th:text="${c.modelShort}">…</span>
+                               vertical-align:middle; text-align:center;
+                               min-width:3.2em; height:8em; cursor:pointer">
+                        <!-- Vertical-rl rotated text, centered both
+                             axes inside the th. Fixed-height th + the
+                             flex wrapper give every model label the
+                             same vertical baseline regardless of label
+                             length, so the matrix reads as a clean
+                             grid. -->
+                        <div style="display:flex; align-items:center;
+                                    justify-content:center; height:100%">
+                            <span style="writing-mode:vertical-rl;
+                                         transform:rotate(180deg);
+                                         white-space:nowrap;
+                                         font-family:monospace;
+                                         font-size:0.85em"
+                                  th:text="${c.modelShort}">…</span>
                         </div>
                     </th>
                 </tr>
@@ -1115,26 +1126,19 @@
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
-                    <!-- Each cell is now a 3-line micro-card:
-                          row 1: status glyph (✓/✗/?/·)
-                          row 2: wall-clock time (e.g. "5s")
-                          row 3: cost (e.g. "$0.012")
-                         The cost + time turn the matrix into a true
-                         heat chart -- operators can scan a column to
-                         see "this configuration solves the bug but
-                         takes 30s/$0.04 vs the leader's 5s/$0.01"
-                         without hovering. Cells with no attempt
-                         render only the dot. -->
+                    <!-- Each cell is a 3-line micro-card centered
+                         vertically + horizontally. PASSED cells use a
+                         50/50 left=time-shade right=cost-shade
+                         linear-gradient (computed server-side per
+                         bug's min/max so darkest green = best on that
+                         metric for THIS bug). FAILED cells use a very
+                         light red so they don't distract from the
+                         pass-intensity signal. No-attempt cells stay
+                         neutral grey with just a dot. -->
                     <td th:each="c : ${heatColumns}"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
-                        th:style="${cell == null ? 'background:#f1f5f9' :
-                                    (cell.status == 'PASSED'
-                                       ? 'background:#bbf7d0; color:#14532d'
-                                       : (cell.status == 'FAILED'
-                                          ? 'background:#fecaca; color:#7f1d1d'
-                                          : (cell.status == 'ERRORED'
-                                             ? 'background:#fde68a; color:#78350f'
-                                             : 'background:#e2e8f0; color:#334155')))}"
+                        th:style="${cell != null ? cell.bgStyle :
+                                    'background:#f8fafc; color:#cbd5e1'}"
                         th:title="${cell == null
                                     ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
                                     : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status +
@@ -1145,20 +1149,24 @@
                                     (cell.status == 'FAILED' ? 1 :
                                     (cell.status == 'ERRORED' ? 2 :
                                     (cell.status == 'CANCELED' ? 3 : 4))))}"
-                        style="text-align:center; padding:0.2em 0.3em;
+                        style="text-align:center; vertical-align:middle;
+                               padding:0.25em 0.3em;
                                font-family:ui-monospace,Menlo,monospace; font-size:0.7em;
                                line-height:1.15; min-width:3.6em">
-                        <div th:if="${cell != null}" style="font-weight:bold">
-                            <span th:if="${cell.status == 'PASSED'}">✓</span>
-                            <span th:if="${cell.status == 'FAILED'}">✗</span>
-                            <span th:if="${cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
+                        <div th:if="${cell != null}"
+                             style="display:flex; flex-direction:column;
+                                    align-items:center; justify-content:center;
+                                    line-height:1.2">
+                            <span style="font-weight:bold">
+                                <span th:if="${cell.status == 'PASSED'}">✓</span>
+                                <span th:if="${cell.status == 'FAILED'}">✗</span>
+                                <span th:if="${cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
+                            </span>
+                            <span th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}"
+                                  style="font-size:0.95em">…</span>
+                            <span th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}"
+                                  style="font-size:0.85em; opacity:0.85">…</span>
                         </div>
-                        <div th:if="${cell != null}"
-                             th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}"
-                             style="font-size:0.95em">…</div>
-                        <div th:if="${cell != null}"
-                             th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}"
-                             style="font-size:0.85em; opacity:0.85">…</div>
                         <span th:if="${cell == null}">·</span>
                     </td>
                 </tr>
@@ -1167,13 +1175,17 @@
         </div>
         <p class="help-text" style="margin-top:0.6em; font-size:0.85em">
             <strong>Reading the matrix:</strong> columns are grouped by
-            context provider (top banner) and AppMap mode (sub-banner),
-            so each model column is uniquely identified by its position
-            under the headers above. Each cell shows status (✓/✗/?),
-            wall-clock time, and USD cost — scan a column to compare
-            "how fast / how cheap" across configurations, not just
-            "did it pass". <span style="color:#d97706">★</span> marks
-            bugs solved by exactly one configuration.
+            context provider (top banner) and AppMap mode (sub-banner).
+            Each PASSED cell is split half-and-half: the
+            <strong>left</strong> half shades green by execution time
+            (darker = faster) and the <strong>right</strong> half by
+            cost (darker = cheaper) — both relative to that bug's
+            min/max across all passing solvers. So the most
+            saturated all-dark-green cells are the configurations
+            that solved a bug fastest AND cheapest. Failed cells are
+            light red so they don't compete for attention.
+            <span style="color:#d97706">★</span> marks bugs solved
+            by exactly one configuration.
         </p>
     </section>
 
