@@ -1360,17 +1360,20 @@ class ConnectionSettings {
                 args += "-DmavenExternalVirtual=${current.mavenExternalVirtualUrl}"
             }
         }
-        if (current.insecureSsl) {
-            // These switches tell most JVM HTTP stacks to skip cert
-            // validation. They're applied to the subprocess JVM itself;
-            // Gradle's internal Maven/Ivy resolvers honor them because
-            // they share the JVM's default SSLContext. Note that this
-            // does NOT reach every possible TLS client — some plugins
-            // bring their own HttpClient — so we still print a banner
-            // on the proxy UI reminding the operator of the limitation.
-            args += "-Dcom.sun.net.ssl.checkRevocation=false"
-            args += "-Dtrust_all_cert=true"
-        }
+        // Note on insecureSsl: this toggle now scopes ONLY to the
+        // bench-webui's own HttpClient (probes, mirror tests, AppMap
+        // Navie / Copilot bridge calls). For gradle subprocesses we
+        // intentionally do NOT emit -Dcom.sun.net.ssl.checkRevocation=
+        // false / -Dtrust_all_cert=true: the former only disables
+        // OCSP/CRL revocation checks (chain trust still happens), and
+        // the latter is a non-standard property the JDK's default
+        // SSLContext ignores entirely. Both were vestigial best-effort
+        // hints that misled operators into thinking gradle was running
+        // with cert validation off when in reality the merged truststore
+        // below (cacerts ∪ OS keychain, written every save) is what
+        // actually let the corp MITM CA validate. The truststore IS
+        // emitted unconditionally so corp deployments work without the
+        // toggle being on.
         // Point the gradle subprocess at the merged truststore (JDK
         // cacerts ∪ OS keychain). Without this, a corp MITM root that
         // the operator has installed in macOS Keychain / Windows-ROOT
@@ -1771,8 +1774,22 @@ class ConnectionSettings {
         if (s.artifactoryRepoKey.isNotBlank()) {
             newLines.add("artifactory_repoKey=${s.artifactoryRepoKey}")
         }
-        managedTrustStorePath()?.let { path ->
-            newLines.add("systemProp.javax.net.ssl.trustStore=$path")
+        managedTrustStorePath()?.let { rawPath ->
+            // gradle.properties is a java.util.Properties file:
+            // backslashes in VALUES are interpreted as escape
+            // sequences (\t = TAB, \u = unicode, \r/\n = newlines).
+            // Operators on Windows reported "Trust store file
+            // …aibench ruststore.jks does not exist" — the literal
+            // path "C:\Users\me\.aibench\truststore.jks" was being
+            // parsed as "C:\Users\me\.aibench" + TAB + "ruststore.jks"
+            // because \t got eaten as an escape. Convert backslashes
+            // to forward slashes; java.io.File accepts forward slashes
+            // as a path separator on Windows, so the file resolves
+            // correctly AND the .properties value carries no escape
+            // sequences. Same fix for the password (no backslashes
+            // expected, but guard belt-and-suspenders) and type.
+            val safePath = rawPath.replace('\\', '/')
+            newLines.add("systemProp.javax.net.ssl.trustStore=$safePath")
             newLines.add("systemProp.javax.net.ssl.trustStorePassword=$MANAGED_TRUSTSTORE_PASSWORD")
             newLines.add("systemProp.javax.net.ssl.trustStoreType=JKS")
         }

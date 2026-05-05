@@ -73,10 +73,22 @@
                         bypassed for Gradle
                     </span>
                 </td></tr>
-            <tr><th>TLS verification</th>
+            <tr><th>TLS verification (WebUI HTTP probes)</th>
                 <td>
                     <span th:if="${settings.insecureSsl}" class="badge" style="background:#b91c1c; color:white">DISABLED (insecure)</span>
                     <span th:unless="${settings.insecureSsl}" class="badge available">Enabled (default)</span>
+                    <div class="help-text" style="margin-top:0.3em; font-size:0.8em">
+                        Scopes ONLY to bench-webui's own outbound HTTP
+                        (probes, mirror tests, bridge / Navie calls).
+                        Gradle subprocesses always trust the merged
+                        truststore below (JDK <code>cacerts</code> ∪ OS
+                        keychain) regardless of this toggle, since
+                        that's what corp-MITM environments actually
+                        need. See the
+                        "Gradle subprocess args" section at the bottom
+                        of this page for the exact <code>-D</code>
+                        args bench-webui appends.
+                    </div>
                 </td></tr>
         </table>
     </section>
@@ -186,10 +198,19 @@
             <label style="margin-top:0.75em">
                 <input name="insecureSsl" type="checkbox" value="true"
                        th:checked="${settings.insecureSsl}">
-                <strong>Ignore SSL certificate errors</strong>
-                <span class="help-text" style="margin-left:0.5em">
-                    (trust all certificates — use only for testing against
-                    hosts with self-signed or internal-CA certs)
+                <strong>Ignore SSL certificate errors (WebUI HTTP probes only)</strong>
+                <span class="help-text" style="display:block; margin-top:0.3em; font-size:0.85em">
+                    When on, bench-webui's own outbound HttpClient
+                    accepts any cert + skips hostname verification —
+                    useful when probing internal hosts behind a corp
+                    MITM proxy whose CA isn't in your OS keychain.
+                    <strong>Does NOT affect gradle subprocesses</strong>:
+                    those always validate against the merged truststore
+                    (JDK <code>cacerts</code> ∪ OS keychain, written
+                    every save), since that's what corp-MITM environments
+                    need to make builds work cleanly. If you need the
+                    corp CA trusted by gradle, add it to your OS keychain
+                    instead — bench-webui picks it up automatically.
                 </span>
             </label>
             <div class="button-row" style="margin-top:0.75em">
