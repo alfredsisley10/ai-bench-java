@@ -79,6 +79,17 @@ fun maybeRewrite(repo: ArtifactRepository) {
                     username = corpUser
                     password = corpPass
                 }
+                // Preemptive Basic auth — gradle's default
+                // wait-for-401-then-retry flow fails when corp
+                // Artifactory returns 404 (not 401) on
+                // unauthenticated requests, which surfaces as
+                // "Could not find <artifact>.jar" even though
+                // Postman / curl-with-Basic-auth fetch the same
+                // URL fine. Forces the Authorization header on
+                // every request.
+                repo.authentication {
+                    create("basic", BasicAuthentication::class.java)
+                }
             }
         }
     }
