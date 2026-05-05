@@ -565,8 +565,26 @@ class AppMapService(
         // -Dorg.gradle.java.home as belt-and-suspenders so even if a
         // stale gradle.properties has org.gradle.java.home pointing
         // somewhere else, the CLI override wins for this invocation.
+        // -Dorg.gradle.java.installations.paths is the critical bit
+        // for TEST FORKS -- the daemon's JVM is controlled by
+        // org.gradle.java.home above, but the test JVM is forked
+        // by gradle's toolchain machinery (banking-app pins
+        // JavaLanguageVersion.of(25)). If gradle's toolchain auto-
+        // detection doesn't see the saved-default JDK, the fork
+        // resolves to whatever else it found (jdk-1.8 + jdk-17
+        // were the user-reported case on Windows even though Java
+        // 25 was pinned). Adding this CLI arg seeds the detection
+        // list with the operator's chosen JDK so the toolchain
+        // requirement matches it instead of hunting for a fallback.
         if (javaHome.isNotBlank()) {
             cmd.add("-Dorg.gradle.java.home=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.paths=$javaHome")
+            // Disable foojay auto-download for THIS invocation -- on
+            // corp networks the foojay endpoint is often blocked,
+            // and an attempted download can hang or fall back to a
+            // mismatched local JDK. The seeded path above is what
+            // we want gradle to use; no fallback needed.
+            cmd.add("-Dorg.gradle.java.installations.auto-download=false")
         }
         // Forward WebUI proxy + TLS preferences onto the Gradle daemon
         // so dependency downloads and any test-time outbound HTTP
@@ -762,11 +780,15 @@ class AppMapService(
         // insecure-SSL toggle if set.
         cmd.addAll(connectionSettings.gradleSystemProps())
         // Cross-platform JDK pick — honors saved default unconditionally
-        // (PR after #38). Inject -Dorg.gradle.java.home as belt-and-
-        // suspenders against a stale gradle.properties.
+        // (PR #39). Same three-flag combo as the recording paths so
+        // the agent-jar resolution gradle subprocess uses the same
+        // JDK as the recording itself (mismatched JVMs across the
+        // two-step flow can produce subtle classpath issues).
         val javaHome = JdkDiscovery.bestAvailableHome(matchMajor = bankingApp.toolchainMajor())
         if (javaHome.isNotBlank()) {
             cmd.add("-Dorg.gradle.java.home=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.paths=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.auto-download=false")
         }
         val pb = ProcessBuilder(cmd)
             .directory(dir).redirectErrorStream(true)

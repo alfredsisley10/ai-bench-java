@@ -490,13 +490,20 @@ class BankingAppManager(
             cmd.add("-PjvmArgs=" + connectionArgs.joinToString(" "))
         }
 
-        // -Dorg.gradle.java.home as a CLI override — belt-and-
-        // suspenders. Even when the env var is set correctly, a
-        // stale gradle.properties or a long-running daemon launched
-        // from a different shell session can pin the JVM to a
-        // different value; the CLI override wins.
+        // -Dorg.gradle.java.home controls the daemon JVM. For any
+        // forked process gradle launches under bootRun (e.g. the
+        // banking-app JVM itself, devtools restart fork) the
+        // toolchain discovery picks the JVM. Seed the discovery
+        // list with the saved-default JDK + disable foojay
+        // auto-download so neither path silently substitutes a
+        // PATH-discovered Java 8 for the operator's choice. Same
+        // three-flag combo applied in AppMapService +
+        // AppMapTraceManager so the behaviour is uniform across
+        // every gradle subprocess bench-webui spawns.
         if (javaHome.isNotBlank()) {
             cmd.add("-Dorg.gradle.java.home=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.paths=$javaHome")
+            cmd.add("-Dorg.gradle.java.installations.auto-download=false")
         }
 
         val pb = ProcessBuilder(cmd)
