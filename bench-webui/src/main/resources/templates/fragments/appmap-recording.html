@@ -55,8 +55,29 @@
         </p>
 
         <details open>
-            <summary><strong>Live log tail</strong> (last 40 lines, refreshes every 2s)</summary>
+            <summary>
+                <strong>Live log tail</strong>
+                <span class="help-text" style="font-weight:normal">
+                    (last 500 lines / 2 MB, refreshes every 2 s)
+                </span>
+                — full history available via the links below.
+            </summary>
             <pre class="log-tail" th:text="${logTail}"></pre>
+            <!-- The htmx-polled tail is bounded to keep the
+                 browser responsive on long bulk runs (gradle
+                 logs can be 10s of MB at --info / hundreds at
+                 --debug). The full file lives on disk and is
+                 streamed by these endpoints so operators never
+                 lose earlier output. -->
+            <div class="help-text" style="margin:0.4em 0; font-size:0.85em">
+                <a th:href="'/demo/appmap/recording/' + ${rec.id} + '/log/full'"
+                   target="_blank" rel="noopener">📜 View full log</a>
+                <span style="margin:0 0.5em">·</span>
+                <a th:href="'/demo/appmap/recording/' + ${rec.id} + '/log/download'">
+                    📥 Download full log (.log)</a>
+                <span style="margin-left:0.6em; color:#94a3b8"
+                      th:text="'(disk: ' + ${rec.logPath} + ')'"></span>
+            </div>
         </details>
 
         <!-- 🩺 Diagnose with LLM. Persists across refreshes only when
@@ -292,7 +313,7 @@
         }
         pre.log-tail {
             background:#212529; color:#e9ecef; padding:10px;
-            font-size: 0.8em; max-height: 320px; overflow:auto;
+            font-size: 0.8em; max-height: 600px; overflow:auto;
             white-space: pre-wrap;
         }
         .badge.RUNNING            { background:#007bff; color:#fff; }
