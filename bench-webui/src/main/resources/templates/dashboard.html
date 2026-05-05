@@ -885,7 +885,9 @@
                     <th data-sort-key="solvers" data-sort-numeric="true" class="num">Solvers <span class="sort-indicator"></span></th>
                     <th data-sort-key="winner">Fastest solver (model · ctx · appmap) <span class="sort-indicator"></span></th>
                     <th data-sort-key="time" data-sort-numeric="true" class="num">Time <span class="sort-indicator"></span></th>
-                    <th title="Bar per passing solver. Shorter = faster. Winner = green.">Time chart</th>
+                    <th data-sort-key="rangeratio" data-sort-numeric="true"
+                        title="Spread between the slowest and fastest passing solver: 'min — max · Nx' where N = max/min. Sort by ratio to surface bugs where solvers diverge most.">Range <span class="sort-indicator"></span></th>
+                    <th title="Bar per passing solver. Shorter = faster. Winner = green. Min/max value annotated at chart corners.">Time chart</th>
                 </tr>
             </thead>
             <tbody>
@@ -895,7 +897,8 @@
                              data-category=${b.category},
                              data-solvers=${b.solvers},
                              data-winner=${b.timeWinnerModel},
-                             data-time=${b.timeWinnerDurationMs != null ? b.timeWinnerDurationMs : 999999999}"
+                             data-time=${b.timeWinnerDurationMs != null ? b.timeWinnerDurationMs : 999999999},
+                             data-rangeratio=${b.timeRangeRatio != null ? b.timeRangeRatio : 0}"
                     th:style="${b.uniquelySolved
                                 ? 'background:#fef3c7; border-left:3px solid #d97706'
                                 : (b.solvers == 0 ? 'opacity:0.55' : '')}">
@@ -927,6 +930,8 @@
                     <td class="num"
                         th:text="${b.timeWinnerDurationMs == null ? '—' :
                                    (b.timeWinnerDurationMs / 1000 + 's')}">—</td>
+                    <td style="white-space:nowrap; font-family:ui-monospace,Menlo,monospace; font-size:0.85em"
+                        th:text="${b.timeRangeLabel != null ? b.timeRangeLabel : '—'}">—</td>
                     <!-- Inline SVG sparkline injected via th:utext.
                          The renderer escapes every dynamic value
                          before stitching, so XSS surface is zero. -->
@@ -958,7 +963,9 @@
                     <th data-sort-key="solvers" data-sort-numeric="true" class="num">Solvers <span class="sort-indicator"></span></th>
                     <th data-sort-key="winner">Cheapest solver (model · ctx · appmap) <span class="sort-indicator"></span></th>
                     <th data-sort-key="cost" data-sort-numeric="true" class="num">Cost <span class="sort-indicator"></span></th>
-                    <th title="Bar per passing solver. Shorter = cheaper. Winner = green.">Cost chart</th>
+                    <th data-sort-key="rangeratio" data-sort-numeric="true"
+                        title="Spread between the most expensive and cheapest passing solver: 'min — max · Nx' where N = max/min. Sort by ratio to surface bugs where solver cost diverges most.">Range <span class="sort-indicator"></span></th>
+                    <th title="Bar per passing solver. Shorter = cheaper. Winner = green. Min/max value annotated at chart corners.">Cost chart</th>
                 </tr>
             </thead>
             <tbody>
@@ -968,7 +975,8 @@
                              data-category=${b.category},
                              data-solvers=${b.solvers},
                              data-winner=${b.costWinnerModel},
-                             data-cost=${b.costWinnerCostUsd != null ? b.costWinnerCostUsd : 999999}"
+                             data-cost=${b.costWinnerCostUsd != null ? b.costWinnerCostUsd : 999999},
+                             data-rangeratio=${b.costRangeRatio != null ? b.costRangeRatio : 0}"
                     th:style="${b.uniquelySolved
                                 ? 'background:#fef3c7; border-left:3px solid #d97706'
                                 : (b.solvers == 0 ? 'opacity:0.55' : '')}">
@@ -1000,6 +1008,8 @@
                     <td class="num"
                         th:text="${b.costWinnerCostUsd == null ? '—' :
                                    ('$' + #numbers.formatDecimal(b.costWinnerCostUsd, 1, 'COMMA', 4, 'POINT'))}">—</td>
+                    <td style="white-space:nowrap; font-family:ui-monospace,Menlo,monospace; font-size:0.85em"
+                        th:text="${b.costRangeLabel != null ? b.costRangeLabel : '—'}">—</td>
                     <td th:utext="${b.costSparklineSvg}"></td>
                 </tr>
             </tbody>
@@ -1029,9 +1039,14 @@
                      AppMap mode; bottom row holds the model id label
                      and the click-to-sort handlers. The two fixed
                      left columns (Bug, Diff) carry rowspan=3 so their
-                     headers stay anchored at the bottom row where
-                     the sort handlers live. -->
-                <tr>
+                     headers stay anchored down to the bottom row.
+                     The TOP row also carries class="sort-row" so the
+                     rowspan'd Bug + Diff headers are still picked up
+                     by sortable-table.js (which only scans .sort-row
+                     for data-sort-key). The ctx banner ths in this
+                     row don't have data-sort-key, so they're inert
+                     to the click handler -- only Bug + Diff sort. -->
+                <tr class="sort-row">
                     <th rowspan="3" data-sort-key="bug"
                         style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
                                vertical-align:bottom; cursor:pointer">
@@ -1100,6 +1115,16 @@
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
+                    <!-- Each cell is now a 3-line micro-card:
+                          row 1: status glyph (✓/✗/?/·)
+                          row 2: wall-clock time (e.g. "5s")
+                          row 3: cost (e.g. "$0.012")
+                         The cost + time turn the matrix into a true
+                         heat chart -- operators can scan a column to
+                         see "this configuration solves the bug but
+                         takes 30s/$0.04 vs the leader's 5s/$0.01"
+                         without hovering. Cells with no attempt
+                         render only the dot. -->
                     <td th:each="c : ${heatColumns}"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
                         th:style="${cell == null ? 'background:#f1f5f9' :
@@ -1112,17 +1137,28 @@
                                              : 'background:#e2e8f0; color:#334155')))}"
                         th:title="${cell == null
                                     ? 'No attempt: ' + b.bugId + ' × ' + c.configKey
-                                    : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status + ' · ' + (cell.durationMs / 1000) + 's')}"
+                                    : (b.bugId + ' × ' + c.configKey + ' → ' + cell.status +
+                                       ' · ' + (cell.durationMs / 1000) + 's · $' +
+                                       #numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT'))}"
                         th:attr="data-sort-value=${cell == null ? 9 :
                                     (cell.status == 'PASSED' ? 0 :
                                     (cell.status == 'FAILED' ? 1 :
                                     (cell.status == 'ERRORED' ? 2 :
                                     (cell.status == 'CANCELED' ? 3 : 4))))}"
-                        style="text-align:center; padding:0.3em 0.4em;
-                               font-family:monospace; font-size:0.7em">
-                        <span th:if="${cell != null and cell.status == 'PASSED'}">✓</span>
-                        <span th:if="${cell != null and cell.status == 'FAILED'}">✗</span>
-                        <span th:if="${cell != null and cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
+                        style="text-align:center; padding:0.2em 0.3em;
+                               font-family:ui-monospace,Menlo,monospace; font-size:0.7em;
+                               line-height:1.15; min-width:3.6em">
+                        <div th:if="${cell != null}" style="font-weight:bold">
+                            <span th:if="${cell.status == 'PASSED'}">✓</span>
+                            <span th:if="${cell.status == 'FAILED'}">✗</span>
+                            <span th:if="${cell.status != 'PASSED' and cell.status != 'FAILED'}">?</span>
+                        </div>
+                        <div th:if="${cell != null}"
+                             th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}"
+                             style="font-size:0.95em">…</div>
+                        <div th:if="${cell != null}"
+                             th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}"
+                             style="font-size:0.85em; opacity:0.85">…</div>
                         <span th:if="${cell == null}">·</span>
                     </td>
                 </tr>
@@ -1133,9 +1169,11 @@
             <strong>Reading the matrix:</strong> columns are grouped by
             context provider (top banner) and AppMap mode (sub-banner),
             so each model column is uniquely identified by its position
-            under the headers above. <span style="color:#d97706">★</span>
-            marks bugs solved by exactly one configuration. Hover any
-            cell for the run's status and duration.
+            under the headers above. Each cell shows status (✓/✗/?),
+            wall-clock time, and USD cost — scan a column to compare
+            "how fast / how cheap" across configurations, not just
+            "did it pass". <span style="color:#d97706">★</span> marks
+            bugs solved by exactly one configuration.
         </p>
     </section>
 
