@@ -202,7 +202,15 @@
     <div th:if="${deleteResult != null}" class="status-banner ok">
         <strong>Delete:</strong> <span th:text="${deleteResult}"></span>
     </div>
-    <div th:if="${interactiveStatus != null}" class="status-banner ok">
+    <!-- Class is computed: ✗-prefixed messages render as error
+         (red), everything else as ok (green). Catches the case
+         where startRecordingFromTests throws and the operator
+         needs an OBVIOUS visual that the submit didn't take
+         (previously the silent runCatching let them think the
+         click had no effect, but the prior recording was still
+         being shown). -->
+    <div th:if="${interactiveStatus != null}"
+         th:class="'status-banner ' + (${#strings.startsWith(interactiveStatus, '✗')} ? 'error' : 'ok')">
         <strong>Interactive:</strong> <span th:text="${interactiveStatus}"></span>
         <details th:if="${agentDiagnostic != null and !agentDiagnostic.isEmpty()
                           and #strings.contains(interactiveStatus, 'Could not discover')}"

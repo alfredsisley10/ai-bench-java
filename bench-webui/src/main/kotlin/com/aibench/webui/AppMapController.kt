@@ -177,20 +177,65 @@ class AppMapController(
         @RequestParam(required = false) modules: List<String>?,
         @RequestParam(required = false) module: String?,
         @RequestParam(required = false) testFilter: String?,
-        @RequestParam(required = false) verbosity: String?
+        @RequestParam(required = false) verbosity: String?,
+        session: HttpSession
     ): String {
         val combined = buildList<String> {
             modules?.let { addAll(it) }
             module?.let { add(it) }
         }.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        // Collapse "everything selected" to the plain `test` task.
+        // Operator-reported symptom: selecting all 30+ modules and
+        // hitting Record didn't start a recording, while picking
+        // individual modules worked fine. Root cause: each module
+        // expands to ":moduleName:test" on the gradle cmd line,
+        // and 30+ such entries push the whole command past Windows's
+        // CreateProcess command-line limit (~8K chars), so
+        // ProcessBuilder.start() throws IOException
+        // "CreateProcess error=206, The filename or extension is too long".
+        // Functionally `test` (no module qualifier) is identical to
+        // "every :module:test" when ALL modules are selected, so we
+        // collapse to it whenever the selection equals the full
+        // available set.
+        val available = appmaps.availableSubprojects().toSet()
+        val selectedAll = available.isNotEmpty() &&
+                          combined.toSet().containsAll(available)
+        val effectiveModules =
+            if (selectedAll) emptyList() else combined
         val v = AppMapService.GradleVerbosity.parse(verbosity)
-        runCatching {
-            val recording = appmaps.startRecordingFromTests(combined.takeIf { it.isNotEmpty() }, testFilter, v)
-            // Redirect straight to the live status panel so the user sees
-            // progress immediately rather than a flash message.
+        // Capture the prior latest-recording id BEFORE we try to start
+        // a new one. Used to detect the "submit appears to do nothing"
+        // case operators reported -- when startRecordingFromTests
+        // throws (e.g. ProcessBuilder fails on a Windows file lock,
+        // or pb.start() can't find gradlew), the previous runCatching
+        // swallowed the exception and the redirect landed on the
+        // SAME prior recording with no flash message, so the operator
+        // saw "nothing happened" and the prior trace results stuck on
+        // screen. Now we surface the failure as a flash banner.
+        val priorId = appmaps.latestRecording()?.id
+        try {
+            val recording = appmaps.startRecordingFromTests(
+                effectiveModules.takeIf { it.isNotEmpty() }, testFilter, v)
+            val moduleSummary = when {
+                selectedAll -> "(all ${available.size} modules → 'test')"
+                effectiveModules.isEmpty() -> "(none selected → 'test')"
+                else -> effectiveModules.joinToString(",")
+            }
+            session.setAttribute("appmapInteractiveStatus",
+                "✓ New recording started: id=${recording.id}, modules=$moduleSummary" +
+                (if (testFilter.isNullOrBlank()) "" else ", filter='$testFilter'") +
+                ", verbosity=${v.name}.")
             return "redirect:/demo/appmap?activeId=${recording.id}"
-        }.onFailure { /* fall through to plain list */ }
-        return "redirect:/demo/appmap"
+        } catch (t: Throwable) {
+            log.error("startRecordingFromTests failed (modules={}, filter={}, verbosity={})",
+                combined, testFilter, v, t)
+            session.setAttribute("appmapInteractiveStatus",
+                "✗ Failed to start AppMap recording: ${t.javaClass.simpleName}: " +
+                "${t.message ?: "(no detail)"}. " +
+                "Prior recording id=${priorId ?: "(none)"} is still shown below; " +
+                "check bench-webui logs for the stack trace.")
+            return "redirect:/demo/appmap"
+        }
     }
 
     /**
