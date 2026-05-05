@@ -55,7 +55,8 @@ class ProxyConfigController(
 
     @GetMapping("/proxy")
     fun proxyConfig(model: Model, session: HttpSession): String {
-        model.addAttribute("settings", connectionSettings.settings)
+        val s = connectionSettings.settings
+        model.addAttribute("settings", s)
         // Mask the credential portions before rendering. The raw list
         // includes -Dhttp.proxyPassword=<cleartext> /
         // -Dhttps.proxyPassword=<cleartext>; the masked variant has
@@ -63,6 +64,14 @@ class ProxyConfigController(
         // the actual gradle subprocess args still get the real values.
         model.addAttribute("gradleSystemProps",
             connectionSettings.maskCredentialArgs(connectionSettings.gradleSystemProps()))
+        // Surface the parsed proxy state so the Active settings table
+        // can show "host:8080 (port defaulted)" + a warning banner
+        // when the operator's saved URL had no explicit port. Catches
+        // the silent-drop bug where a port-less URL was being ignored
+        // by gradleSystemProps -- now the operator sees what we
+        // actually parsed.
+        model.addAttribute("httpsProxyParsed", connectionSettings.parseProxy(s.httpsProxy))
+        model.addAttribute("httpProxyParsed",  connectionSettings.parseProxy(s.httpProxy))
         model.addAttribute("saveResult", session.getAttribute("proxySaveResult"))
         session.removeAttribute("proxySaveResult")
         return "proxy-config"

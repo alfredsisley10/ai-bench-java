@@ -246,9 +246,11 @@ class ConnectionSettings {
         // couldn't extract host:port from it (e.g. "proxy.corp.com"
         // with no port), every later row would render "Via proxy = no"
         // with no explanation; this row makes the discrepancy obvious.
-        val httpsParsed = parseHostPort(s.httpsProxy)
-        val httpParsed  = parseHostPort(s.httpProxy)
+        val httpsParsed = parseProxy(s.httpsProxy)
+        val httpParsed  = parseProxy(s.httpProxy)
         val bothBlank   = s.httpsProxy.isBlank() && s.httpProxy.isBlank()
+        val anyDefaulted = (httpsParsed?.portDefaulted == true) ||
+                           (httpParsed?.portDefaulted == true)
         val proxyDiagnostic = when {
             bothBlank ->
                 ProbeResult("(no proxy)", "Proxy configuration",
@@ -257,20 +259,31 @@ class ConnectionSettings {
                     message = "No proxy saved; every probe below will go direct.")
             httpsParsed != null || httpParsed != null -> {
                 val parts = mutableListOf<String>()
-                httpsParsed?.let { parts += "https=${it.first}:${it.second}" }
-                httpParsed?.let  { parts += "http=${it.first}:${it.second}" }
+                httpsParsed?.let {
+                    parts += "https=${it.host}:${it.port}" +
+                        (if (it.portDefaulted) " (port defaulted)" else "")
+                }
+                httpParsed?.let {
+                    parts += "http=${it.host}:${it.port}" +
+                        (if (it.portDefaulted) " (port defaulted)" else "")
+                }
                 if (s.hasProxyAuth) parts += "auth=${s.proxyAuthUser}"
+                val defaultedNote = if (anyDefaulted)
+                    " ⚠ Port was defaulted because the saved URL had no explicit ':<port>'. " +
+                    "If your proxy listens on a different port, edit /proxy and add it."
+                else ""
                 ProbeResult(s.httpsProxy.ifBlank { s.httpProxy }, "Proxy configuration",
                     viaProxy = true, statusCode = 0, durationMs = 0,
-                    ok = true,
-                    message = "Parsed OK — " + parts.joinToString(", ") +
-                              ". Probes below SHOULD show 'Via proxy = yes'.")
+                    ok = !anyDefaulted,
+                    message = "Parsed — " + parts.joinToString(", ") +
+                              ". Probes below SHOULD show 'Via proxy = yes'." +
+                              defaultedNote)
             }
             else ->
                 ProbeResult(s.httpsProxy.ifBlank { s.httpProxy }, "Proxy configuration",
                     viaProxy = false, statusCode = -1, durationMs = 0,
                     ok = false,
-                    message = "Proxy is saved but couldn't be parsed as host:port — " +
+                    message = "Proxy is saved but couldn't be parsed at all — " +
                               "expected form 'proxy.corp.com:8080' or 'https://proxy.corp.com:8080'. " +
                               "Probes below will all go direct.")
         }
@@ -1644,30 +1657,86 @@ class ConnectionSettings {
         Settings(httpsProxy, httpProxy, noProxy, source = "macOS system")
     }.getOrNull()
 
-    private fun parseHostPort(url: String): Pair<String, String>? {
+    /**
+     * Detailed proxy URL parse result. Surfaced to the /proxy
+     * Active-settings UI + the verify panel so the operator sees
+     * EXACTLY how their saved value was interpreted (including
+     * any port that bench-webui defaulted in their absence).
+     */
+    data class ParsedProxy(
+        val host: String,
+        val port: String,
+        /** True when the operator's URL had no explicit port and we
+         *  defaulted based on the scheme (or fell back to 8080 when
+         *  no scheme was present). Surfaced as a UI hint so the
+         *  operator can correct if our guess is wrong. */
+        val portDefaulted: Boolean,
+        /** "https" / "http" / "" -- empty when the operator pasted
+         *  a bare host:port without a scheme. */
+        val scheme: String
+    )
+
+    /** Lenient parse of an operator-saved proxy URL.
+     *
+     * Previously returned null whenever a port wasn't explicitly
+     * specified, which caused gradleSystemProps() to silently DROP
+     * the -Dhttps.proxyHost/-Dhttps.proxyPort args -- operators on
+     * corp networks who entered "https://proxy.corp.com" (no port)
+     * would see "proxy: <unset>" in their AppMap recording log
+     * even though they thought their proxy was configured. Now
+     * defaults the port based on the scheme:
+     *   https://X        -> port 443
+     *   http://X         -> port 80
+     *   X (no scheme)    -> port 8080  (typical corp HTTP-CONNECT proxy)
+     * and surfaces a `portDefaulted=true` flag so the UI can
+     * prompt the operator to confirm.
+     */
+    fun parseProxy(url: String): ParsedProxy? {
         if (url.isBlank()) return null
-        // Be aggressive about cleanup -- the operator may paste anything
+        // Aggressive cleanup -- the operator may paste anything
         // from the bare `proxy.corp.com:8080` form to a fully-qualified
         // `https://proxy.corp.com:8080/path?x=1` URL with surrounding
-        // whitespace. Strip trim, scheme (case-insensitive), userinfo,
-        // path/query, and outer slashes before splitting host:port.
-        var cleaned = url.trim()
-        listOf("https://", "http://", "HTTPS://", "HTTP://").forEach {
-            if (cleaned.startsWith(it, ignoreCase = true))
-                cleaned = cleaned.substring(it.length)
-        }
+        // whitespace.
+        val raw = url.trim()
+        val schemeMatch = Regex("""^(https?)://""", RegexOption.IGNORE_CASE).find(raw)
+        val scheme = schemeMatch?.groupValues?.get(1)?.lowercase().orEmpty()
+        var cleaned = if (schemeMatch != null) raw.substring(schemeMatch.range.last + 1) else raw
         // Drop user:pass@ if present.
         cleaned.indexOf('@').let { at -> if (at >= 0) cleaned = cleaned.substring(at + 1) }
         // Drop path / query.
         cleaned = cleaned.substringBefore('/').substringBefore('?')
         cleaned = cleaned.trim().trim('/')
+        if (cleaned.isBlank()) return null
         val parts = cleaned.split(":")
-        if (parts.size < 2) return null
         val host = parts[0].trim()
-        val port = parts[1].takeWhile { it.isDigit() }
-        if (host.isBlank() || port.isBlank()) return null
-        return host to port
+        if (host.isBlank()) return null
+        // Take an explicit port if present; otherwise default based
+        // on scheme.
+        val explicitPort = if (parts.size >= 2) parts[1].takeWhile { it.isDigit() } else ""
+        val port: String
+        val defaulted: Boolean
+        if (explicitPort.isNotBlank()) {
+            port = explicitPort
+            defaulted = false
+        } else {
+            port = when (scheme) {
+                "https" -> "443"
+                "http"  -> "80"
+                else    -> "8080"
+            }
+            defaulted = true
+            log.warn("Proxy URL '{}' had no explicit port — defaulted to {} " +
+                "(scheme={}). If your proxy listens on a different port, edit " +
+                "/proxy and add ':<port>'.", url, port, scheme.ifEmpty { "(none)" })
+        }
+        return ParsedProxy(host, port, defaulted, scheme)
     }
+
+    /** Backwards-compat shim for the existing call sites that just
+     *  want (host, port). Honors the same lenient defaulting as
+     *  parseProxy(); existing call sites get the upgrade for free. */
+    private fun parseHostPort(url: String): Pair<String, String>? =
+        parseProxy(url)?.let { it.host to it.port }
 
     private fun writeGradleProxyProperties(s: Settings) {
         // Always run when ~/.gradle/gradle.properties exists, regardless
