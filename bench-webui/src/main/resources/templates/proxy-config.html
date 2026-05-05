@@ -44,6 +44,36 @@
         <span th:text="${saveResult}"></span>
     </div>
 
+    <!-- Surface a prominent warning when the operator's saved
+         proxy URL had no explicit port and bench-webui defaulted
+         it. Catches the silent-drop foot-gun where "https://proxy.corp.com"
+         (no port) was previously dropped entirely from the gradle
+         subprocess -D args, leading to recordings that said
+         "proxy: <unset>" even though the operator had configured one. -->
+    <div th:if="${(httpsProxyParsed != null and httpsProxyParsed.portDefaulted) or
+                  (httpProxyParsed != null and httpProxyParsed.portDefaulted)}"
+         style="padding:0.6em 0.8em; margin:0.6em 0;
+                background:#fef3c7; border:1px solid #fcd34d;
+                color:#78350f; border-radius:4px; font-size:0.9em">
+        <strong>⚠ Proxy port was defaulted</strong>
+        — your saved proxy URL had no explicit
+        <code>:&lt;port&gt;</code>, so bench-webui guessed based
+        on the scheme (HTTPS→443, HTTP→80, no scheme→8080).
+        If your proxy listens on a different port (most corp
+        proxies use 8080, some use 3128 or 8888), edit the form
+        below and add <code>:&lt;port&gt;</code> to the URL.
+        <ul style="margin:0.3em 0 0 1.4em; padding:0">
+            <li th:if="${httpsProxyParsed != null and httpsProxyParsed.portDefaulted}">
+                HTTPS proxy parsed as
+                <code th:text="${httpsProxyParsed.host + ':' + httpsProxyParsed.port}"></code>
+            </li>
+            <li th:if="${httpProxyParsed != null and httpProxyParsed.portDefaulted}">
+                HTTP proxy parsed as
+                <code th:text="${httpProxyParsed.host + ':' + httpProxyParsed.port}"></code>
+            </li>
+        </ul>
+    </div>
+
     <section>
         <h3>Active settings</h3>
         <p>
