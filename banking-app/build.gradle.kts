@@ -55,6 +55,14 @@ allprojects {
                 isAllowInsecureProtocol = true
                 if (mirrorUser != null && mirrorPass != null) {
                     credentials { username = mirrorUser; password = mirrorPass }
+                    // Preemptive Basic auth -- gradle's default
+                    // wait-for-401-then-retry flow fails when corp
+                    // Artifactory returns 404 (not 401) on
+                    // unauthenticated requests, which is why probes
+                    // succeed in Postman but gradle reports
+                    // "Could not find <artifact>.jar". See the
+                    // PREEMPTIVE BASIC AUTH note further down.
+                    authentication { create<BasicAuthentication>("basic") }
                 }
             }
             // Local enterprise-sim layout fallback ($mirror/maven-central/) —
@@ -65,6 +73,14 @@ allprojects {
                 isAllowInsecureProtocol = true
                 if (mirrorUser != null && mirrorPass != null) {
                     credentials { username = mirrorUser; password = mirrorPass }
+                    // Preemptive Basic auth -- gradle's default
+                    // wait-for-401-then-retry flow fails when corp
+                    // Artifactory returns 404 (not 401) on
+                    // unauthenticated requests, which is why probes
+                    // succeed in Postman but gradle reports
+                    // "Could not find <artifact>.jar". See the
+                    // PREEMPTIVE BASIC AUTH note further down.
+                    authentication { create<BasicAuthentication>("basic") }
                 }
             }
             // Dedicated maven-external-virtual when configured. Sits
