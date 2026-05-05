@@ -100,18 +100,29 @@ class GradleDepCatalog {
     }
 
     private fun maven(category: Category, coord: String, description: String): Entry {
-        // Heuristic BOM detection so we don't have to remember to
-        // hand-flag each BOM entry. Both Spring Boot's "-dependencies"
-        // convention and Gradle/Testcontainers/etc.'s "-bom" suffix
-        // are POM-packaging-only (no companion .jar). False positives
-        // would just trigger an extra .jar probe that 404s -- a flag
-        // is enough to suppress that, but the heuristic catches the
-        // current catalog cleanly.
+        // POM-only detection: skips the companion-JAR probe for
+        // coords whose published artifact is the POM itself with no
+        // meaningful JAR. Three buckets:
+        //   - BOMs ("-bom" / "-dependencies" suffix): packaging=pom
+        //     by design, no JAR ever published.
+        //   - Gradle plugin markers ("*.gradle.plugin" suffix): the
+        //     marker artifact is a tiny POM that points at the real
+        //     plugin jar at the rewrite-target coord. Many Maven
+        //     repos don't publish a marker JAR at all -- gradle's
+        //     plugin resolution doesn't need it. Probing the marker
+        //     JAR was reporting "JAR fetch returned HTTP -1" false
+        //     negatives on perfectly valid corp Artifactory mirrors;
+        //     PR #37 already covers the "real plugin jar resolves"
+        //     check via the rewrite-target probe in
+        //     GradleDepValidator.probeOne.
+        // False positives in either heuristic just suppress a JAR
+        // probe that would have failed anyway, so the cost is zero.
         val artifactId = coord.split(":").getOrNull(1).orEmpty()
         val isBomLike = artifactId.endsWith("-bom") ||
                         artifactId.endsWith("-dependencies")
+        val isPluginMarker = artifactId.endsWith(".gradle.plugin")
         return Entry(category, coord, description, mavenPomPath(coord),
-            isUrl = false, isPomOnly = isBomLike)
+            isUrl = false, isPomOnly = isBomLike || isPluginMarker)
     }
 
     private fun url(category: Category, url: String, description: String) =
