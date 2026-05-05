@@ -94,25 +94,34 @@ class DashboardController(
         val attempts: Int,
         val solvers: Int,
         val uniquelySolved: Boolean,
-        val winnerModel: String?,
-        val winnerCtx: String?,
-        val winnerAppmap: String?,
-        val winnerDurationMs: Long?,
-        val winnerCostUsd: Double?,
-        // One point per (model, ctx, appmap) configuration that
-        // passed this bug. Sparklines on the row use this to plot
-        // a bar per solver (height = ms or cost) so the operator
-        // sees how the field was distributed -- not just who won.
-        // Empty when no solver passed.
-        val solverPoints: List<SolverPoint>,
-        // Pre-rendered inline SVG sparkline strings — one for time,
-        // one for cost. Each bar represents one (model, ctx, appmap)
-        // configuration; height encodes the value relative to the
-        // max in the row's set, the winner bar is highlighted in
-        // green, others in slate. Operators read these visually
-        // for "how close were the runners-up to the winner" without
-        // needing to compare numeric columns. Empty string when no
-        // passing solvers.
+        // Time-leader: the (model, ctx, appmap) configuration that
+        // posted the FASTEST passing seed for this bug. Distinct
+        // from the cost-leader because the fastest solver isn't
+        // always the cheapest -- a cheap small model may take
+        // longer than an expensive large one. The split exists so
+        // operators can rank on either metric without forcing a
+        // weighting between $$$ and seconds.
+        val timeWinnerModel: String?,
+        val timeWinnerCtx: String?,
+        val timeWinnerAppmap: String?,
+        val timeWinnerDurationMs: Long?,
+        val timeWinnerCostUsd: Double?,
+        // Cost-leader: cheapest passing seed. Mirror of the
+        // time-leader fields above; same model may or may not win
+        // both metrics.
+        val costWinnerModel: String?,
+        val costWinnerCtx: String?,
+        val costWinnerAppmap: String?,
+        val costWinnerDurationMs: Long?,
+        val costWinnerCostUsd: Double?,
+        // Pre-rendered inline SVG sparkline strings — one per
+        // ranking metric. Each bar represents one (model, ctx,
+        // appmap) configuration; height encodes the value relative
+        // to the max in the row's set, the winner-on-this-metric
+        // bar is highlighted in green, others in slate. Operators
+        // read these visually for "how close were the runners-up
+        // to the winner" without needing to compare numeric
+        // columns. Empty string when no passing solvers.
         val timeSparklineSvg: String,
         val costSparklineSvg: String
     )
@@ -432,13 +441,17 @@ class DashboardController(
             val distinctSolverConfigs = passes
                 .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
                 .distinct()
-            val winner = passes.minByOrNull { it.durationMs }
-            // Per-config best run (fastest passing seed). Sparkline
-            // shows one point per distinct configuration; using the
-            // FASTEST seed avoids penalizing a config that happened
-            // to have one slow seed in the mix.
-            val solverPoints: List<SolverPoint> = passes
-                .groupBy { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+            val timeWinner = passes.minByOrNull { it.durationMs }
+            val costWinner = passes.minByOrNull { it.stats.estimatedCostUsd }
+            // Per-config best seed -- one bar per distinct (model,
+            // ctx, appmap) configuration. Each metric has its own
+            // SolverPoints set because "fastest seed" and "cheapest
+            // seed" can be different runs from the same config when
+            // multiple seeds were attempted; sorting and the winner
+            // flag also differ. Time set sorts ascending by ms; cost
+            // set sorts ascending by USD.
+            val byCfg = passes.groupBy { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+            val timeSolverPoints: List<SolverPoint> = byCfg
                 .map { (_, runs) ->
                     val fastest = runs.minBy { it.durationMs }
                     SolverPoint(
@@ -447,10 +460,23 @@ class DashboardController(
                                 " · ${fastest.appmapMode}",
                         durationMs = fastest.durationMs,
                         costUsd = fastest.stats.estimatedCostUsd,
-                        isWinner = winner != null && fastest.id == winner.id
+                        isWinner = timeWinner != null && fastest.id == timeWinner.id
                     )
                 }
                 .sortedBy { it.durationMs }
+            val costSolverPoints: List<SolverPoint> = byCfg
+                .map { (_, runs) ->
+                    val cheapest = runs.minBy { it.stats.estimatedCostUsd }
+                    SolverPoint(
+                        label = "${cheapest.provider}/${cheapest.modelId}" +
+                                " · ${cheapest.contextProvider}" +
+                                " · ${cheapest.appmapMode}",
+                        durationMs = cheapest.durationMs,
+                        costUsd = cheapest.stats.estimatedCostUsd,
+                        isWinner = costWinner != null && cheapest.id == costWinner.id
+                    )
+                }
+                .sortedBy { it.costUsd }
             PerBugLeader(
                 bugId = bug.id,
                 title = bug.title,
@@ -459,14 +485,18 @@ class DashboardController(
                 attempts = attempts.size,
                 solvers = distinctSolverConfigs.size,
                 uniquelySolved = distinctSolverConfigs.size == 1 && passes.isNotEmpty(),
-                winnerModel = winner?.let { "${it.provider}/${it.modelId}" },
-                winnerCtx = winner?.contextProvider,
-                winnerAppmap = winner?.appmapMode,
-                winnerDurationMs = winner?.durationMs,
-                winnerCostUsd = winner?.stats?.estimatedCostUsd,
-                solverPoints = solverPoints,
-                timeSparklineSvg = sparklineSvg(solverPoints, ChartMode.TIME),
-                costSparklineSvg = sparklineSvg(solverPoints, ChartMode.COST)
+                timeWinnerModel = timeWinner?.let { "${it.provider}/${it.modelId}" },
+                timeWinnerCtx = timeWinner?.contextProvider,
+                timeWinnerAppmap = timeWinner?.appmapMode,
+                timeWinnerDurationMs = timeWinner?.durationMs,
+                timeWinnerCostUsd = timeWinner?.stats?.estimatedCostUsd,
+                costWinnerModel = costWinner?.let { "${it.provider}/${it.modelId}" },
+                costWinnerCtx = costWinner?.contextProvider,
+                costWinnerAppmap = costWinner?.appmapMode,
+                costWinnerDurationMs = costWinner?.durationMs,
+                costWinnerCostUsd = costWinner?.stats?.estimatedCostUsd,
+                timeSparklineSvg = sparklineSvg(timeSolverPoints, ChartMode.TIME),
+                costSparklineSvg = sparklineSvg(costSolverPoints, ChartMode.COST)
             )
         }.sortedWith(compareBy({ if (it.uniquelySolved) 0 else 1 },
                                { -(it.attempts) },
