@@ -186,6 +186,7 @@ class ConnectionSettings {
         current = new
         writeGradleProxyProperties(new)
         writeCorpInitScript(new)
+        writeInsecureSslInitScript(new)
         applyProxyAuthenticator(new)
         log.info(
             "Connection settings updated to: httpsProxy='{}', httpProxy='{}', noProxy='{}', insecureSsl={}, proxyAuth={}, mirror='{}', bypassMirror={}",
@@ -1403,15 +1404,24 @@ class ConnectionSettings {
     }
 
     private val MANAGED_TRUSTSTORE_PASSWORD = "changeit"
+    // Filename bumped to v2 so existing operator caches (built by an
+    // earlier bench-webui that hardcoded `KeyStore.getInstance("JKS")`
+    // for cacerts on JDK 9+, where cacerts is actually PKCS12) get
+    // replaced automatically. The old broken file was missing the
+    // ~150 public CA roots cacerts ships with -- that's what caused
+    // the regression where gradle's TLS handshakes started failing
+    // with "Remote host terminated the handshake" after PR #43 fixed
+    // the Windows path-escape bug (which had been silently making
+    // gradle fall back to JDK default cacerts before).
     private val managedTrustStoreFile: java.io.File by lazy {
         val dir = java.io.File(System.getProperty("user.home"), ".aibench")
         dir.mkdirs()
-        java.io.File(dir, "truststore.jks")
+        java.io.File(dir, "truststore-v2.jks")
     }
 
     /**
      * Materialize a merged JKS truststore (JDK cacerts ∪ OS keychain)
-     * at <code>~/.aibench/truststore.jks</code> and return the path.
+     * at <code>~/.aibench/truststore-v2.jks</code> and return the path.
      * Used by banking-app + AppMap gradle subprocesses (via
      * <code>gradleSystemProps()</code> and the matching
      * <code>~/.gradle/gradle.properties</code> entries written from
@@ -1427,38 +1437,94 @@ class ConnectionSettings {
             return managedTrustStoreFile.absolutePath
         }
         return runCatching {
-            val osName = System.getProperty("os.name", "").lowercase()
-            val osType = when {
-                osName.contains("mac") || osName.contains("darwin") -> "KeychainStore"
-                osName.contains("win")                              -> "Windows-ROOT"
-                else                                                 -> return@runCatching null  // Linux: cacerts already pulls OS roots
+            val merged = KeyStore.getInstance("JKS").also {
+                it.load(null, MANAGED_TRUSTSTORE_PASSWORD.toCharArray())
             }
-            val osKs = KeyStore.getInstance(osType).also { it.load(null, null) }
-            val merged = KeyStore.getInstance("JKS").also { it.load(null, MANAGED_TRUSTSTORE_PASSWORD.toCharArray()) }
-            // Base layer: JDK cacerts. Skip silently if the file is missing
-            // or the default password ("changeit") was rotated -- the OS
-            // layer alone is still usable.
-            runCatching {
-                val cacertsPath = java.io.File(System.getProperty("java.home"), "lib/security/cacerts")
-                if (cacertsPath.exists()) {
-                    val cacerts = KeyStore.getInstance("JKS")
-                    cacertsPath.inputStream().use { cacerts.load(it, "changeit".toCharArray()) }
-                    cacerts.aliases().toList().forEach { alias ->
-                        cacerts.getCertificate(alias)?.let { merged.setCertificateEntry("jdk-$alias", it) }
-                    }
-                }
-            }
-            osKs.aliases().toList().forEach { alias ->
-                osKs.getCertificate(alias)?.let { merged.setCertificateEntry("os-$alias", it) }
+            val cacertsCount = loadJdkCacertsInto(merged)
+            val osCount = loadOsKeychainInto(merged)
+            if (cacertsCount == 0 && osCount == 0) {
+                // Empty truststore is worse than no truststore -- the
+                // JVM would reject every cert. Don't write the file;
+                // gradle will fall back to its own default cacerts.
+                log.warn("Could not load any certs into merged truststore " +
+                    "(cacerts=$cacertsCount, os=$osCount). Skipping write; " +
+                    "gradle subprocesses will use JDK default cacerts.")
+                return@runCatching null
             }
             managedTrustStoreFile.outputStream().use {
                 merged.store(it, MANAGED_TRUSTSTORE_PASSWORD.toCharArray())
             }
-            log.info("Built merged truststore at {} ({} entries).", managedTrustStoreFile, merged.size())
+            log.info("Built merged truststore at {} ({} cacerts + {} OS = {} total entries).",
+                managedTrustStoreFile, cacertsCount, osCount, merged.size())
             managedTrustStoreFile.absolutePath
         }.getOrElse {
             log.warn("Could not build merged truststore for gradle subprocesses. Cause: {}", it.message)
             null
+        }
+    }
+
+    /** Load the JDK's default trust roots into [merged]. Returns the
+     *  number of certs added.
+     *
+     *  This used to read $JAVA_HOME/lib/security/cacerts directly via
+     *  KeyStore.getInstance("JKS"), but JDK 9+ ships cacerts as
+     *  PKCS12. The hardcoded JKS load silently failed under
+     *  runCatching, leaving the merged store with ZERO public CA
+     *  roots and only OS-keychain certs. Result: gradle TLS
+     *  handshakes failed against any host whose chain root was in
+     *  cacerts but not the OS keychain ("Remote host terminated the
+     *  handshake" was the canonical symptom).
+     *
+     *  Now uses the standard pattern -- TrustManagerFactory.init(null)
+     *  which asks the JDK for its default trust managers (regardless
+     *  of cacerts file format) -- then copies their accepted issuers
+     *  into the merged store. Works on JDK 8 (JKS), JDK 9+ (PKCS12),
+     *  and any future format change. */
+    private fun loadJdkCacertsInto(merged: KeyStore): Int {
+        return runCatching {
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+            tmf.init(null as KeyStore?)
+            var n = 0
+            tmf.trustManagers.filterIsInstance<X509TrustManager>().forEach { tm ->
+                tm.acceptedIssuers.forEach { cert ->
+                    // Use the SubjectDN as the alias suffix so duplicates
+                    // (a cert appearing in multiple trust managers) get
+                    // deduped naturally by KeyStore.setCertificateEntry.
+                    val alias = "jdk-" + cert.subjectX500Principal.name.hashCode().toString(16)
+                    merged.setCertificateEntry(alias, cert)
+                    n++
+                }
+            }
+            n
+        }.getOrElse {
+            log.warn("Could not load JDK default trust roots into merged truststore: {}", it.message)
+            0
+        }
+    }
+
+    /** Load OS-native trust roots (macOS Keychain, Windows-ROOT) into
+     *  [merged]. Returns the number of certs added. Linux is a no-op:
+     *  cacerts on most Linux distros already mirrors /etc/ssl/certs. */
+    private fun loadOsKeychainInto(merged: KeyStore): Int {
+        val osName = System.getProperty("os.name", "").lowercase()
+        val osType = when {
+            osName.contains("mac") || osName.contains("darwin") -> "KeychainStore"
+            osName.contains("win")                              -> "Windows-ROOT"
+            else                                                 -> return 0
+        }
+        return runCatching {
+            val osKs = KeyStore.getInstance(osType).also { it.load(null, null) }
+            var n = 0
+            osKs.aliases().toList().forEach { alias ->
+                osKs.getCertificate(alias)?.let {
+                    merged.setCertificateEntry("os-$alias", it)
+                    n++
+                }
+            }
+            n
+        }.getOrElse {
+            log.warn("Could not load OS keychain into merged truststore: {}", it.message)
+            0
         }
     }
 
@@ -1886,6 +1952,81 @@ class ConnectionSettings {
      * scripts/corp-repos.gradle.kts.template via processResources, so
      * the source-of-truth is the same file build-health-check reads.
      */
+    /**
+     * Write or remove ~/.gradle/init.d/aibench-trust-all.gradle.kts
+     * based on the operator's "Ignore SSL certificate errors" toggle.
+     *
+     * Until now the insecureSsl toggle ONLY scoped to bench-webui's
+     * own HttpClient -- gradle subprocesses still validated certs
+     * against the merged truststore. Operators reported gradle
+     * connection failures with "SSLHandshakeException: Remote host
+     * terminated the handshake" while their toggle was on, expecting
+     * the toggle to bypass cert validation everywhere. This init
+     * script makes the toggle live up to its name: when on, every
+     * gradle invocation on this user account installs a trust-all
+     * SSLContext as the JVM default at startup, so daemon + test
+     * forks + plugin HTTP all bypass cert validation. When off,
+     * the script is deleted so the next gradle invocation falls
+     * back to standard validation against the merged truststore.
+     *
+     * NOTE: Affects EVERY gradle invocation on this user account
+     * (init.d/ scripts apply globally), not just the ones bench-webui
+     * spawns. That's intentional: the operator's stated intent is
+     * "I want to ignore SSL errors", which has to apply uniformly
+     * for shell ./gradlew calls to behave the same as bench-webui-
+     * spawned ones.
+     */
+    private fun writeInsecureSslInitScript(s: Settings) {
+        val initDir = java.io.File(System.getProperty("user.home"), ".gradle/init.d")
+        val target = java.io.File(initDir, "aibench-trust-all.gradle.kts")
+        if (!s.insecureSsl) {
+            if (target.exists()) {
+                runCatching { target.delete() }
+                    .onSuccess { log.info("Removed ~/.gradle/init.d/aibench-trust-all.gradle.kts (insecureSsl toggled off).") }
+            }
+            return
+        }
+        runCatching {
+            initDir.mkdirs()
+            target.writeText("""
+                // Generated by bench-webui from /proxy "Ignore SSL certificate
+                // errors" toggle. Installs a trust-all SSLContext as the JVM
+                // default at gradle startup so daemon + test forks + plugin
+                // HTTP all bypass cert validation. Removed automatically when
+                // the operator toggles the option off.
+                //
+                // SECURITY: this disables cert validation for EVERY gradle
+                // invocation on this user account, not just bench-webui's.
+                // It should only be on when you genuinely cannot get the
+                // corp MITM CA into the OS keychain or merged truststore.
+                import javax.net.ssl.HostnameVerifier
+                import javax.net.ssl.HttpsURLConnection
+                import javax.net.ssl.SSLContext
+                import javax.net.ssl.TrustManager
+                import javax.net.ssl.X509TrustManager
+                import java.security.SecureRandom
+                import java.security.cert.X509Certificate
+
+                val trustAll = object : X509TrustManager {
+                    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+                    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+                }
+                val ctx = SSLContext.getInstance("TLS")
+                ctx.init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+                SSLContext.setDefault(ctx)
+                HttpsURLConnection.setDefaultSSLSocketFactory(ctx.socketFactory)
+                HttpsURLConnection.setDefaultHostnameVerifier(
+                    HostnameVerifier { _, _ -> true })
+
+                println("[aibench] insecure SSL: trust-all SSLContext installed for this gradle process.")
+            """.trimIndent() + "\n")
+            log.info("Wrote ~/.gradle/init.d/aibench-trust-all.gradle.kts (insecureSsl toggled on).")
+        }.onFailure {
+            log.warn("Could not write aibench-trust-all init script: {}", it.message)
+        }
+    }
+
     private fun writeCorpInitScript(s: Settings) {
         val initDir = java.io.File(System.getProperty("user.home"), ".gradle/init.d")
         val target = java.io.File(initDir, "corp-repos.gradle.kts")
