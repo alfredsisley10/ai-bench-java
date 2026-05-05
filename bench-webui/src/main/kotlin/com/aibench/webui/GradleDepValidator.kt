@@ -98,6 +98,215 @@ class GradleDepValidator(
     )
 
     /**
+     * One row of a per-coord version-range probe — captures whether
+     * a specific version of an artifact resolves on the operator's
+     * mirror. Surfaces the policy boundary: corp Artifactory often
+     * blocks specific versions flagged by a vulnerability scanner,
+     * and the operator needs to see which versions are actually
+     * serviceable so they can pin to a policy-allowed one.
+     */
+    data class VersionProbeResult(
+        val version: String,
+        val pomUrl: String,
+        val ok: Boolean,
+        val statusCode: Int,
+        val durationMs: Long,
+        val message: String,
+        val isCurrent: Boolean   // true when this is the version pinned in the catalog
+    )
+
+    /**
+     * Sweep result for one coord: the candidate version list (sourced
+     * from the mirror's maven-metadata.xml when available, else a
+     * patch-sweep heuristic) + per-version probe outcomes. The
+     * /mirror UI renders this as a "policy-allowed range" indicator
+     * so the operator sees at a glance which versions of (e.g.)
+     * testcontainers their corp Artifactory will serve.
+     */
+    data class VersionRangeResult(
+        val coord: String,
+        val groupId: String,
+        val artifactId: String,
+        val currentVersion: String,
+        val candidatesSource: String,    // "maven-metadata.xml" | "patch-sweep heuristic" | "(unknown)"
+        val probes: List<VersionProbeResult>,
+        val recommendation: String
+    )
+
+    /**
+     * Probe a list of nearby versions for the given coord against
+     * the operator's configured mirror, surfacing which versions
+     * are policy-allowed. Two strategies:
+     *
+     *   1. Fetch <mirrorUrl>/<groupPath>/<artifact>/maven-metadata.xml
+     *      and use its <version> list. Accurate when the mirror
+     *      exposes maven-metadata.xml (most do).
+     *   2. Fall back to a patch-sweep heuristic: probe
+     *      currentMajor.currentMinor.0..20 -- broad enough to
+     *      catch the "this specific version is blocked, adjacent
+     *      patches are fine" pattern, narrow enough to keep the
+     *      sweep under a few seconds.
+     *
+     * Each candidate version is probed for .pom existence at the
+     * mirror; the result includes status code + a per-version
+     * verdict so the operator can spot the boundary directly. A
+     * one-line recommendation summarizes ("13 of 16 probed versions
+     * resolve; current pin (1.20.1) is in the FAILING set --
+     * consider bumping to one of: 1.20.0, 1.20.5, 1.20.6").
+     */
+    fun probeVersionRange(coord: String): VersionRangeResult {
+        val parts = coord.split(":")
+        if (parts.size < 3) {
+            return VersionRangeResult(coord, "", "", "", "(invalid coord)",
+                emptyList(), "Coord '$coord' isn't in groupId:artifactId:version form.")
+        }
+        val (g, a, v) = Triple(parts[0], parts[1], parts[2])
+        val s = connectionSettings.settings
+        val mirrorBase = if (s.mirrorUrl.isNotBlank() && !s.bypassMirror)
+            s.mirrorUrl.trimEnd('/')
+        else null
+        if (mirrorBase == null) {
+            return VersionRangeResult(coord, g, a, v, "(no mirror configured)",
+                emptyList(),
+                "Configure a mirror on /mirror to probe version availability.")
+        }
+        val groupPath = g.replace('.', '/')
+
+        // Try maven-metadata.xml first.
+        val (candidates, source) = candidateVersions(mirrorBase, groupPath, a, v)
+
+        // Probe each candidate's POM URL. Use the parallel pool so
+        // a 16-version sweep finishes in ~1-2 seconds behind a fast
+        // mirror.
+        val client = httpClient()
+        val futures = candidates.map { ver ->
+            pool.submit<VersionProbeResult> {
+                val url = "$mirrorBase/$groupPath/$a/$ver/$a-$ver.pom"
+                val started = System.currentTimeMillis()
+                val (ok, code) = runCatching { singleProbe(client, url, true, s) }
+                    .getOrDefault(false to -1)
+                val ms = System.currentTimeMillis() - started
+                val msg = when {
+                    ok -> "OK"
+                    code == 401 -> "401 Unauthorized"
+                    code == 403 -> "403 Forbidden (likely policy-blocked)"
+                    code == 404 -> "404 Not Found"
+                    code in 500..599 -> "$code from upstream"
+                    code == -1 -> "(no response)"
+                    else -> "HTTP $code"
+                }
+                VersionProbeResult(ver, url, ok, code, ms, msg, ver == v)
+            }
+        }
+        val probes = futures.map { it.get() }
+        val passed = probes.count { it.ok }
+        val total = probes.size
+        val current = probes.firstOrNull { it.isCurrent }
+        val candidates2 = probes.filter { it.ok && !it.isCurrent }
+            .map { it.version }
+        val recommendation = when {
+            total == 0 -> "No candidate versions to probe. Mirror may not expose maven-metadata.xml + the patch heuristic produced no candidates."
+            current != null && current.ok -> "Current pin $v resolves cleanly ($passed of $total probed versions OK on the mirror). No action needed."
+            current != null && !current.ok -> "Current pin $v does NOT resolve (HTTP ${current.statusCode}). " +
+                (if (candidates2.isNotEmpty())
+                    "${candidates2.size} alternative version(s) DO resolve: " +
+                    candidates2.take(8).joinToString(", ") +
+                    (if (candidates2.size > 8) ", …" else "") +
+                    ". Bump the catalog + build.gradle.kts to one of these to unblock."
+                else
+                    "No alternatives in the probed range resolved either; mirror may not carry this artifact at all.")
+            current == null -> "Current pin $v wasn't in the candidate set probed; $passed of $total probed versions resolved on the mirror."
+            else -> ""
+        }
+        return VersionRangeResult(coord, g, a, v, source, probes, recommendation)
+    }
+
+    /** Source candidate version list: maven-metadata.xml first, then
+     *  fall back to a patch-sweep heuristic. */
+    private fun candidateVersions(
+        mirrorBase: String, groupPath: String, artifactId: String, currentVersion: String
+    ): Pair<List<String>, String> {
+        // Try maven-metadata.xml. Most Maven repos expose
+        // /<group>/<artifact>/maven-metadata.xml listing every
+        // published version.
+        val metaUrl = "$mirrorBase/$groupPath/$artifactId/maven-metadata.xml"
+        val s = connectionSettings.settings
+        val client = httpClient()
+        val fromMeta = runCatching {
+            val req = HttpRequest.newBuilder()
+                .uri(URI.create(metaUrl))
+                .timeout(Duration.ofSeconds(6))
+                .GET()
+                .build()
+            val withAuth = if (s.hasMirrorAuth) {
+                HttpRequest.newBuilder(req, { _, _ -> true })
+                    .header("Authorization", "Basic " +
+                        java.util.Base64.getEncoder().encodeToString(
+                            "${s.mirrorAuthUser}:${s.mirrorAuthPassword}".toByteArray()))
+                    .build()
+            } else req
+            val resp = client.send(withAuth, java.net.http.HttpResponse.BodyHandlers.ofString())
+            if (resp.statusCode() !in 200..299) return@runCatching null
+            // Tiny regex parse: <version>...</version>. Robust enough
+            // for the well-formed maven-metadata.xml shape.
+            Regex("""<version>\s*([^<\s][^<]*?)\s*</version>""")
+                .findAll(resp.body())
+                .map { it.groupValues[1].trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+                .toList()
+        }.getOrNull()
+        if (!fromMeta.isNullOrEmpty()) {
+            // Cap to a sensible window around the current version
+            // so we don't probe 200+ historical versions for
+            // long-lived artifacts. Take 5 versions before + 10
+            // after current (when found in the list) plus the
+            // current itself; falls back to the 16 most recent
+            // when current isn't in the list.
+            val sorted = fromMeta.sortedWith(versionComparator())
+            val idx = sorted.indexOf(currentVersion)
+            val window = if (idx >= 0) {
+                val from = (idx - 5).coerceAtLeast(0)
+                val to = (idx + 11).coerceAtMost(sorted.size)
+                sorted.subList(from, to)
+            } else {
+                sorted.takeLast(16)
+            }
+            return window to "maven-metadata.xml (${fromMeta.size} versions found, " +
+                "${window.size} probed around the current pin)"
+        }
+
+        // Heuristic fallback: same major.minor, patches 0..20.
+        val parts = currentVersion.split(".")
+        if (parts.size >= 2) {
+            val major = parts[0]
+            val minor = parts[1]
+            val patches = (0..20).map { "$major.$minor.$it" }
+            return patches to "patch-sweep heuristic (no maven-metadata.xml available)"
+        }
+        return emptyList<String>() to "(no maven-metadata.xml + version doesn't parse as M.m.p)"
+    }
+
+    /** Comparator for Maven-style version strings. Splits on '.' and
+     *  '-', compares numerically per segment, with non-numeric
+     *  segments compared lexicographically. Good enough for the
+     *  well-behaved 1.2.3 / 1.2.3-RC1 shapes in the catalog. */
+    private fun versionComparator(): Comparator<String> = Comparator { a, b ->
+        val pa = a.split('.', '-')
+        val pb = b.split('.', '-')
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val sa = pa.getOrNull(i) ?: ""
+            val sb = pb.getOrNull(i) ?: ""
+            val na = sa.toIntOrNull()
+            val nb = sb.toIntOrNull()
+            val cmp = if (na != null && nb != null) na.compareTo(nb)
+                      else sa.compareTo(sb)
+            if (cmp != 0) return@Comparator cmp
+        }
+        0
+    }
+
+    /**
      * Per-entry result of trying every applicable connectivity
      * option. The recommendation summarizes which path(s) worked,
      * so the operator can pick the right routing for that dep

@@ -392,6 +392,43 @@ class MirrorConfigController(
     }
 
     /**
+     * Per-coord version-range probe — sweeps a window of nearby
+     * versions for the given coord against the configured mirror
+     * and surfaces which versions are policy-allowed. Catches the
+     * "this specific version is on the corp blocklist (CVE) and
+     * an adjacent patch resolves cleanly" pattern that operators
+     * keep hitting -- the standard validator only probes the pinned
+     * version, so the policy boundary stays invisible.
+     */
+    @PostMapping("/mirror/validate-deps/version-range")
+    @org.springframework.web.bind.annotation.ResponseBody
+    fun versionRangeProbe(
+        @RequestParam coord: String
+    ): Map<String, Any?> {
+        val r = depValidator.probeVersionRange(coord)
+        return mapOf(
+            "ok" to r.probes.any { it.ok },
+            "coord" to r.coord,
+            "groupId" to r.groupId,
+            "artifactId" to r.artifactId,
+            "currentVersion" to r.currentVersion,
+            "candidatesSource" to r.candidatesSource,
+            "recommendation" to r.recommendation,
+            "probes" to r.probes.map { p ->
+                mapOf(
+                    "version" to p.version,
+                    "pomUrl" to p.pomUrl,
+                    "ok" to p.ok,
+                    "statusCode" to p.statusCode,
+                    "durationMs" to p.durationMs,
+                    "message" to p.message,
+                    "isCurrent" to p.isCurrent
+                )
+            }
+        )
+    }
+
+    /**
      * Iterate the supplied list of failed coordinates through every
      * connectivity option the operator has configured: primary
      * mirror, maven-external-virtual, direct upstream, and (for
