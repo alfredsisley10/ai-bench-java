@@ -165,7 +165,19 @@ class DashboardController(
         val appmapShort: String,   // "+" for ON, "" for OFF
         val tooltip: String,
         val totalSolves: Int,
-        val borderRight: String
+        val borderRight: String,
+        // Per-model solve rate over the bugs in heatBugRows. Drives
+        // the small percentage label at the top of the rotated
+        // model header so operators see the model's own contribution
+        // alongside the ctx + appmap group rates above.
+        val passRate: Double,
+        val passLabel: String,
+        // Color swatch for this column's model. Identical model ids
+        // get identical swatches across the matrix so the operator
+        // can scan and recognize "every column with this dot is the
+        // same model, regardless of which (ctx, appmap) group it's
+        // in".
+        val modelColor: String
     )
 
     /** Top-row grouping of heat-map columns by context-provider.
@@ -178,6 +190,10 @@ class DashboardController(
         val colspan: Int,
         val appmapGroups: List<HeatAppmapGroup>,
         val borderRight: String,
+        // Color swatch for this ctx group. Operators can scan the
+        // matrix and recognize "every cell under this swatch is
+        // ctx=bm25" without re-reading the banner text.
+        val ctxColor: String,
         // Aggregate pass rate across every (model column, bug row)
         // cell in this ctx group. Numerator = PASSED cells;
         // denominator = ATTEMPTED cells (PASSED + FAILED + ERRORED
@@ -200,7 +216,11 @@ class DashboardController(
         val colspan: Int,
         val passRate: Double,
         val passLabel: String,
-        val borderRight: String
+        val borderRight: String,
+        // Color swatch for this AppMap Traces mode (Off / On /
+        // recommended / all). Same mode = same color across the
+        // matrix.
+        val appmapColor: String
     )
 
     /** Bug row metadata for the heat-map. */
@@ -273,6 +293,13 @@ class DashboardController(
          *  FAILED_TESTS in 31s, $0.022 / ...". Empty when this
          *  configuration has no runs at all. */
         val bugBreakdown: List<BugDrilldown>,
+        // Color swatches matching the bug-solving matrix's ctxColor
+        // / appmapColor / modelColor helpers. Operators see the same
+        // color for the same value across the leaderboard + matrix
+        // so the visual link is direct.
+        val ctxColor: String,
+        val appmapColor: String,
+        val modelColor: String,
         /** Inline SVG strip with one bar per catalog bug (sorted by
          *  bugId). Green = at least one run passed, red = ran but
          *  never passed, grey = no run for this configuration.
@@ -422,6 +449,9 @@ class DashboardController(
                 avgPassMs = records.map { it.durationMs }.average().toLong(),
                 avgPassCostUsd = records.map { it.costUsd }.average(),
                 bugBreakdown = drilldown,
+                ctxColor = ctxColor(ctx.contextProvider),
+                appmapColor = appmapColor(ctx.appmapMode),
+                modelColor = modelColor(ctx.modelId),
                 bugStatusSparkSvg = bugStatusSparkSvg(catalogBugs.sorted(), drilldown)
             )
         }
@@ -546,78 +576,14 @@ class DashboardController(
         model.addAttribute("uniquelySolvedCount", perBugLeaders.count { it.uniquelySolved })
 
         // Heat-map: configs × bugs grid.
-        // Cap configs to those with at least 1 attempt (drops empty
-        // columns) and to non-oracle. Bugs ordered by difficulty
-        // bucket (HARD/MEDIUM/EASY/TRIVIAL) then bugId for visual
-        // grouping; difficulty also exposed per row so the template
-        // can color the row label.
-        // Sort columns by (ctx, appmap, model) so the multi-row
-        // header banner (ctx → appmap → model) groups visually.
-        // OFF first within each ctx so the operator reads the
-        // matrix as "no-context first, traces added later".
-        val configsWithAttempts: List<Triple<String, String, String>> = nonOracleRuns
-            .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
-            .distinct()
-            .sortedWith(compareBy(
-                { it.second.lowercase() },                         // ctx
-                { if (it.third.equals("OFF", true) || it.third.isBlank()) 0 else 1 }, // OFF first
-                { it.third },                                      // then ON_* alphabetically
-                { it.first }                                       // then model
-            ))
-        // Pre-compute the LAST column index in each ctx group + each
-        // (ctx, appmap) sub-group so we can render thicker vertical
-        // dividers at those boundaries. The list is already sorted
-        // ctx → appmap → model so "last in group" is just "next item
-        // changes group key (or end of list)".
-        val lastInCtxIdx = configsWithAttempts.indices.filter { i ->
-            i == configsWithAttempts.lastIndex ||
-            configsWithAttempts[i].second != configsWithAttempts[i + 1].second
-        }.toSet()
-        val lastInAppmapIdx = configsWithAttempts.indices.filter { i ->
-            i == configsWithAttempts.lastIndex ||
-            configsWithAttempts[i].second != configsWithAttempts[i + 1].second ||
-            configsWithAttempts[i].third != configsWithAttempts[i + 1].third
-        }.toSet()
-        val heatColumns: List<HeatColumn> = configsWithAttempts.mapIndexed { idx, (model, ctx, mode) ->
-            val k = "$model|$ctx|$mode"
-            val solves = nonOracleRuns.count {
-                it.modelId == model && it.contextProvider == ctx && it.appmapMode == mode &&
-                it.status == BenchmarkRunService.Status.PASSED
-            }
-            // Vertical divider: indigo (matches the ctx banner color)
-            // for ctx-group boundaries; slate (matches the appmap
-            // sub-banner) for appmap-subgroup boundaries; nothing
-            // between same-subgroup models (the table's 1px
-            // border-spacing already separates them visibly).
-            val border = when {
-                idx == configsWithAttempts.lastIndex -> ""        // last column overall
-                idx in lastInCtxIdx -> "border-right:3px solid #6366f1"
-                idx in lastInAppmapIdx -> "border-right:2px solid #94a3b8"
-                else -> ""
-            }
-            HeatColumn(
-                configKey = k,
-                modelShort = model.removePrefix("copilot-"),
-                ctxShort = when (ctx.lowercase()) {
-                    "none" -> "n"
-                    "bm25" -> "B"
-                    "appmap-navie" -> "N"
-                    "oracle" -> "O"
-                    else -> ctx.take(1).uppercase()
-                },
-                appmapShort = if (mode.uppercase() == "ON" ||
-                    mode.uppercase().startsWith("ON_")) "+" else "",
-                tooltip = "$model · ctx=$ctx · appmap=$mode — $solves passed",
-                totalSolves = solves,
-                borderRight = border
-            )
-        }
-        // Only carry bugs that had at least 1 attempt (matches the
-        // configs-with-attempts logic). Default sort is by bug id
-        // ascending (BUG-0001 first) -- matches the bug-numbered
-        // canonical order operators reason about, and matches every
-        // other bug-rowed table on the dashboard. The Diff column
-        // header is still click-sortable for difficulty grouping.
+        // Build order is: heatBugRows + rawCells FIRST (so the
+        // pass-rate-driven column sort below has the data it needs),
+        // then sorted configsWithAttempts + heatColumns + heatCells.
+
+        // Bug rows -- catalog filter to bugs with at least 1 attempt;
+        // sorted by bugId ascending so BUG-0001 is at the top of the
+        // matrix. The Diff column header is click-sortable to switch
+        // to difficulty grouping at runtime.
         val heatBugRows: List<HeatBugRow> = perBugLeaders
             .filter { it.attempts > 0 }
             .sortedBy { it.bugId }
@@ -631,16 +597,10 @@ class DashboardController(
                     uniquelySolved = it.uniquelySolved
                 )
             }
-        // Cells indexed by (bug, config) -> latest matching run's
-        // status. With seeds=1 there's typically 1 run per (bug,config);
-        // when more, we pick the run with the strongest result
-        // (PASSED > FAILED > ERRORED > nothing) so the matrix
-        // emphasizes "did ANY attempt succeed?". Cell colors are
-        // computed in a second pass once we know the per-bug min/max
-        // for time + cost across all PASSED cells -- the gradient on
-        // each PASSED cell is RELATIVE to that bug's spread, not a
-        // global scale, so a bug with one tight cluster of solvers
-        // is still readable next to a bug with a wide spread.
+
+        // Strongest-result cell per (bug, config). One run wins per
+        // (bug, config) pair: PASSED > FAILED > ERRORED > CANCELED.
+        // Used both for cell rendering and for the pass-rate sort.
         data class CellRaw(val bugId: String, val configKey: String,
                            val status: String, val durationMs: Long, val costUsd: Double)
         val rawCells: Map<String, CellRaw> = run {
@@ -666,6 +626,128 @@ class DashboardController(
             }
             out
         }
+
+        // Cap configs to those with at least 1 attempt (drops empty
+        // columns) and to non-oracle. Sort priority is BY PASS RATE
+        // descending at every level: top-solving ctx leftmost; within
+        // each ctx the highest-solving (Off / On / On (recommended)
+        // / On (all)) leftmost; within each appmap subgroup the
+        // best-solving model leftmost. Operators read the leftmost
+        // columns as the leaderboard.
+        val distinctConfigs: List<Triple<String, String, String>> = nonOracleRuns
+            .map { Triple(it.modelId, it.contextProvider, it.appmapMode) }
+            .distinct()
+        fun configPassRate(model: String, ctx: String, mode: String): Double {
+            var passed = 0
+            var attempted = 0
+            for (bug in heatBugRows) {
+                val cell = rawCells["${bug.bugId}|$model|$ctx|$mode"]
+                if (cell != null) {
+                    attempted++
+                    if (cell.status == "PASSED") passed++
+                }
+            }
+            return if (attempted == 0) 0.0 else passed.toDouble() / attempted
+        }
+        // Aggregate by (ctx, appmap) and by ctx -- needed to drive
+        // the multi-tier sort.
+        val rateByCtxAppmap: Map<Pair<String, String>, Double> = distinctConfigs
+            .groupBy { it.second to it.third }
+            .mapValues { (_, configs) ->
+                var p = 0; var a = 0
+                for ((m, c, mode) in configs) {
+                    for (bug in heatBugRows) {
+                        val cell = rawCells["${bug.bugId}|$m|$c|$mode"] ?: continue
+                        a++
+                        if (cell.status == "PASSED") p++
+                    }
+                }
+                if (a == 0) 0.0 else p.toDouble() / a
+            }
+        val rateByCtx: Map<String, Double> = distinctConfigs
+            .groupBy { it.second }
+            .mapValues { (_, configs) ->
+                var p = 0; var a = 0
+                for ((m, c, mode) in configs) {
+                    for (bug in heatBugRows) {
+                        val cell = rawCells["${bug.bugId}|$m|$c|$mode"] ?: continue
+                        a++
+                        if (cell.status == "PASSED") p++
+                    }
+                }
+                if (a == 0) 0.0 else p.toDouble() / a
+            }
+        // Stable secondary sort keys: alphabetical when rates tie so
+        // the column order is deterministic across reloads.
+        val configsWithAttempts: List<Triple<String, String, String>> = distinctConfigs
+            .sortedWith(compareByDescending<Triple<String, String, String>> {
+                rateByCtx[it.second] ?: 0.0
+            }
+                .thenBy { it.second }
+                .thenByDescending { rateByCtxAppmap[it.second to it.third] ?: 0.0 }
+                .thenBy { it.third }
+                .thenByDescending { configPassRate(it.first, it.second, it.third) }
+                .thenBy { it.first })
+        // Pre-compute the LAST column index in each ctx group + each
+        // (ctx, appmap) sub-group so we can render thicker vertical
+        // dividers at those boundaries. The list is already sorted
+        // ctx → appmap → model so "last in group" is just "next item
+        // changes group key (or end of list)".
+        val lastInCtxIdx = configsWithAttempts.indices.filter { i ->
+            i == configsWithAttempts.lastIndex ||
+            configsWithAttempts[i].second != configsWithAttempts[i + 1].second
+        }.toSet()
+        val lastInAppmapIdx = configsWithAttempts.indices.filter { i ->
+            i == configsWithAttempts.lastIndex ||
+            configsWithAttempts[i].second != configsWithAttempts[i + 1].second ||
+            configsWithAttempts[i].third != configsWithAttempts[i + 1].third
+        }.toSet()
+        val heatColumns: List<HeatColumn> = configsWithAttempts.mapIndexed { idx, (model, ctx, mode) ->
+            val k = "$model|$ctx|$mode"
+            val solves = nonOracleRuns.count {
+                it.modelId == model && it.contextProvider == ctx && it.appmapMode == mode &&
+                it.status == BenchmarkRunService.Status.PASSED
+            }
+            val border = when {
+                idx == configsWithAttempts.lastIndex -> ""
+                idx in lastInCtxIdx -> "border-right:3px solid #6366f1"
+                idx in lastInAppmapIdx -> "border-right:2px solid #94a3b8"
+                else -> ""
+            }
+            // Per-config solve rate over heatBugRows (same denom as
+            // the sort + per-group banners). Drives the small %
+            // text shown above the rotated model name.
+            var p = 0; var a = 0
+            for (bug in heatBugRows) {
+                val cell = rawCells["${bug.bugId}|$model|$ctx|$mode"] ?: continue
+                a++
+                if (cell.status == "PASSED") p++
+            }
+            val pct = if (a > 0) (p * 100 + a / 2) / a else 0
+            HeatColumn(
+                configKey = k,
+                modelShort = model.removePrefix("copilot-"),
+                ctxShort = when (ctx.lowercase()) {
+                    "none" -> "n"
+                    "bm25" -> "B"
+                    "appmap-navie" -> "N"
+                    "oracle" -> "O"
+                    else -> ctx.take(1).uppercase()
+                },
+                appmapShort = if (mode.uppercase() == "ON" ||
+                    mode.uppercase().startsWith("ON_")) "+" else "",
+                tooltip = "$model · ctx=$ctx · appmap=$mode — $solves passed",
+                totalSolves = solves,
+                borderRight = border,
+                passRate = if (a > 0) p.toDouble() / a else 0.0,
+                passLabel = if (a == 0) "—" else "$pct% ($p/$a)",
+                modelColor = modelColor(model)
+            )
+        }
+        // heatCells: rawCells with per-cell bgStyle layered on. The
+        // PASSED gradient depends on the per-bug min/max of time +
+        // cost across passing solvers, so passedByBug is grouped
+        // here once and the lerp runs in a single pass.
         val passedByBug: Map<String, List<CellRaw>> = rawCells.values
             .filter { it.status == "PASSED" }
             .groupBy { it.bugId }
@@ -759,7 +841,8 @@ class DashboardController(
                     colspan = modeConfigs.size,
                     passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
                     passLabel = pctLabel(mPassed, mAttempted),
-                    borderRight = appmapBorder
+                    borderRight = appmapBorder,
+                    appmapColor = appmapColor(mode)
                 )
             }
             HeatCtxGroup(
@@ -767,6 +850,7 @@ class DashboardController(
                 colspan = ctxConfigs.size,
                 appmapGroups = appmapGroups,
                 borderRight = if (isLastCtx) "" else "border-right:3px solid #6366f1",
+                ctxColor = ctxColor(ctx),
                 passRate = if (ctxAttempted > 0) ctxPassed.toDouble() / ctxAttempted else 0.0,
                 passLabel = pctLabel(ctxPassed, ctxAttempted)
             )
@@ -1220,23 +1304,53 @@ class DashboardController(
         return sb.toString()
     }
 
-    /** Lerp between green-600 (#16a34a, "best on metric") and green-100
-     *  (#dcfce7, "worst pass on metric") based on a 0..1 rank. Used
-     *  per-half on the bug-solving matrix's PASSED cells: left half
-     *  shaded by time-rank, right half by cost-rank. Range stops at
-     *  green-100 (not white) so even the worst PASSED cell is
-     *  visibly greener than the very-light-red FAILED cells -- the
-     *  matrix's primary signal is "where did combinations pass
-     *  fast + cheap", not "did it pass at all". */
+    /** Lerp between green-900 (#14532d, top performer) and green-100
+     *  (#dcfce7, worst pass) on a 0..1 rank, with a sqrt() curve so
+     *  the top of the leaderboard gets more visual span: rank 0..0.1
+     *  spreads across ~31% of the gradient (instead of a flat 10%)
+     *  while the laggards in 0.5..1.0 compress into the lighter end.
+     *  Operators see 5+ visually distinct shades among top performers
+     *  instead of "they're all just dark green". */
     private fun greenShade(rank: Double): String {
         val t = rank.coerceIn(0.0, 1.0)
-        val r0 = 0x16; val g0 = 0xa3; val b0 = 0x4a   // green-600 (best)
+        val curved = kotlin.math.sqrt(t)
+        val r0 = 0x14; val g0 = 0x53; val b0 = 0x2d   // green-900 (best)
         val r1 = 0xdc; val g1 = 0xfc; val b1 = 0xe7   // green-100 (worst pass)
-        val r = (r0 + (r1 - r0) * t).toInt()
-        val g = (g0 + (g1 - g0) * t).toInt()
-        val b = (b0 + (b1 - b0) * t).toInt()
+        val r = (r0 + (r1 - r0) * curved).toInt()
+        val g = (g0 + (g1 - g0) * curved).toInt()
+        val b = (b0 + (b1 - b0) * curved).toInt()
         return "#%02x%02x%02x".format(r, g, b)
     }
+
+    /** Color swatches for the heat-map + leaderboard color codes.
+     *  Same value => same color across every dashboard surface so
+     *  operators can scan and recognize "this row + this column
+     *  share that label" without reading the text. */
+    private fun ctxColor(ctx: String): String = when (ctx.lowercase()) {
+        "none" -> "#94a3b8"            // slate
+        "bm25" -> "#14b8a6"            // teal
+        "appmap-navie" -> "#a855f7"    // purple
+        "oracle" -> "#f59e0b"          // amber
+        else -> hashColor(ctx)
+    }
+    private fun appmapColor(mode: String): String = when {
+        mode.equals("OFF", true) || mode.isBlank() -> "#9ca3af"   // grey
+        mode.equals("ON_RECOMMENDED", true) -> "#3b82f6"          // blue
+        mode.equals("ON_ALL", true) -> "#6366f1"                  // indigo
+        mode.equals("ON", true) -> "#22c55e"                      // green
+        else -> hashColor(mode)
+    }
+    /** 10-color pastel-ish palette. Hash the model id into a stable
+     *  index so reload-to-reload the same model keeps the same color. */
+    private val MODEL_PALETTE = listOf(
+        "#0ea5e9", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981",
+        "#ef4444", "#6366f1", "#14b8a6", "#a855f7", "#0891b2"
+    )
+    private fun modelColor(modelId: String): String =
+        MODEL_PALETTE[(modelId.hashCode().rem(MODEL_PALETTE.size) + MODEL_PALETTE.size) %
+                      MODEL_PALETTE.size]
+    private fun hashColor(s: String): String = MODEL_PALETTE[
+        (s.hashCode().rem(MODEL_PALETTE.size) + MODEL_PALETTE.size) % MODEL_PALETTE.size]
 
     /** Minimal XML attribute / text escape — covers every char that
      *  could break the inline-SVG-as-string injection. */
