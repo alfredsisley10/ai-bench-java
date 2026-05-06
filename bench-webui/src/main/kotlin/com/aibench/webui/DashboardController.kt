@@ -1266,6 +1266,36 @@ class DashboardController(
         return "redirect:/"
     }
 
+    /**
+     * Wipe every benchmark run. Active (RUNNING / QUEUED) runs are
+     * skipped -- the operator should cancel those first, mirroring
+     * the per-row + bulk delete behavior. Triggered from the
+     * dashboard's "Delete all runs" button (separate from the per-row
+     * checkbox-driven /runs/delete) so a single confirmation prompt
+     * covers the wipe.
+     */
+    @PostMapping("/runs/delete-all")
+    fun deleteAllRuns(session: HttpSession): String {
+        val ids = benchmarkRuns.allRunIds()
+        if (ids.isEmpty()) {
+            session.setAttribute("runsDeleteResult",
+                "No runs to delete — the runs table is already empty.")
+            return "redirect:/"
+        }
+        val s = benchmarkRuns.deleteRuns(ids)
+        session.setAttribute("runsDeleteResult", buildString {
+            append("Deleted ALL — ").append(s.deleted).append(" run")
+                .append(if (s.deleted == 1) "" else "s").append(" wiped")
+            if (s.skippedActive > 0) {
+                append("; skipped ").append(s.skippedActive)
+                  .append(" active run").append(if (s.skippedActive == 1) "" else "s")
+                  .append(" (cancel them first to delete)")
+            }
+            append('.')
+        })
+        return "redirect:/"
+    }
+
     /** Which axis the sparkline encodes — time (ms, lower=better) or
      *  cost (USD, lower=better). Both visually use "shorter bar =
      *  better" so the operator's reading is consistent across charts. */
