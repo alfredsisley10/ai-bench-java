@@ -1069,6 +1069,108 @@
          fails HARD" pattern recognition that the per-config and
          per-bug tables don't surface as effectively. -->
     <section th:unless="${#lists.isEmpty(heatBugRows)}">
+        <!-- Matrix-local CSS: defines the sizing primitives that
+             scale across catalog sizes and isolates the sticky-
+             positioning layers so the Bug + Diff index columns
+             and the three banner rows stay visible during scroll.
+             Variables let one number drive both the th min-width
+             and the sticky-left offsets so they can never drift. -->
+        <style>
+          #heatMatrixTable {
+              --hm-bug-w: 7em;        /* Bug column width  */
+              --hm-diff-w: 4.5em;     /* Diff column width */
+              --hm-leaf-w: 6em;       /* Leaf column min-width */
+              --hm-row-h: 2.7em;      /* Cell height       */
+              --hm-bg-header: #f3f4f6;
+              --hm-bg-fixed: #f9fafb;
+          }
+          /* Sticky scroll container: wraps thead + tbody so vertical
+             scroll inside the section keeps the banner rows pinned. */
+          #heatMatrixTable thead th {
+              position: sticky;
+              top: 0;
+              z-index: 3;
+          }
+          /* Bug + Diff columns pinned to the left so the row index
+             survives horizontal scroll across many leaf columns. */
+          #heatMatrixTable td:nth-child(1),
+          #heatMatrixTable td:nth-child(2),
+          #heatMatrixTable th:nth-child(1),
+          #heatMatrixTable th:nth-child(2) {
+              position: sticky;
+              z-index: 2;
+              background: var(--hm-bg-fixed);
+          }
+          #heatMatrixTable td:nth-child(1),
+          #heatMatrixTable th:nth-child(1) {
+              left: 0;
+          }
+          #heatMatrixTable td:nth-child(2),
+          #heatMatrixTable th:nth-child(2) {
+              left: var(--hm-bug-w);
+          }
+          /* Sticky cells need a higher z-index when they're at the
+             intersection of vertical + horizontal scroll (i.e. the
+             two left fixed columns of the header rows). */
+          #heatMatrixTable thead th:nth-child(1),
+          #heatMatrixTable thead th:nth-child(2) {
+              z-index: 4;
+              background: var(--hm-bg-header);
+          }
+          /* Leaf cells get a uniform height + min-width so the grid
+             scales predictably regardless of leaf count. */
+          #heatMatrixTable tbody td.hm-leaf {
+              min-width: var(--hm-leaf-w);
+              height: var(--hm-row-h);
+          }
+          #heatMatrixTable thead th.hm-leaf {
+              min-width: var(--hm-leaf-w);
+          }
+          /* Banner cells: wrap the children in a flex row so the
+             "Tier: pill · passLabel" runs break at logical points
+             (between the pill and the passLabel) rather than mid-
+             pill or mid-label. nowrap on the pill keeps multi-word
+             values like "On (recommended)" intact. */
+          #heatMatrixTable thead th .hm-banner {
+              display: inline-flex;
+              flex-wrap: wrap;
+              align-items: baseline;
+              justify-content: center;
+              gap: 0.25em 0.4em;
+              max-width: 100%;
+          }
+          #heatMatrixTable thead th .hm-pill {
+              white-space: nowrap;
+              padding: 1px 7px;
+              border-radius: 10px;
+              font-size: 0.85em;
+              color: white;
+          }
+          #heatMatrixTable thead th .hm-pass {
+              white-space: nowrap;
+              font-weight: normal;
+              font-size: 0.85em;
+          }
+          /* Cell time/cost halves: each half clips its overflow so
+             a long value can't bleed into the other half (the
+             gradient already visually splits at 50%). Inner
+             padding keeps text off the edge. */
+          #heatMatrixTable td .hm-half {
+              flex: 1 1 50%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 0 0.25em;
+              overflow: hidden;
+              white-space: nowrap;
+          }
+          /* Leaf header: cap the rotated label visual extent so a
+             very long model name doesn't bleed into the adjacent
+             column's banner. */
+          #heatMatrixTable thead th.hm-leaf {
+              overflow: hidden;
+          }
+        </style>
         <h2>Bug-solving matrix
             <span class="help-text" style="font-weight:normal; font-size:0.85em">
                 — green = passed, red = failed, light grey = no attempt
@@ -1143,80 +1245,81 @@
                      to the click handler -- only Bug + Diff sort. -->
                 <tr class="sort-row">
                     <th rowspan="3" data-sort-key="bug"
-                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
-                               vertical-align:bottom; cursor:pointer">
+                        style="text-align:left; padding:0.3em 0.5em;
+                               vertical-align:bottom; cursor:pointer;
+                               width:var(--hm-bug-w); min-width:var(--hm-bug-w)">
                         Bug <span class="sort-indicator"></span>
                     </th>
                     <th rowspan="3" data-sort-key="difficulty"
                         data-sort-order="TRIVIAL,EASY,MEDIUM,HARD"
-                        style="text-align:left; padding:0.3em 0.5em; background:#f3f4f6;
+                        style="text-align:left; padding:0.3em 0.5em;
                                vertical-align:bottom; cursor:pointer;
-                               border-right:3px solid #475569">
+                               border-right:3px solid #475569;
+                               width:var(--hm-diff-w); min-width:var(--hm-diff-w)">
                         Diff <span class="sort-indicator"></span>
                     </th>
-                    <!-- Outer-tier banner. Tier name is dynamic
-                         (Context / AppMap Traces / Model depending
-                         on operator's groupBy choice). Colored pill
-                         uses the tier's color helper. -->
+                    <!-- Outer-tier banner. Each cell wraps its three
+                         children (tier label, colored pill, pass
+                         label) in a flex-wrap container so the
+                         pieces wrap at logical points (between
+                         label and pill, between pill and stats)
+                         instead of mid-pill. -->
                     <th th:each="g : ${heatOuterGroups}"
                         th:colspan="${g.colspan}"
                         th:title="${g.tierName} + ': ' + ${g.displayLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
-                        th:style="'text-align:center; padding:0.25em 0.4em;
+                        th:style="'text-align:center; padding:0.3em 0.4em;
                                    background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                    font-weight:600; color:#312e81;' + ${g.borderRight}">
-                        <span th:text="${g.tierName} + ':'"></span>
-                        <span th:style="'background:' + ${g.color} + '; color:white;
-                                         padding:1px 7px; border-radius:10px; font-size:0.85em'"
-                              th:text="${g.displayLabel}">…</span>
-                        <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
-                              th:text="' · ' + ${g.passLabel}">…</span>
+                        <span class="hm-banner">
+                            <span th:text="${g.tierName} + ':'"></span>
+                            <span class="hm-pill"
+                                  th:style="'background:' + ${g.color}"
+                                  th:text="${g.displayLabel}">…</span>
+                            <span class="hm-pass" style="color:#4338ca"
+                                  th:text="'· ' + ${g.passLabel}">…</span>
+                        </span>
                     </th>
                 </tr>
                 <tr>
                     <th th:each="ag : ${heatMiddleGroups}"
                         th:colspan="${ag.colspan}"
                         th:title="${ag.tierName} + ': ' + ${ag.displayLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this sub-group'"
-                        th:style="'text-align:center; padding:0.2em 0.4em;
+                        th:style="'text-align:center; padding:0.25em 0.4em;
                                    background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                    font-size:0.85em; color:#475569;' + ${ag.borderRight}">
-                        <span th:text="${ag.tierName} + ':'"></span>
-                        <span th:style="'background:' + ${ag.color} + '; color:white;
-                                         padding:1px 6px; border-radius:9px; font-size:0.85em'"
-                              th:text="${ag.displayLabel}">…</span>
-                        <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
+                        <span class="hm-banner">
+                            <span th:text="${ag.tierName} + ':'"></span>
+                            <span class="hm-pill" style="padding:1px 6px"
+                                  th:style="'background:' + ${ag.color}"
+                                  th:text="${ag.displayLabel}">…</span>
+                            <span class="hm-pass" style="color:#64748b"
+                                  th:text="'· ' + ${ag.passLabel}">…</span>
+                        </span>
                     </th>
                 </tr>
                 <tr class="sort-row">
-                    <!-- Model labels rotated 45° rising from the
-                         bottom-left of each header cell to the upper
-                         right. Per-column borderRight (computed in
-                         the controller) draws thick indigo dividers
-                         at ctx-group boundaries and medium slate
-                         dividers at appmap-subgroup boundaries so
-                         the operator can scan the grid by group
-                         without losing track of column ownership. -->
+                    <!-- Leaf column header. Two-region stack: a
+                         centered pass% label with a divider line on
+                         top, then a 45°-rotated leaf label anchored
+                         at the bottom-left. Outer th has overflow:
+                         hidden so the rotated label can't visually
+                         leak into the next column's banner space. -->
                     <th th:each="c, iter : ${heatColumns}"
+                        class="hm-leaf"
                         th:title="${c.tooltip} + ' · ' + ${c.passLabel}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
                         th:style="'background:#f3f4f6; vertical-align:bottom;
                                    text-align:center; padding:0.3em 0.3em 0.5em 0.5em;
-                                   min-width:3em; height:12em; cursor:pointer;
-                                   overflow:visible;' + ${c.borderRight}">
-                        <!-- Stack: percentage at the top (centered),
-                             rotated 45° model label anchored at the
-                             bottom-left. Header height bumped to
-                             12em so a long rotated label like
-                             "claude-sonnet-4-6" (≈10em vertical
-                             extent at 45°) doesn't overrun the %
-                             label above. -->
+                                   height:12em; cursor:pointer;' + ${c.borderRight}">
                         <div style="display:flex; flex-direction:column;
                                     align-items:stretch; height:100%">
                             <div style="font-size:0.75em; font-weight:600;
                                         color:#1e293b; text-align:center;
                                         padding-bottom:4px;
-                                        border-bottom:1px solid #e2e8f0"
+                                        border-bottom:1px solid #e2e8f0;
+                                        white-space:nowrap"
                                  th:text="${c.passLabel}">…</div>
                             <div style="flex:1; position:relative">
                                 <span style="position:absolute; bottom:0; left:0;
@@ -1224,7 +1327,10 @@
                                              transform-origin:bottom left;
                                              white-space:nowrap;
                                              font-family:monospace;
-                                             font-size:0.85em">
+                                             font-size:0.85em;
+                                             max-width:14em;
+                                             overflow:hidden;
+                                             text-overflow:ellipsis">
                                     <span th:style="'display:inline-block; width:8px; height:8px;
                                                      border-radius:50%; margin-right:4px;
                                                      vertical-align:middle;
@@ -1241,7 +1347,8 @@
                     th:style="${b.uniquelySolved ? 'background:#fffbeb' : ''}"
                     th:attr="data-bug=${b.bugId},
                              data-difficulty=${b.difficulty}">
-                    <td style="padding:0.25em 0.5em; white-space:nowrap"
+                    <td style="padding:0.25em 0.5em; white-space:nowrap;
+                               text-overflow:ellipsis; overflow:hidden"
                         th:title="${b.title}">
                         <a th:href="'/demo/' + ${b.bugId}"
                            style="text-decoration:none; color:inherit">
@@ -1252,7 +1359,8 @@
                               title="Only one configuration ever passed">★</span>
                     </td>
                     <td style="padding:0.25em 0.5em;
-                               border-right:3px solid #475569">
+                               border-right:3px solid #475569;
+                               white-space:nowrap">
                         <span th:class="'badge ' + ${b.difficulty}"
                               th:text="${b.difficulty}"></span>
                     </td>
@@ -1260,11 +1368,12 @@
                          LEFT: time, centered in the time-shaded
                          (left) gradient half. RIGHT: cost, centered
                          in the cost-shaded (right) gradient half.
-                         No status glyph -- color encodes pass/fail
-                         (vivid green = passed, soft red = failed).
-                         No-attempt cells stay neutral grey with a
-                         single dot. -->
+                         Each half clips overflow so a long value
+                         can't bleed into the other half. Cost shows
+                         3 decimals (e.g. $0.012) -- the tooltip
+                         carries the full 4-decimal value. -->
                     <td th:each="c : ${heatColumns}"
+                        class="hm-leaf"
                         th:with="cell=${heatCells[b.bugId + '|' + c.configKey]}"
                         th:style="(${cell != null ? cell.bgStyle :
                                     'background:#f8fafc; color:#cbd5e1'}) + ';' + ${c.borderRight}"
@@ -1280,16 +1389,14 @@
                                     (cell.status == 'CANCELED' ? 3 : 4))))}"
                         style="text-align:center; vertical-align:middle;
                                padding:0; font-family:ui-monospace,Menlo,monospace;
-                               font-size:0.72em; min-width:5em; height:2.6em">
+                               font-size:0.72em">
                         <div th:if="${cell != null}"
                              style="display:flex; align-items:stretch;
                                     height:100%; width:100%">
-                            <span style="flex:1 1 50%; display:flex;
-                                         align-items:center; justify-content:center"
+                            <span class="hm-half"
                                   th:text="${cell.durationMs &lt; 1000 ? '&lt;1s' : (cell.durationMs / 1000 + 's')}">…</span>
-                            <span style="flex:1 1 50%; display:flex;
-                                         align-items:center; justify-content:center"
-                                  th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 4, 'POINT')}">…</span>
+                            <span class="hm-half"
+                                  th:text="'$' + ${#numbers.formatDecimal(cell.costUsd, 1, 'COMMA', 3, 'POINT')}">…</span>
                         </div>
                         <span th:if="${cell == null}">·</span>
                     </td>
