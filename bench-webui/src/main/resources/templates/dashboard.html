@@ -686,20 +686,35 @@
                        title="Open per-bug breakdown for this configuration in a separate page"
                        style="color:#6b7280; text-decoration:none; padding:0 0.3em;
                               font-size:0.85em; vertical-align:middle">▶</a>
+                    <!-- Colored dot uses the same modelColor as the
+                         bug-solving matrix's model column header so
+                         operators can scan-and-match. -->
+                    <span th:style="'display:inline-block; width:10px; height:10px;
+                                     border-radius:50%; margin-right:5px;
+                                     vertical-align:middle;
+                                     background:' + ${lb.modelColor}"></span>
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
                           style="margin-left:0.3em; font-size:0.7em">leader</span>
                 </td>
                 <td th:text="${lb.provider}"
                     th:title="'Provider routing — ' + ${lb.provider}"></td>
-                <td th:text="${lb.contextProvider}"
-                    th:title="${lb.contextProvider == 'none' ? 'No source — problem statement only' :
+                <td th:title="${lb.contextProvider == 'none' ? 'No source — problem statement only' :
                                 (lb.contextProvider == 'bm25' ? 'TF-IDF retrieval over banking-app sources (hybrid: anchors filesTouched + BM25 supplements)' :
                                 (lb.contextProvider == 'appmap-navie' ? 'Navie agentic search (Layer-C cache; falls back to Oracle on cache miss)' :
-                                (lb.contextProvider == 'oracle' ? 'Curated filesTouched (excluded from leaderboard ranking)' : lb.contextProvider)))}"></td>
-                <td th:title="${lb.appmapMode}"
-                    th:text="${lb.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
-                              (lb.appmapMode == 'ON_ALL' ? 'ALL' : lb.appmapMode)}"></td>
+                                (lb.contextProvider == 'oracle' ? 'Curated filesTouched (excluded from leaderboard ranking)' : lb.contextProvider)))}">
+                    <span th:style="'background:' + ${lb.ctxColor} + '; color:white;
+                                     padding:1px 7px; border-radius:10px; font-size:0.85em'"
+                          th:text="${lb.contextProvider}">…</span>
+                </td>
+                <td th:title="${lb.appmapMode}">
+                    <span th:style="'background:' + ${lb.appmapColor} + '; color:white;
+                                     padding:1px 7px; border-radius:10px; font-size:0.85em'"
+                          th:text="${lb.appmapMode == 'ON_RECOMMENDED' ? 'On (rec.)' :
+                                    (lb.appmapMode == 'ON_ALL' ? 'On (all)' :
+                                    (lb.appmapMode == 'OFF' ? 'Off' :
+                                    (lb.appmapMode == 'ON' ? 'On' : lb.appmapMode)))}">…</span>
+                </td>
                 <td class="num" style="white-space:nowrap"
                     th:attr="data-filter-value=${lb.passRate * 100}"
                     th:title="${lb.passedRuns} + ' passed of ' + ${lb.totalRuns} + ' total runs at this configuration'"
@@ -1059,13 +1074,20 @@
                                border-right:3px solid #475569">
                         Diff <span class="sort-indicator"></span>
                     </th>
+                    <!-- Each ctx banner shows its label as a colored
+                         pill (ctxColor). Same color is used in the
+                         leaderboard's Context cell so operators
+                         scan-and-match across the dashboard. -->
                     <th th:each="g : ${heatCtxGroups}"
                         th:colspan="${g.colspan}"
                         th:title="'Context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
                         th:style="'text-align:center; padding:0.25em 0.4em;
                                    background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                    font-weight:600; color:#312e81;' + ${g.borderRight}">
-                        Context: <span th:text="${g.ctxLabel}">…</span>
+                        Context:
+                        <span th:style="'background:' + ${g.ctxColor} + '; color:white;
+                                         padding:1px 7px; border-radius:10px; font-size:0.85em'"
+                              th:text="${g.ctxLabel}">…</span>
                         <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
                               th:text="' · ' + ${g.passLabel}">…</span>
                     </th>
@@ -1077,7 +1099,10 @@
                         th:style="'text-align:center; padding:0.2em 0.4em;
                                    background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                    font-size:0.85em; color:#475569;' + ${ag.borderRight}">
-                        AppMap Traces: <span th:text="${ag.appmapLabel}">…</span>
+                        AppMap Traces:
+                        <span th:style="'background:' + ${ag.appmapColor} + '; color:white;
+                                         padding:1px 6px; border-radius:9px; font-size:0.85em'"
+                              th:text="${ag.appmapLabel}">…</span>
                         <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
                 </tr>
@@ -1091,21 +1116,39 @@
                          the operator can scan the grid by group
                          without losing track of column ownership. -->
                     <th th:each="c, iter : ${heatColumns}"
-                        th:title="${c.tooltip}"
+                        th:title="${c.tooltip} · ' + ${c.passLabel}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
                         th:style="'background:#f3f4f6; vertical-align:bottom;
-                                   text-align:left; padding:0.4em 0.4em 0.5em 0.5em;
-                                   min-width:3em; height:7em; cursor:pointer;
+                                   text-align:center; padding:0.3em 0.3em 0.5em 0.5em;
+                                   min-width:3em; height:8em; cursor:pointer;
                                    overflow:visible;' + ${c.borderRight}">
-                        <span style="display:inline-block;
-                                     transform:rotate(-45deg);
-                                     transform-origin:bottom left;
-                                     white-space:nowrap;
-                                     font-family:monospace;
-                                     font-size:0.85em"
-                              th:text="${c.modelShort}">…</span>
+                        <!-- Stack: percentage at the top (centered),
+                             rotated 45° model label below anchored
+                             at bottom-left. Colored dot on the model
+                             label matches the same model in the
+                             leaderboard. -->
+                        <div style="display:flex; flex-direction:column;
+                                    align-items:stretch; height:100%">
+                            <div style="font-size:0.7em; color:#475569;
+                                        text-align:center; padding-bottom:2px"
+                                 th:text="${c.passLabel}">…</div>
+                            <div style="flex:1; position:relative">
+                                <span style="position:absolute; bottom:0; left:0;
+                                             transform:rotate(-45deg);
+                                             transform-origin:bottom left;
+                                             white-space:nowrap;
+                                             font-family:monospace;
+                                             font-size:0.85em">
+                                    <span th:style="'display:inline-block; width:8px; height:8px;
+                                                     border-radius:50%; margin-right:4px;
+                                                     vertical-align:middle;
+                                                     background:' + ${c.modelColor}"></span>
+                                    <span th:text="${c.modelShort}">…</span>
+                                </span>
+                            </div>
+                        </div>
                     </th>
                 </tr>
             </thead>
