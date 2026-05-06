@@ -937,9 +937,23 @@
                     <td>
                         <span th:if="${b.timeWinnerModel == null}" style="color:#888">— no solver —</span>
                         <span th:unless="${b.timeWinnerModel == null}">
+                            <span th:style="'display:inline-block; width:9px; height:9px;
+                                             border-radius:50%; margin-right:4px;
+                                             vertical-align:middle;
+                                             background:' + ${modelColorMap[b.timeWinnerModelId]}"></span>
                             <code th:text="${b.timeWinnerModel}">…</code>
-                            <span class="help-text"
-                                  th:text="' · ' + ${b.timeWinnerCtx} + ' · ' + ${b.timeWinnerAppmap}"></span>
+                            ·
+                            <span th:style="'background:' + ${ctxColorMap[b.timeWinnerCtx]} +
+                                            '; color:white; padding:1px 6px; border-radius:9px;
+                                              font-size:0.85em'"
+                                  th:text="${b.timeWinnerCtx}"></span>
+                            <span th:style="'background:' + ${appmapColorMap[b.timeWinnerAppmap]} +
+                                            '; color:white; padding:1px 6px; border-radius:9px;
+                                              font-size:0.85em'"
+                                  th:text="${b.timeWinnerAppmap == 'ON_RECOMMENDED' ? 'On (rec.)' :
+                                            (b.timeWinnerAppmap == 'ON_ALL' ? 'On (all)' :
+                                            (b.timeWinnerAppmap == 'OFF' ? 'Off' :
+                                            (b.timeWinnerAppmap == 'ON' ? 'On' : b.timeWinnerAppmap)))}"></span>
                         </span>
                     </td>
                     <td class="num"
@@ -1015,9 +1029,23 @@
                     <td>
                         <span th:if="${b.costWinnerModel == null}" style="color:#888">— no solver —</span>
                         <span th:unless="${b.costWinnerModel == null}">
+                            <span th:style="'display:inline-block; width:9px; height:9px;
+                                             border-radius:50%; margin-right:4px;
+                                             vertical-align:middle;
+                                             background:' + ${modelColorMap[b.costWinnerModelId]}"></span>
                             <code th:text="${b.costWinnerModel}">…</code>
-                            <span class="help-text"
-                                  th:text="' · ' + ${b.costWinnerCtx} + ' · ' + ${b.costWinnerAppmap}"></span>
+                            ·
+                            <span th:style="'background:' + ${ctxColorMap[b.costWinnerCtx]} +
+                                            '; color:white; padding:1px 6px; border-radius:9px;
+                                              font-size:0.85em'"
+                                  th:text="${b.costWinnerCtx}"></span>
+                            <span th:style="'background:' + ${appmapColorMap[b.costWinnerAppmap]} +
+                                            '; color:white; padding:1px 6px; border-radius:9px;
+                                              font-size:0.85em'"
+                                  th:text="${b.costWinnerAppmap == 'ON_RECOMMENDED' ? 'On (rec.)' :
+                                            (b.costWinnerAppmap == 'ON_ALL' ? 'On (all)' :
+                                            (b.costWinnerAppmap == 'OFF' ? 'Off' :
+                                            (b.costWinnerAppmap == 'ON' ? 'On' : b.costWinnerAppmap)))}"></span>
                         </span>
                     </td>
                     <td class="num"
@@ -1122,17 +1150,21 @@
                                  data-sort-numeric='true'"
                         th:style="'background:#f3f4f6; vertical-align:bottom;
                                    text-align:center; padding:0.3em 0.3em 0.5em 0.5em;
-                                   min-width:3em; height:8em; cursor:pointer;
+                                   min-width:3em; height:12em; cursor:pointer;
                                    overflow:visible;' + ${c.borderRight}">
                         <!-- Stack: percentage at the top (centered),
-                             rotated 45° model label below anchored
-                             at bottom-left. Colored dot on the model
-                             label matches the same model in the
-                             leaderboard. -->
+                             rotated 45° model label anchored at the
+                             bottom-left. Header height bumped to
+                             12em so a long rotated label like
+                             "claude-sonnet-4-6" (≈10em vertical
+                             extent at 45°) doesn't overrun the %
+                             label above. -->
                         <div style="display:flex; flex-direction:column;
                                     align-items:stretch; height:100%">
-                            <div style="font-size:0.7em; color:#475569;
-                                        text-align:center; padding-bottom:2px"
+                            <div style="font-size:0.75em; font-weight:600;
+                                        color:#1e293b; text-align:center;
+                                        padding-bottom:4px;
+                                        border-bottom:1px solid #e2e8f0"
                                  th:text="${c.passLabel}">…</div>
                             <div style="flex:1; position:relative">
                                 <span style="position:absolute; bottom:0; left:0;
@@ -1359,11 +1391,28 @@
                               th:text="${r.issueId}"></span>
                     </td>
                     <td th:text="${r.provider}"></td>
-                    <td th:text="${r.modelId}"></td>
-                    <td th:text="${r.contextProvider}"></td>
-                    <td th:title="${r.appmapMode}"
-                        th:text="${r.appmapMode == 'ON_RECOMMENDED' ? 'REC' :
-                                  (r.appmapMode == 'ON_ALL' ? 'ALL' : r.appmapMode)}"></td>
+                    <td>
+                        <span th:style="'display:inline-block; width:9px; height:9px;
+                                         border-radius:50%; margin-right:5px;
+                                         vertical-align:middle;
+                                         background:' + ${modelColorMap[r.modelId]}"></span>
+                        <span th:text="${r.modelId}"></span>
+                    </td>
+                    <td>
+                        <span th:style="'background:' + ${ctxColorMap[r.contextProvider]} +
+                                        '; color:white; padding:1px 7px; border-radius:10px;
+                                          font-size:0.85em'"
+                              th:text="${r.contextProvider}"></span>
+                    </td>
+                    <td th:title="${r.appmapMode}">
+                        <span th:style="'background:' + ${appmapColorMap[r.appmapMode]} +
+                                        '; color:white; padding:1px 7px; border-radius:10px;
+                                          font-size:0.85em'"
+                              th:text="${r.appmapMode == 'ON_RECOMMENDED' ? 'On (rec.)' :
+                                        (r.appmapMode == 'ON_ALL' ? 'On (all)' :
+                                        (r.appmapMode == 'OFF' ? 'Off' :
+                                        (r.appmapMode == 'ON' ? 'On' : r.appmapMode)))}"></span>
+                    </td>
                     <td>
                         <span th:class="'badge ' + ${r.status.name()}" th:text="${r.status.name()}"></span>
                         <!-- Inline Cancel for QUEUED/RUNNING rows. Flips

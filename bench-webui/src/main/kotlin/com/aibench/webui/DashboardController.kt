@@ -102,6 +102,7 @@ class DashboardController(
         // operators can rank on either metric without forcing a
         // weighting between $$$ and seconds.
         val timeWinnerModel: String?,
+        val timeWinnerModelId: String?,    // raw modelId (no provider prefix) for color-map lookup
         val timeWinnerCtx: String?,
         val timeWinnerAppmap: String?,
         val timeWinnerDurationMs: Long?,
@@ -110,6 +111,7 @@ class DashboardController(
         // time-leader fields above; same model may or may not win
         // both metrics.
         val costWinnerModel: String?,
+        val costWinnerModelId: String?,    // raw modelId (no provider prefix) for color-map lookup
         val costWinnerCtx: String?,
         val costWinnerAppmap: String?,
         val costWinnerDurationMs: Long?,
@@ -360,6 +362,20 @@ class DashboardController(
         model.addAttribute("solvers", registeredModels.availableProviders(session))
         model.addAttribute("runs", runs)
         model.addAttribute("connectedRepos", 0)
+        // Color maps shared with the bug-solving matrix + leaderboard
+        // so any cell that displays a model id / context provider /
+        // appmap mode can render the matching color swatch. Built
+        // from the live runs list so values that don't appear in
+        // the runs aren't pre-allocated.
+        val ctxColorMap: Map<String, String> = runs.map { it.contextProvider }
+            .distinct().associateWith { ctxColor(it) }
+        val appmapColorMap: Map<String, String> = runs.map { it.appmapMode }
+            .distinct().associateWith { appmapColor(it) }
+        val modelColorMap: Map<String, String> = runs.map { it.modelId }
+            .distinct().associateWith { modelColor(it) }
+        model.addAttribute("ctxColorMap", ctxColorMap)
+        model.addAttribute("appmapColorMap", appmapColorMap)
+        model.addAttribute("modelColorMap", modelColorMap)
         // "Bugs" tile counts unique bug IDs that have at least one
         // benchmark run -- consistent with Runs / Pass rate / Solvers
         // which are all derived from the live runs list. The catalog's
@@ -555,11 +571,13 @@ class DashboardController(
                 solvers = distinctSolverConfigs.size,
                 uniquelySolved = distinctSolverConfigs.size == 1 && passes.isNotEmpty(),
                 timeWinnerModel = timeWinner?.let { "${it.provider}/${it.modelId}" },
+                timeWinnerModelId = timeWinner?.modelId,
                 timeWinnerCtx = timeWinner?.contextProvider,
                 timeWinnerAppmap = timeWinner?.appmapMode,
                 timeWinnerDurationMs = timeWinner?.durationMs,
                 timeWinnerCostUsd = timeWinner?.stats?.estimatedCostUsd,
                 costWinnerModel = costWinner?.let { "${it.provider}/${it.modelId}" },
+                costWinnerModelId = costWinner?.modelId,
                 costWinnerCtx = costWinner?.contextProvider,
                 costWinnerAppmap = costWinner?.appmapMode,
                 costWinnerDurationMs = costWinner?.durationMs,
