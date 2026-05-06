@@ -1304,21 +1304,22 @@ class DashboardController(
         return sb.toString()
     }
 
-    /** Lerp between green-900 (#14532d, top performer) and green-100
-     *  (#dcfce7, worst pass) on a 0..1 rank, with a sqrt() curve so
-     *  the top of the leaderboard gets more visual span: rank 0..0.1
-     *  spreads across ~31% of the gradient (instead of a flat 10%)
-     *  while the laggards in 0.5..1.0 compress into the lighter end.
-     *  Operators see 5+ visually distinct shades among top performers
-     *  instead of "they're all just dark green". */
+    /** Lerp between green-600 (#16a34a, top performer) and green-100
+     *  (#dcfce7, worst pass) on a 0..1 rank with a linear curve.
+     *  Earlier this used green-900 + a sqrt() curve to give top
+     *  performers more visual span, but the green-900 end made the
+     *  black-on-green text unreadable -- "5s · $0.012" disappeared
+     *  on the darkest cells. Reverted to the readable range; "more
+     *  levels" of discrimination would need to come from a wider
+     *  hue ramp (e.g. green to teal) rather than darkening, which
+     *  is the next iteration if the operator wants more contrast. */
     private fun greenShade(rank: Double): String {
         val t = rank.coerceIn(0.0, 1.0)
-        val curved = kotlin.math.sqrt(t)
-        val r0 = 0x14; val g0 = 0x53; val b0 = 0x2d   // green-900 (best)
+        val r0 = 0x16; val g0 = 0xa3; val b0 = 0x4a   // green-600 (best)
         val r1 = 0xdc; val g1 = 0xfc; val b1 = 0xe7   // green-100 (worst pass)
-        val r = (r0 + (r1 - r0) * curved).toInt()
-        val g = (g0 + (g1 - g0) * curved).toInt()
-        val b = (b0 + (b1 - b0) * curved).toInt()
+        val r = (r0 + (r1 - r0) * t).toInt()
+        val g = (g0 + (g1 - g0) * t).toInt()
+        val b = (b0 + (b1 - b0) * t).toInt()
         return "#%02x%02x%02x".format(r, g, b)
     }
 
