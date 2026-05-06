@@ -585,7 +585,7 @@
          still appear in the table below, just not the per-config
          comparison up here. -->
     <section th:if="${leaderboardEmptyOracleOnly}">
-        <h2>Leaderboard
+        <h2>Bug-suite Leaderboard
             <span class="help-text" style="font-weight:normal; font-size:0.85em">
                 — empty: Oracle is excluded from ranking
             </span>
@@ -603,7 +603,7 @@
     </section>
 
     <section th:unless="${#lists.isEmpty(leaderboard)}">
-        <h2>Leaderboard
+        <h2>Bug-suite Leaderboard
             <span class="help-text" id="leaderboard-count" style="font-weight:normal; font-size:0.85em"></span>
         </h2>
         <p class="subtitle">
@@ -695,7 +695,8 @@
                                      background:' + ${lb.modelColor}"></span>
                     <code th:text="${lb.modelId}"></code>
                     <span th:if="${iter.first}" class="badge PASSED"
-                          style="margin-left:0.3em; font-size:0.7em">leader</span>
+                          style="margin-left:0.3em; font-size:0.7em"
+                          title="This configuration solved the most bugs in the suite">Bug-suite leader</span>
                 </td>
                 <td th:text="${lb.provider}"
                     th:title="'Provider routing — ' + ${lb.provider}"></td>
@@ -730,7 +731,7 @@
                            th:text="${delta != null ? ((delta.solvedDelta > 0 ? '+' : '') + delta.solvedDelta) : ''}"
                            style="display:block; font-size:0.85em"></small>
                     <small th:if="${iter.first}"
-                           style="display:block; color:#16a34a; font-size:0.85em">leader</small>
+                           style="display:block; color:#16a34a; font-size:0.85em">Bug-suite leader</small>
                 </td>
                 <td class="num" style="white-space:nowrap"
                     th:title="${lb.avgPassMs} + ' ms avg across ' + ${lb.passedRuns} + ' passing run(s)'"
