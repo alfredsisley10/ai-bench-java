@@ -485,6 +485,11 @@ class BenchmarkRunService(
      * missing) breakdown so the dashboard can surface a precise toast
      * after the operation.
      */
+    /** Snapshot of every run id currently tracked in memory. Used by
+     *  the dashboard's "Delete all runs" action to feed deleteRuns()
+     *  without exposing the underlying mutable map. */
+    fun allRunIds(): List<String> = runs.keys.toList()
+
     data class DeleteSummary(val deleted: Int, val skippedActive: Int, val missing: Int)
     fun deleteRuns(ids: Collection<String>): DeleteSummary {
         var deleted = 0; var skipped = 0; var missing = 0

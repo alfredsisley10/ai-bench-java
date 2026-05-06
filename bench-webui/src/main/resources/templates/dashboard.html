@@ -1448,7 +1448,7 @@
 
         <form th:unless="${#lists.isEmpty(runs)}" method="post" action="/runs/delete"
               id="runsDeleteForm"
-              onsubmit="return confirmRunDelete(this);">
+              onsubmit="return confirmRunDelete(this, event);">
             <div class="button-row" style="margin:0.4em 0; gap:0.5em; align-items:center; flex-wrap:wrap">
                 <input type="text" id="runs-search"
                        placeholder="Search across all columns…"
@@ -1466,6 +1466,20 @@
                 <a id="runs-xlsx-btn" class="btn-sm" href="/export/runs.xlsx">Export XLSX</a>
                 <button type="submit" class="btn-danger btn-sm" id="runs-delete-btn" disabled>
                     Delete selected (<span id="runs-selected-count">0</span>)
+                </button>
+                <!-- Delete-all routes via formaction so it shares the
+                     enclosing form (HTML disallows nested forms) but
+                     hits a different controller endpoint. The
+                     formnovalidate skip is unnecessary today (no
+                     constraints on the runIds checkboxes) but kept
+                     explicit so future required-input validations
+                     don't accidentally block the wipe. -->
+                <button type="submit" class="btn-danger btn-sm"
+                        formaction="/runs/delete-all"
+                        formnovalidate
+                        onclick="return confirm('Delete ALL benchmark runs? Active runs will be skipped — cancel them first. This cannot be undone.');"
+                        title="Wipe every run (RUNNING / QUEUED runs are skipped — cancel them first)">
+                    Delete all (<span th:text="${#lists.size(runs)}">0</span>)
                 </button>
             </div>
 
@@ -1948,8 +1962,17 @@
         })();
 
         // Confirm before bulk-delete. Returns false to block submission
-        // when the operator cancels the prompt.
-        function confirmRunDelete(form) {
+        // when the operator cancels the prompt. Skipped when the
+        // submitter is the "Delete all" button -- that button has its
+        // own onclick=confirm(...) and intentionally fires with zero
+        // checkboxes selected, which the per-row guard below would
+        // otherwise short-circuit as "nothing to delete".
+        function confirmRunDelete(form, event) {
+            var submitter = event && event.submitter;
+            if (submitter &&
+                submitter.getAttribute('formaction') === '/runs/delete-all') {
+                return true;
+            }
             var n = form.querySelectorAll('.runs-row-check:checked').length;
             if (n === 0) return false;
             return confirm('Delete ' + n + ' selected run' +
