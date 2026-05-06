@@ -187,42 +187,23 @@ class DashboardController(
      *  "ctx=appmap-navie" / "ctx=bm25" / "ctx=none" as a banner
      *  spanning every column that uses that ctx. `colspan` is the
      *  sum of every appmap subgroup's colspan inside this group. */
-    data class HeatCtxGroup(
-        val ctxLabel: String,
+    /** Generic banner cell for either tier-1 or tier-2 of the
+     *  matrix's three-tier header. The tier identity (Context,
+     *  AppMap Traces, Model) is operator-selectable, so this
+     *  carries a `tierName` (the label of the row, e.g. "Context")
+     *  alongside the value's `displayLabel` ("bm25"). `color`
+     *  comes from the tier-appropriate swatch helper.
+     *  `borderRight` is the divider that visually anchors the end
+     *  of this group's column block. */
+    data class HeatGroup(
+        val tierName: String,
+        val displayLabel: String,
+        val rawValue: String,
         val colspan: Int,
-        val appmapGroups: List<HeatAppmapGroup>,
         val borderRight: String,
-        // Color swatch for this ctx group. Operators can scan the
-        // matrix and recognize "every cell under this swatch is
-        // ctx=bm25" without re-reading the banner text.
-        val ctxColor: String,
-        // Aggregate pass rate across every (model column, bug row)
-        // cell in this ctx group. Numerator = PASSED cells;
-        // denominator = ATTEMPTED cells (PASSED + FAILED + ERRORED
-        // + CANCELED). Cells with no run for the (config, bug) pair
-        // are excluded so the rate answers "when this group ran,
-        // how often did it pass?" rather than "what fraction of the
-        // grid is green?". `passLabel` is the pre-formatted string
-        // for the header (e.g. "67% (12/18)").
+        val color: String,
         val passRate: Double,
         val passLabel: String
-    )
-
-    /** Sub-banner of [HeatCtxGroup]: every model column sharing the
-     *  same (ctx, appmap) combination. `colspan` = number of model
-     *  columns in this subgroup. `passRate` / `passLabel` mirror
-     *  the ctx group's aggregate but scoped to this (ctx, appmap)
-     *  pair only. */
-    data class HeatAppmapGroup(
-        val appmapLabel: String,
-        val colspan: Int,
-        val passRate: Double,
-        val passLabel: String,
-        val borderRight: String,
-        // Color swatch for this AppMap Traces mode (Off / On /
-        // recommended / all). Same mode = same color across the
-        // matrix.
-        val appmapColor: String
     )
 
     /** Bug row metadata for the heat-map. */
@@ -312,8 +293,63 @@ class DashboardController(
         val bugStatusSparkSvg: String
     )
 
+    /** Operator-selectable grouping for the bug-solving matrix
+     *  columns. The three tiers are ctx, appmap, model in some
+     *  order -- default is ctx > appmap > model (which mirrors the
+     *  leaderboard's natural grouping). The selector form above
+     *  the matrix submits one of the 6 permutations as
+     *  ?matrixGroupBy=ctx,appmap,model so the operator can pivot
+     *  to "model > ctx > appmap" or any other order to surface
+     *  different patterns in the data. */
+    enum class MatrixTier { CTX, APPMAP, MODEL }
+
+    private fun parseMatrixGroupBy(raw: String?): List<MatrixTier>? {
+        if (raw.isNullOrBlank()) return null
+        val parsed = raw.split(",").mapNotNull {
+            when (it.trim().lowercase()) {
+                "ctx" -> MatrixTier.CTX
+                "appmap" -> MatrixTier.APPMAP
+                "model" -> MatrixTier.MODEL
+                else -> null
+            }
+        }.distinct()
+        return if (parsed.size == 3) parsed else null
+    }
+
+    private fun tierKey(tier: MatrixTier, t: Triple<String, String, String>): String =
+        when (tier) {
+            MatrixTier.MODEL -> t.first
+            MatrixTier.CTX -> t.second
+            MatrixTier.APPMAP -> t.third
+        }
+    private fun tierName(tier: MatrixTier): String = when (tier) {
+        MatrixTier.CTX -> "Context"
+        MatrixTier.APPMAP -> "AppMap Traces"
+        MatrixTier.MODEL -> "Model"
+    }
+    private fun tierColor(tier: MatrixTier, value: String): String = when (tier) {
+        MatrixTier.CTX -> ctxColor(value)
+        MatrixTier.APPMAP -> appmapColor(value)
+        MatrixTier.MODEL -> modelColor(value)
+    }
+    private fun tierDisplayLabel(tier: MatrixTier, value: String): String = when (tier) {
+        MatrixTier.APPMAP -> when {
+            value.equals("OFF", true) || value.isBlank() -> "Off"
+            value.equals("ON", true) -> "On"
+            value.equals("ON_RECOMMENDED", true) -> "On (recommended)"
+            value.equals("ON_ALL", true) -> "On (all tests)"
+            else -> value
+        }
+        MatrixTier.MODEL -> value.removePrefix("copilot-")
+        MatrixTier.CTX -> value
+    }
+
     @GetMapping("/")
-    fun dashboard(model: Model, session: HttpSession): String {
+    fun dashboard(
+        @RequestParam(name = "matrixGroupBy", required = false) matrixGroupByRaw: String?,
+        model: Model,
+        session: HttpSession
+    ): String {
         // Pull a wide window so the per-page slicing JS has every
         // available run to choose from. 500 is plenty for a single
         // operator's lifetime; older runs roll off naturally as the
@@ -667,10 +703,42 @@ class DashboardController(
             }
             return if (attempted == 0) 0.0 else passed.toDouble() / attempted
         }
-        // Aggregate by (ctx, appmap) and by ctx -- needed to drive
-        // the multi-tier sort.
-        val rateByCtxAppmap: Map<Pair<String, String>, Double> = distinctConfigs
-            .groupBy { it.second to it.third }
+        // Auto tier order: when the operator hasn't explicitly
+        // pinned matrixGroupBy via the URL, choose the order
+        // dynamically by which tier shows the biggest spread
+        // (max - min) in pass rate across its values. The tier
+        // where the choice matters most goes first, so the matrix
+        // surfaces the most discriminating dimension at the top
+        // banner. Ties fall back to ctx > appmap > model.
+        val explicitTiers = parseMatrixGroupBy(matrixGroupByRaw)
+        val matrixTiers: List<MatrixTier> = explicitTiers ?: run {
+            fun tierSpread(tier: MatrixTier): Double {
+                val rates = distinctConfigs.groupBy { tierKey(tier, it) }
+                    .map { (_, configs) ->
+                        var p = 0; var a = 0
+                        for ((m, c, mode) in configs) {
+                            for (bug in heatBugRows) {
+                                val cell = rawCells["${bug.bugId}|$m|$c|$mode"] ?: continue
+                                a++
+                                if (cell.status == "PASSED") p++
+                            }
+                        }
+                        if (a == 0) 0.0 else p.toDouble() / a
+                    }
+                return if (rates.size < 2) 0.0 else (rates.max() - rates.min())
+            }
+            val tieBreak = mapOf(MatrixTier.CTX to 0, MatrixTier.APPMAP to 1, MatrixTier.MODEL to 2)
+            MatrixTier.values().toList()
+                .sortedWith(compareByDescending<MatrixTier> { tierSpread(it) }
+                    .thenBy { tieBreak[it] })
+        }
+        model.addAttribute("matrixTiers", matrixTiers)
+        model.addAttribute("matrixGroupBy",
+            matrixTiers.joinToString(",") { it.name.lowercase() })
+        model.addAttribute("matrixGroupByExplicit", explicitTiers != null)
+
+        val rateByOuter: Map<String, Double> = distinctConfigs
+            .groupBy { tierKey(matrixTiers[0], it) }
             .mapValues { (_, configs) ->
                 var p = 0; var a = 0
                 for ((m, c, mode) in configs) {
@@ -682,8 +750,8 @@ class DashboardController(
                 }
                 if (a == 0) 0.0 else p.toDouble() / a
             }
-        val rateByCtx: Map<String, Double> = distinctConfigs
-            .groupBy { it.second }
+        val rateByOuterMiddle: Map<Pair<String, String>, Double> = distinctConfigs
+            .groupBy { tierKey(matrixTiers[0], it) to tierKey(matrixTiers[1], it) }
             .mapValues { (_, configs) ->
                 var p = 0; var a = 0
                 for ((m, c, mode) in configs) {
@@ -695,32 +763,40 @@ class DashboardController(
                 }
                 if (a == 0) 0.0 else p.toDouble() / a
             }
-        // Stable secondary sort keys: alphabetical when rates tie so
-        // the column order is deterministic across reloads.
+        // Sort by outer-tier rate desc -> middle-tier rate desc
+        // within outer -> leaf rate desc within middle, with
+        // alphabetical tiebreakers on the raw value at each level
+        // so the column order is deterministic across reloads.
         val configsWithAttempts: List<Triple<String, String, String>> = distinctConfigs
             .sortedWith(compareByDescending<Triple<String, String, String>> {
-                rateByCtx[it.second] ?: 0.0
+                rateByOuter[tierKey(matrixTiers[0], it)] ?: 0.0
             }
-                .thenBy { it.second }
-                .thenByDescending { rateByCtxAppmap[it.second to it.third] ?: 0.0 }
-                .thenBy { it.third }
+                .thenBy { tierKey(matrixTiers[0], it) }
+                .thenByDescending {
+                    rateByOuterMiddle[tierKey(matrixTiers[0], it) to tierKey(matrixTiers[1], it)] ?: 0.0
+                }
+                .thenBy { tierKey(matrixTiers[1], it) }
                 .thenByDescending { configPassRate(it.first, it.second, it.third) }
-                .thenBy { it.first })
-        // Pre-compute the LAST column index in each ctx group + each
-        // (ctx, appmap) sub-group so we can render thicker vertical
-        // dividers at those boundaries. The list is already sorted
-        // ctx → appmap → model so "last in group" is just "next item
-        // changes group key (or end of list)".
-        val lastInCtxIdx = configsWithAttempts.indices.filter { i ->
+                .thenBy { tierKey(matrixTiers[2], it) })
+
+        // Last-column index per outer / middle group for the
+        // vertical divider painting -- reads the same direction as
+        // the matching banner build below.
+        val lastInOuterIdx = configsWithAttempts.indices.filter { i ->
             i == configsWithAttempts.lastIndex ||
-            configsWithAttempts[i].second != configsWithAttempts[i + 1].second
+            tierKey(matrixTiers[0], configsWithAttempts[i]) !=
+                tierKey(matrixTiers[0], configsWithAttempts[i + 1])
         }.toSet()
-        val lastInAppmapIdx = configsWithAttempts.indices.filter { i ->
+        val lastInMiddleIdx = configsWithAttempts.indices.filter { i ->
             i == configsWithAttempts.lastIndex ||
-            configsWithAttempts[i].second != configsWithAttempts[i + 1].second ||
-            configsWithAttempts[i].third != configsWithAttempts[i + 1].third
+            tierKey(matrixTiers[0], configsWithAttempts[i]) !=
+                tierKey(matrixTiers[0], configsWithAttempts[i + 1]) ||
+            tierKey(matrixTiers[1], configsWithAttempts[i]) !=
+                tierKey(matrixTiers[1], configsWithAttempts[i + 1])
         }.toSet()
-        val heatColumns: List<HeatColumn> = configsWithAttempts.mapIndexed { idx, (model, ctx, mode) ->
+        val leafTier = matrixTiers[2]
+        val heatColumns: List<HeatColumn> = configsWithAttempts.mapIndexed { idx, triple ->
+            val (model, ctx, mode) = triple
             val k = "$model|$ctx|$mode"
             val solves = nonOracleRuns.count {
                 it.modelId == model && it.contextProvider == ctx && it.appmapMode == mode &&
@@ -728,10 +804,16 @@ class DashboardController(
             }
             val border = when {
                 idx == configsWithAttempts.lastIndex -> ""
-                idx in lastInCtxIdx -> "border-right:3px solid #6366f1"
-                idx in lastInAppmapIdx -> "border-right:2px solid #94a3b8"
+                idx in lastInOuterIdx -> "border-right:3px solid #6366f1"
+                idx in lastInMiddleIdx -> "border-right:2px solid #94a3b8"
                 else -> ""
             }
+            // Leaf header value (the rotated 45° label below the
+            // % box) is whatever the operator picked as tier 3.
+            // For the default order that's the model name; for an
+            // operator who chose "model > ctx > appmap" it's the
+            // appmap mode, etc. Color matches the leaf tier.
+            val leafValue = tierKey(leafTier, triple)
             // Per-config solve rate over heatBugRows (same denom as
             // the sort + per-group banners). Drives the small %
             // text shown above the rotated model name.
@@ -744,7 +826,7 @@ class DashboardController(
             val pct = if (a > 0) (p * 100 + a / 2) / a else 0
             HeatColumn(
                 configKey = k,
-                modelShort = model.removePrefix("copilot-"),
+                modelShort = tierDisplayLabel(leafTier, leafValue),
                 ctxShort = when (ctx.lowercase()) {
                     "none" -> "n"
                     "bm25" -> "B"
@@ -759,7 +841,7 @@ class DashboardController(
                 borderRight = border,
                 passRate = if (a > 0) p.toDouble() / a else 0.0,
                 passLabel = if (a == 0) "—" else "$pct% ($p/$a)",
-                modelColor = modelColor(model)
+                modelColor = tierColor(leafTier, leafValue)
             )
         }
         // heatCells: rawCells with per-cell bgStyle layered on. The
@@ -824,61 +906,72 @@ class DashboardController(
             if (attempted == 0) "—"
             else "${(passed * 100 + attempted / 2) / attempted}% ($passed/$attempted)"
 
-        // Group ctx → appmap. Each banner cell carries a borderRight
-        // string so the indigo (ctx-boundary) and slate (appmap-
-        // subgroup boundary) dividers extend full-height through
-        // the whole header stack, matching the per-column dividers
-        // computed for the model row.
-        val ctxKeys = configsWithAttempts.map { it.second }.distinct()
-        val heatCtxGroups: List<HeatCtxGroup> = ctxKeys.mapIndexed { ctxIdx, ctx ->
-            val ctxConfigs = configsWithAttempts.filter { it.second == ctx }
-            val isLastCtx = ctxIdx == ctxKeys.lastIndex
-            val (ctxPassed, ctxAttempted) = groupPassStats(ctxConfigs)
-            val modeKeys = ctxConfigs.map { it.third }.distinct()
-            val appmapGroups = modeKeys.mapIndexed { aIdx, mode ->
-                val modeConfigs = ctxConfigs.filter { it.third == mode }
-                val isLastInCtx = aIdx == modeKeys.lastIndex
-                val appmapBorder = when {
-                    isLastInCtx && isLastCtx -> ""
-                    isLastInCtx -> "border-right:3px solid #6366f1"
-                    else -> "border-right:2px solid #94a3b8"
-                }
-                val (mPassed, mAttempted) = groupPassStats(modeConfigs)
-                HeatAppmapGroup(
-                    // Human-friendly label for the matrix header
-                    // banner. Operators read "AppMap Traces: On
-                    // (recommended)" much faster than the raw enum
-                    // "ON_RECOMMENDED".
-                    appmapLabel = when {
-                        mode.equals("OFF", true) || mode.isBlank() -> "Off"
-                        mode.equals("ON", true) -> "On"
-                        mode.equals("ON_RECOMMENDED", true) -> "On (recommended)"
-                        mode.equals("ON_ALL", true) -> "On (all tests)"
-                        else -> mode
-                    },
-                    colspan = modeConfigs.size,
-                    passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
-                    passLabel = pctLabel(mPassed, mAttempted),
-                    borderRight = appmapBorder,
-                    appmapColor = appmapColor(mode)
-                )
-            }
-            HeatCtxGroup(
-                ctxLabel = ctx,
-                colspan = ctxConfigs.size,
-                appmapGroups = appmapGroups,
-                borderRight = if (isLastCtx) "" else "border-right:3px solid #6366f1",
-                ctxColor = ctxColor(ctx),
-                passRate = if (ctxAttempted > 0) ctxPassed.toDouble() / ctxAttempted else 0.0,
-                passLabel = pctLabel(ctxPassed, ctxAttempted)
+        // Tier-driven banner construction. The operator's chosen
+        // tier order (matrixTiers, parsed from the URL groupBy
+        // query param) decides which value populates the outer
+        // banner row, the middle sub-banner row, and the leaf
+        // column header. Each banner cell carries a borderRight
+        // string so the indigo (outer-boundary) + slate (middle-
+        // boundary) dividers extend full-height through the header
+        // stack, matching the per-column dividers below.
+        val outerTier = matrixTiers[0]
+        val middleTier = matrixTiers[1]
+        val outerKeys = configsWithAttempts.map { tierKey(outerTier, it) }.distinct()
+        val heatOuterGroups: List<HeatGroup> = outerKeys.mapIndexed { oIdx, oVal ->
+            val outerConfigs = configsWithAttempts.filter { tierKey(outerTier, it) == oVal }
+            val isLastOuter = oIdx == outerKeys.lastIndex
+            val (oPassed, oAttempted) = groupPassStats(outerConfigs)
+            HeatGroup(
+                tierName = tierName(outerTier),
+                displayLabel = tierDisplayLabel(outerTier, oVal),
+                rawValue = oVal,
+                colspan = outerConfigs.size,
+                borderRight = if (isLastOuter) "" else "border-right:3px solid #6366f1",
+                color = tierColor(outerTier, oVal),
+                passRate = if (oAttempted > 0) oPassed.toDouble() / oAttempted else 0.0,
+                passLabel = pctLabel(oPassed, oAttempted)
             )
         }
-        val heatAppmapGroups: List<HeatAppmapGroup> =
-            heatCtxGroups.flatMap { it.appmapGroups }
+        // Middle: flat list of (outer, middle) sub-groups in
+        // column order. Each one has the appropriate divider --
+        // shared with the outer boundary at the right edge of
+        // the last middle subgroup in each outer group.
+        val heatMiddleGroups: List<HeatGroup> = run {
+            val out = mutableListOf<HeatGroup>()
+            outerKeys.forEachIndexed { oIdx, oVal ->
+                val outerConfigs = configsWithAttempts.filter { tierKey(outerTier, it) == oVal }
+                val isLastOuter = oIdx == outerKeys.lastIndex
+                val midKeys = outerConfigs.map { tierKey(middleTier, it) }.distinct()
+                midKeys.forEachIndexed { mIdx, mVal ->
+                    val midConfigs = outerConfigs.filter { tierKey(middleTier, it) == mVal }
+                    val isLastMid = mIdx == midKeys.lastIndex
+                    val border = when {
+                        isLastMid && isLastOuter -> ""
+                        isLastMid -> "border-right:3px solid #6366f1"
+                        else -> "border-right:2px solid #94a3b8"
+                    }
+                    val (mPassed, mAttempted) = groupPassStats(midConfigs)
+                    out.add(HeatGroup(
+                        tierName = tierName(middleTier),
+                        displayLabel = tierDisplayLabel(middleTier, mVal),
+                        rawValue = mVal,
+                        colspan = midConfigs.size,
+                        borderRight = border,
+                        color = tierColor(middleTier, mVal),
+                        passRate = if (mAttempted > 0) mPassed.toDouble() / mAttempted else 0.0,
+                        passLabel = pctLabel(mPassed, mAttempted)
+                    ))
+                }
+            }
+            out
+        }
 
         model.addAttribute("heatColumns", heatColumns)
-        model.addAttribute("heatCtxGroups", heatCtxGroups)
-        model.addAttribute("heatAppmapGroups", heatAppmapGroups)
+        model.addAttribute("heatOuterGroups", heatOuterGroups)
+        model.addAttribute("heatMiddleGroups", heatMiddleGroups)
+        model.addAttribute("matrixOuterTierName", tierName(outerTier))
+        model.addAttribute("matrixMiddleTierName", tierName(middleTier))
+        model.addAttribute("matrixLeafTierName", tierName(matrixTiers[2]))
         model.addAttribute("heatBugRows", heatBugRows)
         model.addAttribute("heatCells", heatCells)
         // When the leaderboard is empty BUT we DO have passing oracle

@@ -1073,6 +1073,57 @@
                 — green = passed, red = failed, light grey = no attempt
             </span>
         </h2>
+        <!-- Tier-order selector. Pick which dimension groups the
+             matrix at each level (top banner, sub-banner, leaf
+             column). Default order is auto-chosen based on which
+             tier has the biggest spread in pass rate -- the most
+             discriminating dimension goes outermost. The form
+             submits to / with ?matrixGroupBy=tier1,tier2,tier3
+             so the choice is bookmarkable. Reset link drops the
+             query param to restore the auto-default. -->
+        <form method="get" action="/" id="matrix-grouping-form"
+              style="margin:0.5em 0; padding:0.5em 0.7em; background:#f8fafc;
+                     border:1px solid #e2e8f0; border-radius:4px;
+                     display:flex; gap:0.6em; align-items:center; flex-wrap:wrap; font-size:0.9em">
+            <span style="color:#475569; font-weight:600">Group columns by:</span>
+            <select name="matrixGroupBy" id="matrix-group-select"
+                    onchange="this.form.submit()"
+                    style="padding:0.2em 0.4em">
+                <option value="ctx,appmap,model"
+                        th:selected="${matrixGroupBy == 'ctx,appmap,model'}">
+                    Context → AppMap Traces → Model
+                </option>
+                <option value="ctx,model,appmap"
+                        th:selected="${matrixGroupBy == 'ctx,model,appmap'}">
+                    Context → Model → AppMap Traces
+                </option>
+                <option value="appmap,ctx,model"
+                        th:selected="${matrixGroupBy == 'appmap,ctx,model'}">
+                    AppMap Traces → Context → Model
+                </option>
+                <option value="appmap,model,ctx"
+                        th:selected="${matrixGroupBy == 'appmap,model,ctx'}">
+                    AppMap Traces → Model → Context
+                </option>
+                <option value="model,ctx,appmap"
+                        th:selected="${matrixGroupBy == 'model,ctx,appmap'}">
+                    Model → Context → AppMap Traces
+                </option>
+                <option value="model,appmap,ctx"
+                        th:selected="${matrixGroupBy == 'model,appmap,ctx'}">
+                    Model → AppMap Traces → Context
+                </option>
+            </select>
+            <span class="help-text" style="font-size:0.8em"
+                  th:if="${matrixGroupByExplicit}">
+                — operator-pinned;
+                <a href="/" style="color:#2563eb">restore auto</a>
+            </span>
+            <span class="help-text" style="font-size:0.8em"
+                  th:unless="${matrixGroupByExplicit}">
+                — auto-chosen by largest spread in solve rate
+            </span>
+        </form>
         <div class="table-scroll" style="overflow-x:auto">
         <table id="heatMatrixTable" class="sortable-table"
                style="font-size:0.78em; border-collapse:separate; border-spacing:1px">
@@ -1102,35 +1153,35 @@
                                border-right:3px solid #475569">
                         Diff <span class="sort-indicator"></span>
                     </th>
-                    <!-- Each ctx banner shows its label as a colored
-                         pill (ctxColor). Same color is used in the
-                         leaderboard's Context cell so operators
-                         scan-and-match across the dashboard. -->
-                    <th th:each="g : ${heatCtxGroups}"
+                    <!-- Outer-tier banner. Tier name is dynamic
+                         (Context / AppMap Traces / Model depending
+                         on operator's groupBy choice). Colored pill
+                         uses the tier's color helper. -->
+                    <th th:each="g : ${heatOuterGroups}"
                         th:colspan="${g.colspan}"
-                        th:title="'Context provider: ' + ${g.ctxLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
+                        th:title="${g.tierName} + ': ' + ${g.displayLabel} + ' — ' + ${g.passLabel} + ' of attempted (config × bug) cells passed'"
                         th:style="'text-align:center; padding:0.25em 0.4em;
                                    background:#e0e7ff; border-bottom:1px solid #c7d2fe;
                                    font-weight:600; color:#312e81;' + ${g.borderRight}">
-                        Context:
-                        <span th:style="'background:' + ${g.ctxColor} + '; color:white;
+                        <span th:text="${g.tierName} + ':'"></span>
+                        <span th:style="'background:' + ${g.color} + '; color:white;
                                          padding:1px 7px; border-radius:10px; font-size:0.85em'"
-                              th:text="${g.ctxLabel}">…</span>
+                              th:text="${g.displayLabel}">…</span>
                         <span style="font-weight:normal; color:#4338ca; font-size:0.85em"
                               th:text="' · ' + ${g.passLabel}">…</span>
                     </th>
                 </tr>
                 <tr>
-                    <th th:each="ag : ${heatAppmapGroups}"
+                    <th th:each="ag : ${heatMiddleGroups}"
                         th:colspan="${ag.colspan}"
-                        th:title="'AppMap Traces: ' + ${ag.appmapLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this (Context, AppMap Traces) pair'"
+                        th:title="${ag.tierName} + ': ' + ${ag.displayLabel} + ' — ' + ${ag.passLabel} + ' of attempted cells passed in this sub-group'"
                         th:style="'text-align:center; padding:0.2em 0.4em;
                                    background:#f1f5f9; border-bottom:1px solid #cbd5e1;
                                    font-size:0.85em; color:#475569;' + ${ag.borderRight}">
-                        AppMap Traces:
-                        <span th:style="'background:' + ${ag.appmapColor} + '; color:white;
+                        <span th:text="${ag.tierName} + ':'"></span>
+                        <span th:style="'background:' + ${ag.color} + '; color:white;
                                          padding:1px 6px; border-radius:9px; font-size:0.85em'"
-                              th:text="${ag.appmapLabel}">…</span>
+                              th:text="${ag.displayLabel}">…</span>
                         <span style="color:#64748b" th:text="' · ' + ${ag.passLabel}">…</span>
                     </th>
                 </tr>
