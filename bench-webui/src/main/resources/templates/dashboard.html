@@ -1116,7 +1116,7 @@
                          the operator can scan the grid by group
                          without losing track of column ownership. -->
                     <th th:each="c, iter : ${heatColumns}"
-                        th:title="${c.tooltip} · ' + ${c.passLabel}"
+                        th:title="${c.tooltip} + ' · ' + ${c.passLabel}"
                         th:attr="data-sort-key='c' + ${iter.index},
                                  data-sort-cell=${iter.index + 2},
                                  data-sort-numeric='true'"
